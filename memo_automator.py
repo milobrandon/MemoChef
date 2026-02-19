@@ -231,7 +231,27 @@ def extract_memo_content(memo_path: str, cfg: dict) -> str:
 
 
 # ============================================================================
-# 6. CLAUDE API — METRIC MAPPING
+# 6. MEMO CONTENT CHUNKING
+# ============================================================================
+def chunk_memo_by_pages(memo_content: str, pages_per_chunk: int = 10) -> list:
+    """
+    Split memo content into chunks of up to pages_per_chunk pages each.
+
+    Used when the full prompt would exceed the model's output token limit.
+    Each chunk is processed in a separate API call and the results are merged.
+    """
+    # Each page block starts with the === PAGE N === header
+    page_blocks = re.split(r"(?=\n={60,}\nPAGE \d+)", memo_content)
+    chunks = []
+    for i in range(0, len(page_blocks), pages_per_chunk):
+        chunk = "".join(page_blocks[i:i + pages_per_chunk])
+        if chunk.strip():
+            chunks.append(chunk)
+    return chunks
+
+
+# ============================================================================
+# 7. CLAUDE API — METRIC MAPPING
 # ============================================================================
 MAPPING_PROMPT = """\
 You are a financial analyst assistant. Your task is to compare data from an
@@ -327,6 +347,14 @@ def get_metric_mappings(
     raw = message.content[0].text
     log.info("Claude response received (%d chars, %s stop_reason)",
              len(raw), message.stop_reason)
+
+    if message.stop_reason == "max_tokens":
+        log.error(
+            "Claude's response was cut off (hit max_tokens=%d). "
+            "Increase max_tokens in config.yaml and retry.",
+            max_tokens,
+        )
+        sys.exit(1)
 
     # Parse JSON — handle optional markdown fences
     text = raw.strip()
@@ -431,6 +459,14 @@ def validate_mappings(
     raw = message.content[0].text
     log.info("Validation response received (%d chars, %s stop_reason)",
              len(raw), message.stop_reason)
+
+    if message.stop_reason == "max_tokens":
+        log.error(
+            "Claude's validation response was cut off (hit max_tokens=%d). "
+            "Increase max_tokens in config.yaml and retry.",
+            max_tokens,
+        )
+        sys.exit(1)
 
     text = raw.strip()
     if text.startswith("```"):
@@ -732,10 +768,25 @@ def main():
     # This API call replaces human analysis: Claude reads the proforma and
     # memo data, identifies which metrics map to which cells, and determines
     # the exact old->new text replacements with proper formatting.
+    # For large decks the memo is split into batches of 10 slides to stay
+    # within the model's output token limit; results are merged afterward.
     log.info("=" * 60)
     log.info("STEP 4: Claude API — identifying metric mappings")
     log.info("=" * 60)
-    mappings = get_metric_mappings(client, proforma_data, memo_content, cfg)
+    BATCH_THRESHOLD = 120_000  # chars; above this, process slides in batches
+    prompt_size = len(proforma_data) + len(memo_content)
+    if prompt_size > BATCH_THRESHOLD:
+        log.info("Large prompt (%d chars) — processing slides in batches of 10",
+                 prompt_size)
+        memo_chunks = chunk_memo_by_pages(memo_content, pages_per_chunk=10)
+        mappings = {"table_updates": [], "text_updates": []}
+        for i, chunk in enumerate(memo_chunks, 1):
+            log.info("Mapping batch %d / %d ...", i, len(memo_chunks))
+            batch = get_metric_mappings(client, proforma_data, chunk, cfg)
+            mappings["table_updates"].extend(batch.get("table_updates", []))
+            mappings["text_updates"].extend(batch.get("text_updates", []))
+    else:
+        mappings = get_metric_mappings(client, proforma_data, memo_content, cfg)
 
     # Save raw mappings for audit
     map_dump = os.path.join(output_dir, "mappings_raw.json")
