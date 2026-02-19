@@ -11,7 +11,7 @@ proforma:
     - "Development Summary"
     - "Cash Flow"
     - "Assumptions"
-    - "Comparison"
+    - "Proforma Comparison"
 
   # Maximum rows to read per tab (0 = read all rows).
   # Keeps API payload manageable; 250 is usually more than enough.
