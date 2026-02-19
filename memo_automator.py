@@ -466,13 +466,43 @@ def validate_mappings(
 # ============================================================================
 # 8. APPLY TEXT / TABLE UPDATES  (python-pptx)
 # ============================================================================
+def _replace_in_para(para, old_text: str, new_text: str) -> bool:
+    """
+    Replace old_text with new_text in a paragraph, handling the common
+    case where a value is split across multiple XML runs.
+
+    Strategy:
+    1. Try a direct single-run replacement first (fastest, preserves all formatting).
+    2. Fall back to a full-paragraph merge: concatenate all run texts, do the
+       replacement, write the result into the first run, and clear the rest.
+       This loses per-run character formatting within the cell but preserves
+       paragraph-level formatting (alignment, spacing), which is acceptable
+       for financial table values that are typically uniform within a cell.
+    """
+    # Pass 1: single-run replacement
+    for run in para.runs:
+        if old_text in run.text:
+            run.text = run.text.replace(old_text, new_text)
+            return True
+
+    # Pass 2: cross-run replacement
+    full_text = "".join(r.text for r in para.runs)
+    if old_text in full_text:
+        new_full = full_text.replace(old_text, new_text)
+        if para.runs:
+            para.runs[0].text = new_full
+            for run in para.runs[1:]:
+                run.text = ""
+        return True
+
+    return False
+
+
 def _replace_in_cell(cell, old_text: str, new_text: str) -> bool:
     """Replace old_text with new_text inside a table cell, preserving runs."""
     for para in cell.text_frame.paragraphs:
-        for run in para.runs:
-            if old_text in run.text:
-                run.text = run.text.replace(old_text, new_text)
-                return True
+        if _replace_in_para(para, old_text, new_text):
+            return True
     return False
 
 
@@ -483,10 +513,8 @@ def _replace_in_shape(shape, old_text: str, new_text: str) -> bool:
     for para in shape.text_frame.paragraphs:
         if old_text not in para.text:
             continue
-        for run in para.runs:
-            if old_text in run.text:
-                run.text = run.text.replace(old_text, new_text)
-                return True
+        if _replace_in_para(para, old_text, new_text):
+            return True
     return False
 
 
