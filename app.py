@@ -21,6 +21,7 @@ from memo_automator import (
     extract_schedule_data,
     get_metric_mappings,
     load_config,
+    normalize_layout,
     pre_validate_mappings,
     validate_mappings,
     write_change_log,
@@ -467,6 +468,15 @@ if st.button(
                 st.write(f"\U0001f3a8 Branded {n_branded} text runs")
             elif not os.path.exists(theme_path):
                 st.warning("Subtext Brand Theme not found — skipping branding")
+
+            # Step g2: Normalize layout — 95%
+            if not dry_run:
+                progress_bar.progress(95, text="Aligning layout...")
+                st.write("\U0001f4d0 Aligning layout...")
+                layout_summary = normalize_layout(memo_path, cfg)
+                log.info("Layout normalized: %s", layout_summary)
+                st.write(f"\U0001f4d0 Layout healed: {layout_summary['titles_snapped']} titles, "
+                         f"{layout_summary['page_numbers_snapped']} page numbers snapped")
 
             # Step h: Write change log — 96%
             progress_bar.progress(96, text="\U0001f4cb Printing the ticket...")

@@ -110,6 +110,12 @@ def load_config(config_path: str) -> dict:
     cfg.setdefault("branding", {})
     cfg["branding"].setdefault("heading_size_threshold", 18)
     cfg["branding"].setdefault("color_distance_threshold", 80)
+    cfg.setdefault("layout", {})
+    cfg["layout"].setdefault("margin_left", 0.50)
+    cfg["layout"].setdefault("margin_right", 0.50)
+    cfg["layout"].setdefault("margin_top", 0.25)
+    cfg["layout"].setdefault("margin_bottom", 0.50)
+    cfg["layout"].setdefault("snap_tolerance", 0.05)
     cfg.setdefault("claude", {})
     cfg["claude"].setdefault("model", "claude-sonnet-4-6")
     cfg["claude"].setdefault("validation_model", cfg["claude"]["model"])
@@ -1908,6 +1914,305 @@ def _reformat_run(run, is_heading_context: bool, size_threshold: int,
                 run.font.color.rgb = nearest
     except (AttributeError, TypeError):
         pass  # No color set or theme color — skip
+
+
+# ============================================================================
+# 9c. LAYOUT NORMALIZATION
+# ============================================================================
+def normalize_layout(memo_path: str, cfg: dict) -> dict:
+    """
+    Post-update layout healing: align titles, page numbers, TOC table,
+    and enforce margin bounds. Returns summary of changes made.
+    """
+    from collections import Counter
+    from pptx.enum.text import PP_ALIGN, MSO_AUTO_SIZE
+    from pptx.util import Inches, Emu
+
+    layout_cfg = cfg.get("layout", {})
+    margin_left = Inches(layout_cfg.get("margin_left", 0.50))
+    margin_right = Inches(layout_cfg.get("margin_right", 0.50))
+    margin_top = Inches(layout_cfg.get("margin_top", 0.25))
+    margin_bottom = Inches(layout_cfg.get("margin_bottom", 0.50))
+    snap_tol = Inches(layout_cfg.get("snap_tolerance", 0.05))
+
+    prs = Presentation(memo_path)
+    slide_width = prs.slide_width
+    slide_height = prs.slide_height
+
+    summary = {
+        "titles_snapped": 0,
+        "page_numbers_snapped": 0,
+        "section_headers_aligned": 0,
+        "toc_formatted": False,
+        "shapes_clamped_to_margins": 0,
+        "auto_size_applied": 0,
+    }
+
+    # ------------------------------------------------------------------
+    # 1a. Title alignment — snap outlier titles to the dominant position
+    # ------------------------------------------------------------------
+    title_positions = []  # list of (slide_idx, shape, left, top, width, height)
+    for idx, slide in enumerate(prs.slides):
+        if idx == 0:
+            continue  # skip cover
+        for shape in slide.placeholders:
+            try:
+                ph_idx = shape.placeholder_format.idx
+            except Exception:
+                ph_idx = None
+            is_title = (
+                ph_idx == 0
+                or (shape.name and shape.name.lower().startswith("title"))
+            )
+            if is_title:
+                title_positions.append(
+                    (idx, shape, shape.left, shape.top, shape.width, shape.height)
+                )
+                break  # one title per slide
+
+    if title_positions:
+        mode_left = Counter(p[2] for p in title_positions).most_common(1)[0][0]
+        mode_top = Counter(p[3] for p in title_positions).most_common(1)[0][0]
+        mode_width = Counter(p[4] for p in title_positions).most_common(1)[0][0]
+        mode_height = Counter(p[5] for p in title_positions).most_common(1)[0][0]
+
+        for slide_idx, shape, left, top, width, height in title_positions:
+            snapped = False
+            if abs(left - mode_left) > snap_tol:
+                shape.left = mode_left
+                snapped = True
+            if abs(top - mode_top) > snap_tol:
+                shape.top = mode_top
+                snapped = True
+            if abs(width - mode_width) > snap_tol:
+                shape.width = mode_width
+                snapped = True
+            if abs(height - mode_height) > snap_tol:
+                shape.height = mode_height
+                snapped = True
+            if snapped:
+                summary["titles_snapped"] += 1
+                log.info("Title snapped on slide %d", slide_idx + 1)
+
+    # ------------------------------------------------------------------
+    # 1b. Page number alignment
+    # ------------------------------------------------------------------
+    pn_positions = []
+    for idx, slide in enumerate(prs.slides):
+        for shape in slide.placeholders:
+            try:
+                ph_idx = shape.placeholder_format.idx
+            except Exception:
+                ph_idx = None
+            is_pn = (
+                ph_idx == 12
+                or (shape.name and "slide number" in shape.name.lower())
+            )
+            if is_pn:
+                pn_positions.append(
+                    (idx, shape, shape.left, shape.top, shape.width, shape.height)
+                )
+                break
+
+    if pn_positions:
+        pn_mode_left = Counter(p[2] for p in pn_positions).most_common(1)[0][0]
+        pn_mode_top = Counter(p[3] for p in pn_positions).most_common(1)[0][0]
+        pn_mode_width = Counter(p[4] for p in pn_positions).most_common(1)[0][0]
+        pn_mode_height = Counter(p[5] for p in pn_positions).most_common(1)[0][0]
+
+        for slide_idx, shape, left, top, width, height in pn_positions:
+            snapped = False
+            if abs(left - pn_mode_left) > snap_tol:
+                shape.left = pn_mode_left
+                snapped = True
+            if abs(top - pn_mode_top) > snap_tol:
+                shape.top = pn_mode_top
+                snapped = True
+            if abs(width - pn_mode_width) > snap_tol:
+                shape.width = pn_mode_width
+                snapped = True
+            if abs(height - pn_mode_height) > snap_tol:
+                shape.height = pn_mode_height
+                snapped = True
+            if snapped:
+                summary["page_numbers_snapped"] += 1
+                log.info("Page number snapped on slide %d", slide_idx + 1)
+
+    # ------------------------------------------------------------------
+    # 1c. Section header alignment (Content Placeholder 2 with short text ending in ":")
+    # ------------------------------------------------------------------
+    section_headers = []
+    for idx, slide in enumerate(prs.slides):
+        if idx == 0:
+            continue
+        for shape in slide.placeholders:
+            if not (shape.name and "content placeholder 2" in shape.name.lower()):
+                continue
+            if not shape.has_text_frame:
+                continue
+            text = shape.text_frame.text.strip()
+            if text and len(text) < 60 and text.endswith(":"):
+                section_headers.append((idx, shape))
+
+    if section_headers:
+        sh_mode_left = Counter(s[1].left for s in section_headers).most_common(1)[0][0]
+        sh_mode_width = Counter(s[1].width for s in section_headers).most_common(1)[0][0]
+
+        for slide_idx, shape in section_headers:
+            aligned = False
+            if abs(shape.left - sh_mode_left) > snap_tol:
+                shape.left = sh_mode_left
+                aligned = True
+            if abs(shape.width - sh_mode_width) > snap_tol:
+                shape.width = sh_mode_width
+                aligned = True
+            if aligned:
+                summary["section_headers_aligned"] += 1
+                log.info("Section header aligned on slide %d", slide_idx + 1)
+
+    # ------------------------------------------------------------------
+    # 1d. TOC table formatting
+    # ------------------------------------------------------------------
+    for slide in prs.slides:
+        is_toc = False
+        for shape in slide.placeholders:
+            try:
+                ph_idx = shape.placeholder_format.idx
+            except Exception:
+                ph_idx = None
+            if ph_idx == 0 or (shape.name and shape.name.lower().startswith("title")):
+                title_text = shape.text_frame.text.lower() if shape.has_text_frame else ""
+                if "table of contents" in title_text or "contents" in title_text:
+                    is_toc = True
+                    break
+        if not is_toc:
+            continue
+
+        for shape in slide.shapes:
+            if not shape.has_table:
+                continue
+            table = shape.table
+            n_cols = len(table.columns)
+            if n_cols < 2:
+                continue
+
+            # Right-align last column, left-align others
+            for row in table.rows:
+                for col_idx, cell in enumerate(row.cells):
+                    for para in cell.text_frame.paragraphs:
+                        if col_idx == n_cols - 1:
+                            para.alignment = PP_ALIGN.RIGHT
+                        else:
+                            para.alignment = PP_ALIGN.LEFT
+
+            # Enforce minimum row height (0.45")
+            min_row_height = Inches(0.45)
+            for row in table.rows:
+                if row.height < min_row_height:
+                    row.height = min_row_height
+
+            # Set column widths proportionally: ~45% / ~40% / ~15%
+            table_width = sum(col.width for col in table.columns)
+            if n_cols >= 3:
+                table.columns[0].width = int(table_width * 0.45)
+                table.columns[1].width = int(table_width * 0.40)
+                table.columns[n_cols - 1].width = int(table_width * 0.15)
+                # Distribute remainder to middle columns if > 3
+                if n_cols > 3:
+                    assigned = (int(table_width * 0.45) + int(table_width * 0.15)
+                                + int(table_width * 0.40))
+                    remainder = table_width - assigned
+                    for c in range(2, n_cols - 1):
+                        table.columns[c].width = remainder // (n_cols - 3)
+            elif n_cols == 2:
+                table.columns[0].width = int(table_width * 0.85)
+                table.columns[1].width = int(table_width * 0.15)
+
+            summary["toc_formatted"] = True
+            log.info("TOC table formatted")
+        if is_toc:
+            break  # only one TOC slide
+
+    # ------------------------------------------------------------------
+    # 1e. Margin enforcement
+    # ------------------------------------------------------------------
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    right_limit = slide_width - margin_right
+    bottom_limit = slide_height - margin_bottom
+
+    for idx, slide in enumerate(prs.slides):
+        if idx == 0:
+            continue  # skip cover
+        for shape in slide.shapes:
+            # Skip pictures/images (may be intentionally full-bleed)
+            try:
+                if shape.shape_type in (
+                    MSO_SHAPE_TYPE.PICTURE,
+                    MSO_SHAPE_TYPE.LINKED_PICTURE,
+                    MSO_SHAPE_TYPE.MEDIA,
+                ):
+                    continue
+            except Exception:
+                pass
+
+            clamped = False
+
+            # Clamp left
+            if shape.left < margin_left:
+                shape.left = margin_left
+                clamped = True
+
+            # Clamp top
+            if shape.top < margin_top:
+                shape.top = margin_top
+                clamped = True
+
+            # Clamp right overflow: shrink width first, then shift
+            if shape.left + shape.width > right_limit:
+                overflow = (shape.left + shape.width) - right_limit
+                if shape.width > overflow:
+                    shape.width -= overflow
+                else:
+                    shape.left = right_limit - shape.width
+                clamped = True
+
+            # Clamp bottom overflow: shrink height first, then shift
+            if shape.top + shape.height > bottom_limit:
+                overflow = (shape.top + shape.height) - bottom_limit
+                if shape.height > overflow:
+                    shape.height -= overflow
+                else:
+                    shape.top = bottom_limit - shape.height
+                clamped = True
+
+            if clamped:
+                summary["shapes_clamped_to_margins"] += 1
+                log.info("Shape '%s' clamped to margins on slide %d",
+                         shape.name, idx + 1)
+
+    # ------------------------------------------------------------------
+    # 1f. Text overflow protection
+    # ------------------------------------------------------------------
+    for idx, slide in enumerate(prs.slides):
+        for shape in slide.shapes:
+            if not shape.has_text_frame:
+                continue
+            tf = shape.text_frame
+            # Ensure word wrap is on
+            if not tf.word_wrap:
+                tf.word_wrap = True
+            # Apply auto-size (shrink text to fit) on content shapes
+            try:
+                if tf.auto_size != MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE:
+                    tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+                    summary["auto_size_applied"] += 1
+            except Exception:
+                pass  # some shapes don't support auto_size
+
+    prs.save(memo_path)
+    log.info("Layout normalized: %s", summary)
+    return summary
 
 
 # ============================================================================

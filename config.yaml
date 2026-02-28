@@ -48,6 +48,14 @@ claude:
 schedule:
   max_tasks: 500
 
+# --- Layout normalization ---
+layout:
+  margin_left: 0.50       # inches
+  margin_right: 0.50
+  margin_top: 0.25
+  margin_bottom: 0.50
+  snap_tolerance: 0.05    # inches; shapes within this delta are considered aligned
+
 # --- Branding settings ---
 branding:
   # Path to Subtext Brand Theme (.thmx). If empty, looks beside app.py.
