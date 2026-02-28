@@ -12,6 +12,7 @@ import anthropic
 import streamlit as st
 
 from memo_automator import (
+    apply_branding,
     apply_updates,
     chunk_memo_by_pages,
     create_backup,
@@ -454,7 +455,20 @@ if st.button(
             st.write("\U0001f37d\ufe0f Plating the dish...")
             changes = apply_updates(memo_path, validated, dry_run=dry_run)
 
-            # Step g: Write change log — 96%
+            # Step g: Apply Subtext branding — 93%
+            progress_bar.progress(93, text="\U0001f3a8 Applying Subtext branding...")
+            st.write("\U0001f3a8 Applying Subtext branding...")
+            theme_path = cfg.get("branding", {}).get("theme_path", "")
+            if not theme_path:
+                # Default: look for theme beside this script
+                theme_path = os.path.join(os.path.dirname(__file__), "Subtext Brand Theme.thmx")
+            if os.path.exists(theme_path) and not dry_run:
+                n_branded = apply_branding(memo_path, theme_path, cfg)
+                st.write(f"\U0001f3a8 Branded {n_branded} text runs")
+            elif not os.path.exists(theme_path):
+                st.warning("Subtext Brand Theme not found — skipping branding")
+
+            # Step h: Write change log — 96%
             progress_bar.progress(96, text="\U0001f4cb Printing the ticket...")
             st.write("\U0001f4cb Printing the ticket...")
             log_path = write_change_log(

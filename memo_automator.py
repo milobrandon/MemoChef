@@ -107,6 +107,9 @@ def load_config(config_path: str) -> dict:
     cfg["memo"].setdefault("pages", "all")
     cfg.setdefault("schedule", {})
     cfg["schedule"].setdefault("max_tasks", 500)
+    cfg.setdefault("branding", {})
+    cfg["branding"].setdefault("heading_size_threshold", 18)
+    cfg["branding"].setdefault("color_distance_threshold", 80)
     cfg.setdefault("claude", {})
     cfg["claude"].setdefault("model", "claude-sonnet-4-6")
     cfg["claude"].setdefault("validation_model", cfg["claude"]["model"])
@@ -1756,6 +1759,155 @@ def apply_updates(memo_path: str, mappings: dict, dry_run: bool = False) -> list
         log.info("Dry-run: %d updates identified (not saved).", len(changes))
 
     return changes
+
+
+# ============================================================================
+# 9b. BRANDING REFORMAT
+# ============================================================================
+# Subtext Brand palette (from Subtext Brand Theme.thmx)
+_BRAND_COLORS = [
+    (0x2B, 0x28, 0x25),  # dk1 — near-black brown
+    (0xFF, 0xFF, 0xFF),  # lt1 — white
+    (0x16, 0x35, 0x2E),  # dk2 — deep forest green
+    (0xF7, 0xF1, 0xE3),  # lt2 — warm cream
+    (0xC1, 0xD1, 0x00),  # accent1 — lime/chartreuse
+    (0xA9, 0x58, 0x18),  # accent3 — burnt orange
+    (0x51, 0x22, 0x13),  # accent4 — dark mahogany
+]
+
+
+def _color_distance(c1: tuple, c2: tuple) -> float:
+    """Euclidean RGB distance between two (r,g,b) tuples."""
+    return ((c1[0]-c2[0])**2 + (c1[1]-c2[1])**2 + (c1[2]-c2[2])**2) ** 0.5
+
+
+def _nearest_brand_color(r: int, g: int, b: int, threshold: float = 80.0):
+    """
+    Return the nearest brand color as an RGBColor if within threshold,
+    otherwise None.
+    """
+    from pptx.dml.color import RGBColor
+    best_dist = float("inf")
+    best_color = None
+    for bc in _BRAND_COLORS:
+        d = _color_distance((r, g, b), bc)
+        if d < best_dist:
+            best_dist = d
+            best_color = bc
+    if best_dist <= threshold:
+        return RGBColor(*best_color)
+    return None
+
+
+def apply_branding(memo_path: str, theme_path: str, cfg: dict) -> int:
+    """
+    Apply Subtext branding to the entire memo:
+    1. Replace the PPTX theme XML with the Subtext Brand Theme
+    2. Reformat all text runs to Pragmatica fonts
+    3. Remap hard-coded colors to nearest brand color
+
+    Returns the number of text runs reformatted.
+    """
+    import zipfile
+    from pptx.dml.color import RGBColor
+    from pptx.enum.text import PP_ALIGN
+
+    branding_cfg = cfg.get("branding", {})
+    heading_threshold = branding_cfg.get("heading_size_threshold", 18)
+    color_threshold = branding_cfg.get("color_distance_threshold", 80)
+    heading_font = "Pragmatica Bold"
+    body_font = "Pragmatica Book"
+
+    # --- Step 1: Replace theme XML ---
+    log.info("Replacing PPTX theme with Subtext Brand Theme...")
+
+    # Extract theme XML from .thmx
+    with zipfile.ZipFile(theme_path, "r") as thmx:
+        theme_xml = thmx.read("theme/theme/theme1.xml")
+
+    # Replace theme in PPTX (it's a zip archive)
+    import io
+    with zipfile.ZipFile(memo_path, "r") as zin:
+        # Find the theme file path in the PPTX
+        theme_entries = [n for n in zin.namelist() if n.startswith("ppt/theme/theme") and n.endswith(".xml")]
+        if not theme_entries:
+            log.warning("No theme XML found in PPTX — skipping theme replacement")
+        else:
+            theme_entry = theme_entries[0]
+            # Rewrite the zip with the new theme
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zout:
+                for item in zin.infolist():
+                    if item.filename == theme_entry:
+                        zout.writestr(item, theme_xml)
+                    else:
+                        zout.writestr(item, zin.read(item.filename))
+            # Write back
+            with open(memo_path, "wb") as f:
+                f.write(buf.getvalue())
+            log.info("Theme replaced: %s", theme_entry)
+
+    # --- Step 2 & 3: Reformat fonts and colors ---
+    log.info("Reformatting fonts and colors...")
+    prs = Presentation(memo_path)
+    runs_reformatted = 0
+
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            # Process text frames (text boxes, placeholders)
+            if shape.has_text_frame:
+                is_title = shape.shape_type is not None and "TITLE" in str(shape.shape_type)
+                for para in shape.text_frame.paragraphs:
+                    for run in para.runs:
+                        _reformat_run(run, is_title, heading_threshold,
+                                      heading_font, body_font, color_threshold)
+                        runs_reformatted += 1
+
+            # Process table cells
+            if shape.has_table:
+                table = shape.table
+                for row_idx, row in enumerate(table.rows):
+                    for cell in row.cells:
+                        is_header = (row_idx == 0)
+                        for para in cell.text_frame.paragraphs:
+                            for run in para.runs:
+                                _reformat_run(run, is_header, heading_threshold,
+                                              heading_font, body_font,
+                                              color_threshold)
+                                runs_reformatted += 1
+
+    prs.save(memo_path)
+    log.info("Branding applied: %d text runs reformatted", runs_reformatted)
+    return runs_reformatted
+
+
+def _reformat_run(run, is_heading_context: bool, size_threshold: int,
+                  heading_font: str, body_font: str, color_threshold: float):
+    """Reformat a single text run's font and color."""
+    from pptx.dml.color import RGBColor
+
+    # Determine if this run is a heading
+    font_size = run.font.size
+    if font_size is not None:
+        size_pt = font_size.pt
+    else:
+        size_pt = 0
+
+    is_heading = is_heading_context or size_pt >= size_threshold
+
+    # Set font family
+    run.font.name = heading_font if is_heading else body_font
+
+    # Remap color if it's a hard-coded RGB
+    try:
+        color = run.font.color
+        if color.type is not None and color.rgb is not None:
+            r, g, b = color.rgb[0], color.rgb[1], color.rgb[2]
+            nearest = _nearest_brand_color(r, g, b, color_threshold)
+            if nearest is not None:
+                run.font.color.rgb = nearest
+    except (AttributeError, TypeError):
+        pass  # No color set or theme color — skip
 
 
 # ============================================================================

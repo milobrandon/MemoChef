@@ -47,3 +47,10 @@ claude:
 # --- Schedule settings ---
 schedule:
   max_tasks: 500
+
+# --- Branding settings ---
+branding:
+  # Path to Subtext Brand Theme (.thmx). If empty, looks beside app.py.
+  theme_path: ""
+  heading_size_threshold: 18    # pt; >= this uses Pragmatica Bold
+  color_distance_threshold: 80  # RGB Euclidean distance; skip if further
