@@ -186,14 +186,30 @@ def _ensure_jvm():
     if jpype.isJVMStarted():
         return
 
-    import mpxj
-    jars_dir = os.path.join(os.path.dirname(mpxj.__file__), "lib")
-    # Build classpath from all jars in the mpxj lib directory
-    jars = [os.path.join(jars_dir, f) for f in os.listdir(jars_dir) if f.endswith(".jar")]
-    classpath = os.pathsep.join(jars)
+    # Auto-discover JAVA_HOME if not set
+    if not os.environ.get("JAVA_HOME"):
+        search_dirs = [
+            os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "Microsoft"),
+            os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "Java"),
+            os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "Eclipse Adoptium"),
+        ]
+        for search_dir in search_dirs:
+            if os.path.isdir(search_dir):
+                for entry in sorted(os.listdir(search_dir), reverse=True):
+                    if "jdk" in entry.lower():
+                        candidate = os.path.join(search_dir, entry)
+                        if os.path.isdir(candidate):
+                            os.environ["JAVA_HOME"] = candidate
+                            log.info("Auto-discovered JAVA_HOME: %s", candidate)
+                            break
+            if os.environ.get("JAVA_HOME"):
+                break
 
-    jpype.startJVM(classpath=[classpath])
-    log.info("JVM started with %d jars from %s", len(jars), jars_dir)
+    # Import mpxj — this adds all jars to jpype classpath via addClassPath()
+    import mpxj  # noqa: F811 — re-import to trigger classpath setup
+
+    jpype.startJVM()
+    log.info("JVM started with classpath from mpxj")
 
 
 def extract_schedule_data(schedule_path: str, cfg: dict) -> str:
@@ -211,7 +227,7 @@ def extract_schedule_data(schedule_path: str, cfg: dict) -> str:
     max_tasks = cfg.get("schedule", {}).get("max_tasks", 500)
 
     log.info("Opening schedule: %s", schedule_path)
-    reader = jpype.JClass("net.sf.mpxj.reader.UniversalProjectReader")()
+    reader = jpype.JClass("org.mpxj.reader.UniversalProjectReader")()
     project = reader.read(JavaFile(schedule_path))
 
     lines = []
