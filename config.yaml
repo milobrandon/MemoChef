@@ -18,7 +18,7 @@ proforma:
   max_rows_per_tab: 250
 
   # Maximum columns to read per tab (0 = read all columns).
-  max_cols_per_tab: 30
+  max_cols_per_tab: 20
 
 # --- Memo settings ---
 memo:
@@ -28,13 +28,18 @@ memo:
 
 # --- Claude API settings ---
 claude:
-  # Model to use for the mapping analysis.
-  # "claude-sonnet-4-20250514" is fast and cost-effective.
-  # "claude-opus-4-20250514" is slower but more accurate for complex memos.
-  model: "claude-opus-4-6"
+  # Model for Step 4 (metric mapping). Sonnet is fast and accurate for
+  # identifying which memo values map to which proforma cells.
+  model: "claude-sonnet-4-6"
 
-  # Max tokens for the mapping response
-  max_tokens: 16000
+  # Model for Step 5 (QA validation). Opus with adaptive thinking catches
+  # subtle errors that Sonnet might miss (formatting, false matches).
+  # Set to same as model above to use a single model for both steps.
+  validation_model: "claude-sonnet-4-6"
 
-  # Temperature (0 = deterministic; recommended for financial data)
+  # Max tokens for the API response.
+  # Dense table pages (cash flow, dev budget) can produce 30K+ chars of JSON.
+  max_tokens: 64000
+
+  # Temperature (0 = deterministic; recommended for financial data).
   temperature: 0
