@@ -105,6 +105,8 @@ def load_config(config_path: str) -> dict:
     cfg["proforma"].setdefault("max_cols_per_tab", 30)
     cfg.setdefault("memo", {})
     cfg["memo"].setdefault("pages", "all")
+    cfg.setdefault("schedule", {})
+    cfg["schedule"].setdefault("max_tasks", 500)
     cfg.setdefault("claude", {})
     cfg["claude"].setdefault("model", "claude-sonnet-4-6")
     cfg["claude"].setdefault("validation_model", cfg["claude"]["model"])
@@ -173,6 +175,96 @@ def extract_proforma_data(proforma_path: str, cfg: dict) -> str:
     log.info("Proforma extraction complete (%d lines, %d chars)",
              len(lines), len(proforma_text))
     return proforma_text
+
+
+# ============================================================================
+# 4b. SCHEDULE DATA EXTRACTION  (mpxj via jpype)
+# ============================================================================
+def _ensure_jvm():
+    """Start the JVM once for mpxj access. No-op if already running."""
+    import jpype
+    if jpype.isJVMStarted():
+        return
+
+    import mpxj
+    jars_dir = os.path.join(os.path.dirname(mpxj.__file__), "lib")
+    # Build classpath from all jars in the mpxj lib directory
+    jars = [os.path.join(jars_dir, f) for f in os.listdir(jars_dir) if f.endswith(".jar")]
+    classpath = os.pathsep.join(jars)
+
+    jpype.startJVM(classpath=[classpath])
+    log.info("JVM started with %d jars from %s", len(jars), jars_dir)
+
+
+def extract_schedule_data(schedule_path: str, cfg: dict) -> str:
+    """
+    Read a Microsoft Project (.mpp) schedule and return a hierarchical text
+    representation of tasks with dates and durations.
+
+    Uses mpxj (via jpype) to parse the .mpp file.
+    """
+    _ensure_jvm()
+
+    import jpype
+    from java.io import File as JavaFile
+
+    max_tasks = cfg.get("schedule", {}).get("max_tasks", 500)
+
+    log.info("Opening schedule: %s", schedule_path)
+    reader = jpype.JClass("net.sf.mpxj.reader.UniversalProjectReader")()
+    project = reader.read(JavaFile(schedule_path))
+
+    lines = []
+    lines.append(f"\n{'='*70}")
+    lines.append("SCHEDULE DATA (from Microsoft Project)")
+    lines.append(f"{'='*70}")
+
+    task_count = 0
+    for task in project.getTasks():
+        if task_count >= max_tasks:
+            lines.append(f"... (truncated at {max_tasks} tasks)")
+            break
+
+        name = str(task.getName()) if task.getName() else ""
+        # Skip L0 unnamed separator tasks (grouping containers)
+        outline_level = task.getOutlineLevel()
+        if outline_level is not None:
+            level = int(str(outline_level))
+        else:
+            level = 0
+        if level == 0 and not name.strip():
+            continue
+
+        # Get dates and duration
+        start = task.getStart()
+        finish = task.getFinish()
+        duration = task.getDuration()
+
+        start_str = str(start).split("T")[0] if start else "N/A"
+        finish_str = str(finish).split("T")[0] if finish else "N/A"
+
+        if duration:
+            dur_str = str(duration)
+        else:
+            dur_str = "0d"
+
+        # Milestone detection
+        is_milestone = task.getMilestone() if task.getMilestone() is not None else False
+        milestone_tag = "  [MILESTONE]" if is_milestone else ""
+
+        indent = "  " * max(level - 1, 0)
+        level_tag = f"[L{level}]"
+
+        lines.append(
+            f"{indent}{level_tag} {name}{milestone_tag}  |  "
+            f"Start: {start_str}  |  Finish: {finish_str}  |  Dur: {dur_str}"
+        )
+        task_count += 1
+
+    schedule_text = "\n".join(lines)
+    log.info("Schedule extraction complete (%d tasks, %d chars)",
+             task_count, len(schedule_text))
+    return schedule_text
 
 
 # ============================================================================
@@ -393,6 +485,24 @@ metric in the memo that should be updated with new values from the proforma.
       subject property column; leave all other columns EMPTY (comps
       have no data for these types). Place after the last unit section.
     - Set `insert_after_row_label` to column 0 text of the row to insert AFTER.
+
+18. **Schedule milestones and dates** — When schedule data is provided below the
+    proforma data (under "SCHEDULE DATA"), update project timeline tables and
+    narrative date references in the memo:
+    - **Entitlement approval** start/finish dates (e.g., "Level II Development Plan",
+      "Governmental Approvals", "Zoning", any task containing "entitlement")
+    - **Building permit** start/finish dates (tasks containing "permit")
+    - **Project closing / anticipated closing** dates
+    - **Construction start/end** — including sub-phases: abatement, demolition,
+      foundation, and vertical construction dates
+    - **CO / Certificate of Occupancy** and **substantial completion** dates
+    - **Move-in / delivery** dates
+    - Dates in narrative text (e.g., "construction is expected to begin in Q2 2027")
+      should be updated to match the schedule, using the same format as the memo
+      (e.g., "Q2 2027", "April 2027", "4/5/2027")
+    - For contract/earnest money milestones: update deposit amounts and when money
+      goes hard (non-refundable) dates if they appear in the memo
+    - Use the `source` field format: "Schedule: [task name]"
 
 CRITICAL: Return ONLY the raw JSON object below. Do NOT include any analysis,
 reasoning, explanation, or commentary before or after the JSON. Your entire
@@ -832,6 +942,10 @@ Additional domain rules to enforce:
 - For **row_inserts** in side-by-side comp tables, verify ONLY the subject
   property column is populated — all other columns must be empty strings.
   Reject any row_insert that fills comparable property columns.
+- **Schedule dates** must match the schedule data exactly. If a date was updated
+  from the schedule, verify the correct task was referenced. Date formatting must
+  match the memo's existing style (Q2 2027 vs April 2027 vs 4/5/2027). Flag as
+  missed if the memo references timeline milestones that were not updated.
 {property_name_section}"""
 
 

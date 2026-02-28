@@ -43,3 +43,7 @@ claude:
 
   # Temperature (0 = deterministic; recommended for financial data).
   temperature: 0
+
+# --- Schedule settings ---
+schedule:
+  max_tasks: 500

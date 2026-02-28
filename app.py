@@ -4,13 +4,12 @@
 import logging
 import os
 import re
-import shutil
 import tempfile
 import time
 
+
 import anthropic
 import streamlit as st
-from dotenv import load_dotenv
 
 from memo_automator import (
     apply_updates,
@@ -18,6 +17,7 @@ from memo_automator import (
     create_backup,
     extract_memo_content,
     extract_proforma_data,
+    extract_schedule_data,
     get_metric_mappings,
     load_config,
     pre_validate_mappings,
@@ -29,6 +29,38 @@ from memo_automator import (
 # PAGE CONFIG
 # ============================================================================
 st.set_page_config(page_title="Memo Chef", page_icon="\U0001f9d1\u200d\U0001f373", layout="centered")
+
+
+# ============================================================================
+# PASSWORD GATE
+# ============================================================================
+def check_password() -> bool:
+    """Show a login form and return True only when the correct password is entered."""
+    if st.session_state.get("authenticated"):
+        return True
+
+    try:
+        app_password = st.secrets["APP_PASSWORD"]
+    except (KeyError, FileNotFoundError):
+        st.error("APP_PASSWORD not configured in Streamlit secrets.")
+        st.stop()
+
+    st.title("\U0001f512 Memo Chef — Login")
+    with st.form("login_form"):
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Log in")
+    if submitted:
+        if password == app_password:
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Incorrect password.")
+    st.stop()
+
+
+if not check_password():
+    st.stop()
+
 st.title("\U0001f9d1\u200d\U0001f373 Memo Chef")
 st.caption("From raw ingredients to a Michelin-star memo")
 
@@ -166,10 +198,8 @@ CHEF_SHRIMP_HTML = """
 def _get_api_key() -> str | None:
     try:
         return st.secrets["ANTHROPIC_API_KEY"]
-    except Exception:
-        load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
-        load_dotenv()
-        return os.getenv("ANTHROPIC_API_KEY")
+    except (KeyError, FileNotFoundError):
+        return None
 
 
 # ============================================================================
@@ -188,9 +218,10 @@ class _LogCapture(logging.Handler):
 # MISE EN PLACE  (ingredient uploaders)
 # ============================================================================
 st.subheader("\U0001f52a Mise en Place")
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 memo_file = col1.file_uploader("The Memo (.pptx)", type=["pptx"])
 proforma_file = col2.file_uploader("The Proforma (.xlsx / .xlsm)", type=["xlsx", "xlsm"])
+schedule_file = col3.file_uploader("The Schedule (.mpp)", type=["mpp"])
 
 property_name = st.text_input(
     "Property Name (as shown in proforma)",
@@ -222,17 +253,17 @@ if st.button(
     if not api_key:
         st.error(
             "86'd! ANTHROPIC_API_KEY not found. "
-            "Add it to .env (local) or Streamlit secrets (cloud)."
+            "Add it to Streamlit secrets (.streamlit/secrets.toml or Cloud dashboard)."
         )
         st.stop()
 
-    tmpdir = tempfile.mkdtemp()
     logger = logging.getLogger("memo_automator")
     log_handler = _LogCapture()
     log_handler.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-8s  %(message)s"))
     logger.addHandler(log_handler)
 
-    try:
+    with tempfile.TemporaryDirectory() as tmpdir:
+      try:
         # Save uploaded files to tmpdir
         memo_path = os.path.join(tmpdir, memo_file.name)
         proforma_path = os.path.join(tmpdir, proforma_file.name)
@@ -268,12 +299,34 @@ if st.button(
             # Step b: Extract proforma
             progress_bar.progress(8, text="\U0001f52a Breaking down the proforma...")
             st.write("\U0001f52a Breaking down the proforma...")
-            proforma_data = extract_proforma_data(proforma_path, cfg)
+            try:
+                proforma_data = extract_proforma_data(proforma_path, cfg)
+            except Exception as e:
+                st.error(f"Could not read the proforma file. Is it a valid .xlsx/.xlsm? ({e})")
+                st.stop()
+
+            # Step b2: Extract schedule (optional)
+            if schedule_file:
+                progress_bar.progress(12, text="\U0001f4c5 Reading the schedule...")
+                st.write("\U0001f4c5 Reading the schedule...")
+                schedule_path = os.path.join(tmpdir, schedule_file.name)
+                with open(schedule_path, "wb") as f:
+                    f.write(schedule_file.getvalue())
+                try:
+                    schedule_data = extract_schedule_data(schedule_path, cfg)
+                    proforma_data += "\n\n" + schedule_data
+                except Exception as e:
+                    st.error(f"Could not read the schedule. Is it a valid .mpp? ({e})")
+                    st.stop()
 
             # Step c: Extract memo
             progress_bar.progress(15, text="\U0001f4dc Reading the old ticket...")
             st.write("\U0001f4dc Reading the old ticket...")
-            memo_content = extract_memo_content(memo_path, cfg)
+            try:
+                memo_content = extract_memo_content(memo_path, cfg)
+            except Exception as e:
+                st.error(f"Could not read the memo file. Is it a valid .pptx? ({e})")
+                st.stop()
 
             # Step d: Map metrics (mirrors main() batching logic exactly)
             # Progress: 15% -> 70% for mapping
@@ -307,7 +360,8 @@ if st.button(
                     try:
                         batch = get_metric_mappings(client, proforma_data, chunk, cfg,
                                                    property_name=property_name)
-                    except Exception:
+                    except (anthropic.APIError, anthropic.APIConnectionError, Exception) as e:
+                        st.warning(f"Batch {i}/{n_chunks} failed: {e}")
                         batch = {"table_updates": [], "text_updates": [],
                                  "row_inserts": [], "_truncated": True}
 
@@ -342,7 +396,8 @@ if st.button(
                                     client, proforma_data, sub_chunk, cfg,
                                     property_name=property_name,
                                 )
-                            except Exception:
+                            except (anthropic.APIError, anthropic.APIConnectionError, Exception) as e:
+                                st.warning(f"Sub-batch {j} retry failed: {e}")
                                 continue
                             sub_batch.pop("_truncated", False)
                             mappings["table_updates"].extend(
@@ -406,9 +461,6 @@ if st.button(
                 tmpdir, changes, validated, memo_path, proforma_path, backup_path
             )
 
-            # Hide animation now that we're done
-            anim_placeholder.empty()
-
             n_changes = len(changes)
             progress_bar.progress(100, text=f"\U0001f31f Order up! {n_changes} updates plated.")
             status.update(
@@ -434,14 +486,17 @@ if st.button(
         st.session_state["n_missed"] = n_missed
         st.session_state["log_lines"] = log_handler.lines[:]
 
-    except Exception as e:
-        anim_placeholder = None  # may not be defined if error was early
+      except Exception as e:
         st.error(f"In the weeds! {e}")
         raise
 
-    finally:
+      finally:
+        # Always clear animation and clean up logging handler
+        try:
+            anim_placeholder.empty()
+        except Exception:
+            pass
         logger.removeHandler(log_handler)
-        shutil.rmtree(tmpdir, ignore_errors=True)
 
 # ============================================================================
 # SERVICE WINDOW  (results -- persists from session_state across reruns)
