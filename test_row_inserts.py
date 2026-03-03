@@ -4,9 +4,6 @@ Tests _find_row_by_label, _add_table_row, and apply_updates with row_inserts.
 No API calls required.
 """
 import os
-import tempfile
-
-import pytest
 from pptx import Presentation
 
 from memo_automator import (

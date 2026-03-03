@@ -2,6 +2,7 @@
 import os
 import tempfile
 
+import openpyxl
 import pytest
 from pptx import Presentation
 from pptx.util import Inches
@@ -49,6 +50,13 @@ def sample_pptx(tmp_dir):
     table.cell(3, 1).text = "150"
     table.cell(3, 2).text = "$1,250"
 
+    # Narrative text shape for text update tests
+    text_box = slide.shapes.add_textbox(
+        Inches(0.5), Inches(4.5), Inches(8.0), Inches(1.0)
+    )
+    text_box.name = "NarrativeBox"
+    text_box.text_frame.text = "IRR is 5.0% and units are 120."
+
     prs.save(path)
     return path
 
@@ -72,4 +80,77 @@ def sample_config(tmp_dir):
             "  max_tokens: 8000\n"
             "  temperature: 0\n"
         )
+    return path
+
+
+@pytest.fixture
+def sample_proforma_xlsx(tmp_dir):
+    """Create a synthetic proforma workbook with two relevant tabs."""
+    path = os.path.join(tmp_dir, "proforma.xlsx")
+    wb = openpyxl.Workbook()
+
+    ws1 = wb.active
+    ws1.title = "Executive Summary"
+    ws1["A1"] = "Metric"
+    ws1["B1"] = "Value"
+    ws1["A2"] = "IRR"
+    ws1["B2"] = "6.5%"
+    ws1["A3"] = "Units"
+    ws1["B3"] = 130
+
+    ws2 = wb.create_sheet("Cash Flow")
+    ws2["A1"] = "Year"
+    ws2["B1"] = "NOI"
+    ws2["A2"] = 2026
+    ws2["B2"] = 1200000
+
+    wb.save(path)
+    wb.close()
+    return path
+
+
+@pytest.fixture
+def empty_proforma_xlsx(tmp_dir):
+    """Create a proforma with expected tab names but no data rows."""
+    path = os.path.join(tmp_dir, "empty_proforma.xlsx")
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Executive Summary"
+    wb.create_sheet("Cash Flow")
+    wb.save(path)
+    wb.close()
+    return path
+
+
+@pytest.fixture
+def layout_test_pptx(tmp_dir):
+    """
+    Create a deck with two content slides and intentionally misaligned
+    elements so normalize_layout() has work to do.
+    """
+    path = os.path.join(tmp_dir, "layout_test.pptx")
+    prs = Presentation()
+
+    # Cover slide (ignored by normalize_layout title alignment)
+    cover = prs.slides.add_slide(prs.slide_layouts[0])
+    cover.shapes.title.text = "Cover"
+
+    # Baseline content slide
+    slide1 = prs.slides.add_slide(prs.slide_layouts[1])
+    slide1.shapes.title.text = "Table of Contents"
+    slide1.placeholders[1].text = "Section A"
+
+    # Outlier title position + out-of-margin shape
+    slide2 = prs.slides.add_slide(prs.slide_layouts[1])
+    slide2.shapes.title.text = "Financials"
+    title2 = slide2.shapes.title
+    title2.left = title2.left + Inches(1.0)
+
+    off_margin = slide2.shapes.add_textbox(
+        Inches(0.1), Inches(0.1), Inches(4.0), Inches(1.0)
+    )
+    off_margin.name = "OffMargin"
+    off_margin.text_frame.text = "This box starts outside configured margins."
+
+    prs.save(path)
     return path

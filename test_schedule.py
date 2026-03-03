@@ -17,10 +17,8 @@ unless real input files exist and ANTHROPIC_API_KEY is set).
 import argparse
 import json
 import os
-import shutil
 import sys
 import time
-from datetime import datetime
 
 import pytest
 
@@ -112,14 +110,14 @@ def run_test(memo_path: str, proforma_path: str, schedule_path: str,
     print(f"  {len(memo_content)} chars")
 
     # ----- Step 5: Claude API — metric mapping -----
-    print(f"\nStep 5: Running metric mappings...")
+    print("\nStep 5: Running metric mappings...")
     BATCH_THRESHOLD = 80_000
     RATE_LIMIT_INTERVAL = 65
     prompt_size = len(proforma_data) + len(memo_content)
     print(f"  Prompt size: {prompt_size} chars")
 
     if prompt_size > BATCH_THRESHOLD:
-        print(f"  Large prompt — processing in batches of 3 slides")
+        print("  Large prompt — processing in batches of 3 slides")
         memo_chunks = chunk_memo_by_pages(memo_content, pages_per_chunk=3)
         mappings = {"table_updates": [], "text_updates": [], "row_inserts": []}
         last_api_call = 0
@@ -186,12 +184,12 @@ def run_test(memo_path: str, proforma_path: str, schedule_path: str,
     print(f"  Mappings saved: {map_path}")
 
     # ----- Step 7: Apply updates -----
-    print(f"\nStep 7: Applying updates to memo...")
+    print("\nStep 7: Applying updates to memo...")
     all_changes = apply_updates(memo_path, validated, dry_run=False)
     print(f"  {len(all_changes)} changes applied")
 
     # ----- Step 8: Apply branding -----
-    print(f"\nStep 8: Applying Subtext branding...")
+    print("\nStep 8: Applying Subtext branding...")
     theme_path = os.path.join(os.path.dirname(__file__),
                                "memo_automator_app", "Subtext Brand Theme.thmx")
     if os.path.exists(theme_path):
@@ -201,12 +199,12 @@ def run_test(memo_path: str, proforma_path: str, schedule_path: str,
         print(f"  WARNING: Theme not found at {theme_path}")
 
     # ----- Step 9: Normalize layout -----
-    print(f"\nStep 9: Normalizing layout...")
+    print("\nStep 9: Normalizing layout...")
     layout_summary = normalize_layout(memo_path, cfg)
     print(f"  {layout_summary}")
 
     # ----- Step 10: Change log -----
-    print(f"\nStep 10: Writing change log...")
+    print("\nStep 10: Writing change log...")
     log_path = write_change_log(output_dir, all_changes, validated,
                                 memo_path, proforma_path, backup_path)
     print(f"  {log_path}")

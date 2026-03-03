@@ -25,6 +25,7 @@ Usage
 # IMPORTS
 # ============================================================================
 import argparse
+import errno
 import json
 import logging
 import os
@@ -32,6 +33,7 @@ import re
 import shutil
 import sys
 import time
+import zipfile
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -40,7 +42,9 @@ import anthropic
 import openpyxl
 import yaml
 from dotenv import load_dotenv
+from openpyxl.utils.exceptions import InvalidFileException
 from pptx import Presentation
+from pptx.exc import PackageNotFoundError
 
 # ============================================================================
 # LOGGING SETUP
@@ -48,6 +52,79 @@ from pptx import Presentation
 LOG_FMT = "%(asctime)s  %(levelname)-8s  %(message)s"
 logging.basicConfig(level=logging.INFO, format=LOG_FMT)
 log = logging.getLogger("memo_automator")
+
+_AUTH_ERRORS = tuple(
+    e for e in (
+        getattr(anthropic, "AuthenticationError", None),
+        getattr(anthropic, "PermissionDeniedError", None),
+    ) if e is not None
+)
+_RATE_LIMIT_ERRORS = tuple(
+    e for e in (getattr(anthropic, "RateLimitError", None),) if e is not None
+)
+_TIMEOUT_ERRORS = tuple(
+    e for e in (
+        getattr(anthropic, "APITimeoutError", None),
+        getattr(anthropic, "APIConnectionError", None),
+    ) if e is not None
+)
+_API_STATUS_ERRORS = tuple(
+    e for e in (getattr(anthropic, "APIStatusError", None),) if e is not None
+)
+_ALL_API_ERRORS = _AUTH_ERRORS + _RATE_LIMIT_ERRORS + _TIMEOUT_ERRORS + _API_STATUS_ERRORS
+
+
+def _is_api_error(err: Exception) -> bool:
+    return bool(_ALL_API_ERRORS) and isinstance(err, _ALL_API_ERRORS)
+
+
+def _exit_with_api_error(err: Exception):
+    if _AUTH_ERRORS and isinstance(err, _AUTH_ERRORS):
+        log.error(
+            "Claude API authentication failed. Check ANTHROPIC_API_KEY in .env or "
+            "your deployment secrets."
+        )
+    elif _RATE_LIMIT_ERRORS and isinstance(err, _RATE_LIMIT_ERRORS):
+        log.error(
+            "Claude API rate limit exceeded. Wait ~60 seconds and retry, or reduce "
+            "batch size/token usage."
+        )
+    elif _TIMEOUT_ERRORS and isinstance(err, _TIMEOUT_ERRORS):
+        log.error(
+            "Claude API request timed out or connection failed. Retry and, for large "
+            "decks, consider reducing pages per batch."
+        )
+    elif _API_STATUS_ERRORS and isinstance(err, _API_STATUS_ERRORS):
+        status_code = getattr(err, "status_code", None)
+        if status_code is None and hasattr(err, "response"):
+            status_code = getattr(err.response, "status_code", None)
+        if status_code:
+            log.error("Claude API returned HTTP %s. Please retry.", status_code)
+        else:
+            log.error("Claude API returned an error. Please retry.")
+    else:
+        log.error("Claude API call failed: %s", err)
+    sys.exit(1)
+
+
+def _exit_with_os_error(err: OSError, action: str):
+    if err.errno == errno.ENOSPC:
+        log.error("Disk full while %s. Free up space and retry.", action)
+    elif err.errno in (errno.EACCES, errno.EPERM):
+        log.error("Permission denied while %s. Check file/folder permissions.", action)
+    else:
+        log.error("File system error while %s: %s", action, err)
+    sys.exit(1)
+
+
+def _load_presentation(memo_path: str):
+    try:
+        return Presentation(memo_path)
+    except (PackageNotFoundError, zipfile.BadZipFile, KeyError) as e:
+        raise ValueError(
+            f"Unable to open memo PPTX '{memo_path}'. The file may be corrupt, "
+            f"not a valid .pptx, or password-protected."
+        ) from e
 
 
 # ============================================================================
@@ -206,14 +283,23 @@ def extract_proforma_data(proforma_path: str, cfg: dict) -> str:
     max_cols = cfg["proforma"]["max_cols_per_tab"]
 
     log.info("Opening proforma (data_only): %s", proforma_path)
-    wb = openpyxl.load_workbook(proforma_path, data_only=True)
+    try:
+        wb = openpyxl.load_workbook(proforma_path, data_only=True)
+    except (InvalidFileException, zipfile.BadZipFile) as e:
+        raise ValueError(
+            f"Unable to open proforma '{proforma_path}'. The file appears malformed "
+            f"or is not a valid .xlsx/.xlsm workbook."
+        ) from e
     log.info("Available sheets: %s", wb.sheetnames)
 
     lines = []
+    found_tabs = 0
+    data_rows = 0
     for tab_name in tabs:
         if tab_name not in wb.sheetnames:
             log.warning("Tab '%s' not found in proforma - skipping", tab_name)
             continue
+        found_tabs += 1
         ws = wb[tab_name]
         lines.append(f"\n{'='*70}")
         lines.append(f"TAB: {tab_name}")
@@ -222,33 +308,38 @@ def extract_proforma_data(proforma_path: str, cfg: dict) -> str:
         end_row = ws.max_row if max_rows == 0 else min(ws.max_row, max_rows)
         end_col = ws.max_column if max_cols == 0 else min(ws.max_column, max_cols)
 
-        for row in ws.iter_rows(min_row=1, max_row=end_row, max_col=end_col,
-                                values_only=False):
+        for row in ws.iter_rows(
+            min_row=1, max_row=end_row, max_col=end_col, values_only=False
+        ):
             row_data = []
             for cell in row:
                 if cell.value is not None:
                     row_data.append(str(cell.value))
             if row_data:
                 lines.append(f"Row {row[0].row}:\t" + "\t".join(row_data))
+                data_rows += 1
 
     wb.close()
 
-    # Validate that at least one tab was found and produced data
-    if not lines:
+    if found_tabs == 0:
         raise ValueError(
             f"No configured tabs found in proforma. "
             f"Expected tabs: {tabs}. Available sheets: {wb.sheetnames}"
         )
 
+    if data_rows == 0:
+        raise ValueError(
+            "Proforma extraction found no non-empty values in configured tabs. "
+            "If this workbook contains formulas, open it in Excel, let it "
+            "recalculate, save, and retry so cached values are available."
+        )
+
     proforma_text = "\n".join(lines)
-    if len(proforma_text.strip()) == 0:
-        log.warning("Proforma extraction produced 0 data lines — "
-                     "check that formulas are cached (save in Excel first)")
-
-    log.info("Proforma extraction complete (%d lines, %d chars)",
-             len(lines), len(proforma_text))
+    log.info(
+        "Proforma extraction complete (%d lines, %d chars)",
+        len(lines), len(proforma_text)
+    )
     return proforma_text
-
 
 # ============================================================================
 # 4b. SCHEDULE DATA EXTRACTION  (mpxj via jpype)
@@ -278,8 +369,8 @@ def _ensure_jvm():
             if os.environ.get("JAVA_HOME"):
                 break
 
-    # Import mpxj — this adds all jars to jpype classpath via addClassPath()
-    import mpxj  # noqa: F811 — re-import to trigger classpath setup
+    # Import mpxj for its classpath side effects before starting the JVM.
+    import mpxj  # noqa: F401
 
     jpype.startJVM()
     log.info("JVM started with classpath from mpxj")
@@ -367,7 +458,7 @@ def extract_memo_content(memo_path: str, cfg: dict) -> str:
     If cfg["memo"]["pages"] is "all", scans every slide in the deck.
     Otherwise expects a list of 1-based page numbers.
     """
-    prs = Presentation(memo_path)
+    prs = _load_presentation(memo_path)
     total_slides = len(prs.slides)
 
     # Determine which pages to scan
@@ -445,7 +536,7 @@ def chunk_memo_by_pages(memo_content: str, pages_per_chunk: int = 10) -> list:
 
 
 # ============================================================================
-# 7. CLAUDE API — METRIC MAPPING
+# 7. CLAUDE API - METRIC MAPPING
 # ============================================================================
 MAPPING_PROMPT = """\
 You are a financial analyst assistant. Your task is to compare data from an
@@ -460,33 +551,33 @@ metric in the memo that should be updated with new values from the proforma.
 
 ## Instructions
 
-1. **Table updates** — For each table cell in the memo whose value comes
+1. **Table updates** - For each table cell in the memo whose value comes
    from the proforma, emit an entry with the exact old text to find and the
    exact new text to replace it with.  Preserve formatting conventions
    (commas in numbers, dollar signs, percent signs, decimal precision).
 
-2. **Text updates** — For narrative / paragraph text that embeds a proforma
+2. **Text updates** - For narrative / paragraph text that embeds a proforma
    metric (e.g. "Bed count has increased ... to 510 beds"), emit an entry with
    the minimal old text snippet and its replacement.
 
-3. **Derived / calculated values** — When a source value changes, check
+3. **Derived / calculated values** - When a source value changes, check
    whether derived values in the memo should also change: totals, subtotals,
    ratios (e.g. parking ratio, cost per bed/unit), per-bed or per-unit
    metrics, summed pipeline beds/units, and sensitivity-table outputs.
    Perform the arithmetic and emit updates for each derived value.
 
-4. **Pipeline / comp summary tables (row-oriented)** — Tables where each
+4. **Pipeline / comp summary tables (row-oriented)** - Tables where each
    ROW is a property (columns = metrics like units, beds, year, rent).
    The first data row is always the subject property.  Update the subject
-   property's row to match the proforma — units, beds, delivery year,
+   property's row to match the proforma - units, beds, delivery year,
    address, rents, ratios.  If the subject appears under a prior project
    name (e.g. a rebranded project in the same row position), update that
    row too.
 
-5. **Competitive set side-by-side tables (column-oriented)** — Tables
+5. **Competitive set side-by-side tables (column-oriented)** - Tables
    where each COLUMN is a property and rows are metrics (unit size, beds,
    market rent per unit type).  The subject property is ALWAYS the
-   leftmost data column.  Update EVERY cell in that column — header
+   leftmost data column.  Update EVERY cell in that column - header
    metrics (units, beds, parking, ratios) AND each unit-type sub-section
    (unit size, bed count, market rent).
    - **Unit mix source:** Use the unit mix near the TOP of the Assumptions
@@ -503,67 +594,67 @@ metric in the memo that should be updated with new values from the proforma.
    - When the memo shows a range but the proforma has a single value,
      replace the range with the proforma value.
 
-6. **Address and name consistency** — If the proforma's property address or
+6. **Address and name consistency** - If the proforma's property address or
    name differs from the memo, update every occurrence in both tables and
    narrative text to match the proforma.
 
-7. **IRR selection** — When the executive summary or other sections reference
+7. **IRR selection** - When the executive summary or other sections reference
    an IRR (e.g. "3 YR IRR", "3-Yr IRR"), use the **3-year holding-period
    Levered IRR** from the proforma.  Do NOT use the 1-year or 4-year IRR.
    The 1-year IRR is typically much higher (>30%); the 3-year IRR is usually
-   in the 20–28% range.  Only use a different horizon if the memo cell
+   in the 20-28% range.  Only use a different horizon if the memo cell
    explicitly labels itself as "1 YR" or "4 YR".
 
-8. **"Chunk rents" and untrended values** — When the memo refers to
+8. **"Chunk rents" and untrended values** - When the memo refers to
    "chunk rents per month" or simply "rents" without a trend qualifier,
    it means today's **untrended** rents from the proforma.  Likewise,
    "controllable OpEx per bed" and "OpEx ratio" default to **untrended**
    values unless the memo explicitly says "trended."
 
-9. **Comp summary / comp rollup (row-oriented)** — The **top row** (first
+9. **Comp summary / comp rollup (row-oriented)** - The **top row** (first
    data row) is always the subject property and MUST be updated from the
    proforma.  If the name in that row differs from the proforma's property
    name, replace it so the name matches the proforma.
 
-10. **Pipeline table** — Same rule: the **top row** is the subject property.
+10. **Pipeline table** - Same rule: the **top row** is the subject property.
     Update all its metrics and swap its name to match the proforma if they
     differ.
 
-11. **Underwriting projections / end-of-memo tables** — Pages near the end
+11. **Underwriting projections / end-of-memo tables** - Pages near the end
     of the memo that contain tables WITHOUT narrative text (pure data
     tables under headings like "Underwriting Projections") MUST also be
-    updated.  Do NOT skip these pages — scan and update every metric that
+    updated.  Do NOT skip these pages - scan and update every metric that
     has a proforma source.
 
-12. **Sensitivity analysis tables — DO NOT UPDATE** — Any table whose heading
+12. **Sensitivity analysis tables - DO NOT UPDATE** - Any table whose heading
     or surrounding text contains "Sensitivity" (e.g. "Untrended YOC Sensitivity
     Analysis", "IRR Sensitivity") must be SKIPPED entirely. These require
     matrix recalculation the tool cannot perform. Emit zero updates for them.
 
-13. **Preserve strategic / aspirational language** — Narrative text containing
+13. **Preserve strategic / aspirational language** - Narrative text containing
     phrases like "targeting", "driving towards", "our goal is", "we are
     aiming for", "we anticipate", or "we expect" represents outside knowledge
     or team targets, NOT proforma data points. Do NOT overwrite these values.
     Only update values presented as factual statements of the current
     underwriting (e.g. "the project contains 510 beds").
 
-14. **Pipeline delivery year and land acquisition date** — In pipeline tables,
+14. **Pipeline delivery year and land acquisition date** - In pipeline tables,
     update the subject property's **delivery year** from the proforma's
     construction completion / certificate of occupancy date (year portion),
     and the **land acquisition / closing date** from the proforma's land
     closing date. Emit table_updates for both.
 
-15. **Development budget "% of Total" columns** — When a dollar amount in the
+15. **Development budget "% of Total" columns** - When a dollar amount in the
     development budget changes, ALSO recalculate and update the corresponding
     "% Total" or "% of Total" column: new_pct = (new_dollar / total_budget)
-    × 100, formatted to match the memo's decimal precision (e.g. "1.3%").
+    x 100, formatted to match the memo's decimal precision (e.g. "1.3%").
 
-16. **Chunk rents — average rent per bed** — The "Chunk Rents Per Month" row
+16. **Chunk rents - average rent per bed** - The "Chunk Rents Per Month" row
     in comparison tables AND any standalone "Avg Rent/Bed" or "Average Rent
     Per Bed" reference in tables or narrative MUST be mapped to the proforma's
     untrended average rent per bed. Do NOT skip this metric.
 
-17. **Missing unit types — row_inserts** — When the proforma has unit types
+17. **Missing unit types - row_inserts** - When the proforma has unit types
     (e.g. Studio, 2BR/1BA) that do NOT exist in the memo's unit mix table
     or side-by-side comp table, emit a `row_inserts` entry to add them.
     - **Unit mix table:** One row per missing type. Populate ALL columns
@@ -575,14 +666,14 @@ metric in the memo that should be updated with new values from the proforma.
       have no data for these types). Place after the last unit section.
     - Set `insert_after_row_label` to column 0 text of the row to insert AFTER.
 
-18. **Schedule milestones and dates** — When schedule data is provided below the
+18. **Schedule milestones and dates** - When schedule data is provided below the
     proforma data (under "SCHEDULE DATA"), update project timeline tables and
     narrative date references in the memo:
     - **Entitlement approval** start/finish dates (e.g., "Level II Development Plan",
       "Governmental Approvals", "Zoning", any task containing "entitlement")
     - **Building permit** start/finish dates (tasks containing "permit")
     - **Project closing / anticipated closing** dates
-    - **Construction start/end** — including sub-phases: abatement, demolition,
+    - **Construction start/end** - including sub-phases: abatement, demolition,
       foundation, and vertical construction dates
     - **CO / Certificate of Occupancy** and **substantial completion** dates
     - **Move-in / delivery** dates
@@ -678,15 +769,6 @@ def _salvage_truncated_json(raw: str) -> dict | None:
     # or:
     #   {"table_updates": [...], "text_updates": [..., {partial   <-- cut here
 
-    closings_to_try = [
-        # Already inside a text_updates array — close entry + array + object
-        (r'\}\s*,?\s*$', '}], "text_updates": []}'),       # mid table_updates array entry boundary
-        (r'\}\s*\]\s*,?\s*$', '], "text_updates": []}'),   # end of table_updates array
-        (r'\}\s*,?\s*$', '}]}'),                            # mid text_updates array entry boundary
-        (r'\}\s*\]\s*,?\s*$', ']}'),                        # end of text_updates array
-        (r'\}\s*\]\s*\}\s*$', None),                        # already complete
-    ]
-
     # Find the last complete entry: look for the last '}' that's followed
     # by ',' or ']' or is at a natural boundary
     # Walk backwards to find last complete "}" entry
@@ -771,8 +853,8 @@ def _parse_json_response(raw: str) -> dict | None:
     1. Strip markdown fences and whitespace.
     2. Return None for empty / null / trivially empty responses.
     3. Try json.loads() on the full text.
-    4. Fall back to raw_decode() at the first '{' — log at DEBUG.
-    5. Fall back to brace-matching (first '{' to last '}') — log at WARNING.
+    4. Fall back to raw_decode() at the first '{' - log at DEBUG.
+    5. Fall back to brace-matching (first '{' to last '}') - log at WARNING.
     6. Return None on total failure.
     """
     text = raw.strip()
@@ -829,7 +911,7 @@ def get_metric_mappings(
     Send proforma data + memo content to Claude and receive structured
     JSON describing every metric update.
 
-    This is the core reasoning step — Claude analyzes which memo values
+    This is the core reasoning step - Claude analyzes which memo values
     correspond to which proforma cells and determines the correct
     replacements, preserving formatting conventions.
     """
@@ -840,10 +922,10 @@ def get_metric_mappings(
 
     if property_name:
         pn_section = (
-            f"\n## Property Name — CRITICAL TARGETING OVERRIDE\n"
+            f"\n## Property Name - CRITICAL TARGETING OVERRIDE\n"
             f"The proforma data corresponds to the property named **\"{property_name}\"** "
             f"in the memo. The proforma's own internal name may differ (e.g. an old or "
-            f"rebranded name) — IGNORE the proforma's internal project name for targeting "
+            f"rebranded name) - IGNORE the proforma's internal project name for targeting "
             f"purposes.\n\n"
             f"Apply all proforma data to the column, row, or section labeled "
             f"\"{property_name}\" in the memo:\n"
@@ -903,7 +985,7 @@ def get_metric_mappings(
             salvaged["_truncated"] = True
             return salvaged
         else:
-            log.warning("Could not salvage truncated response — "
+            log.warning("Could not salvage truncated response - "
                         "caller will retry with smaller chunks")
             return {"table_updates": [], "text_updates": [], "row_inserts": [], "_truncated": True}
 
@@ -911,8 +993,8 @@ def get_metric_mappings(
     empty_mappings = {"table_updates": [], "text_updates": [], "row_inserts": []}
     mappings = _parse_json_response(raw)
     if mappings is None:
-        # Retry once — Claude sometimes returns analysis text instead of JSON
-        log.warning("Claude returned non-JSON response — retrying with stricter prompt...")
+        # Retry once - Claude sometimes returns analysis text instead of JSON
+        log.warning("Claude returned non-JSON response - retrying with stricter prompt...")
         retry_prompt = (
             prompt
             + "\n\nIMPORTANT: You MUST respond with ONLY the JSON object. "
@@ -930,7 +1012,7 @@ def get_metric_mappings(
                  len(retry_raw), retry_msg.stop_reason)
         mappings = _parse_json_response(retry_raw)
         if mappings is None:
-            log.info("Retry also returned unparseable response — no updates for this batch")
+            log.info("Retry also returned unparseable response - no updates for this batch")
             return empty_mappings
 
     # Ensure expected keys exist
@@ -947,12 +1029,12 @@ def get_metric_mappings(
 
 
 # ============================================================================
-# 7. CLAUDE API — VALIDATION PASS
+# 7. CLAUDE API - VALIDATION PASS
 # ============================================================================
 VALIDATION_PROMPT = """\
 You are a QA reviewer for financial document updates. You have been given a
 list of proposed changes (numbered by index) to an IC memo. Your job is to
-find ONLY the problems — do NOT echo back entries that are correct.
+find ONLY the problems - do NOT echo back entries that are correct.
 
 ## Proposed Changes (JSON, each entry has an "idx" field)
 {mappings_json}
@@ -1011,13 +1093,13 @@ Additional domain rules to enforce:
 - IRR values should use the **3-year holding-period Levered IRR**, not the
   1-year or 4-year IRR, unless the cell explicitly labels a different horizon.
   The 1-year IRR is typically >30%; if a proposed IRR new_value exceeds 30%
-  for a "3 YR" label, **correct** it to the 3-year IRR (usually 20–28%).
-  Do NOT just reject — emit a correction with the right value.
+  for a "3 YR" label, **correct** it to the 3-year IRR (usually 20-28%).
+  Do NOT just reject - emit a correction with the right value.
 - "Chunk rents", unqualified "rents per month", "controllable OpEx per bed",
   and "OpEx ratio" all refer to **untrended** proforma values unless
   explicitly labeled "trended." Correct any that used trended values.
 - The **top row** of comp summary/rollup and pipeline tables is the subject
-  property — it MUST be updated. Flag as missed if it was skipped.
+  property - it MUST be updated. Flag as missed if it was skipped.
 - End-of-memo data tables (underwriting projections pages with tables but
   no narrative) MUST be updated. Flag as missed if skipped.
 - **Sensitivity analysis tables** must NEVER be updated. Reject any update
@@ -1029,7 +1111,7 @@ Additional domain rules to enforce:
   change. Flag as missed if a dollar amount changed but the corresponding
   percentage was not updated.
 - For **row_inserts** in side-by-side comp tables, verify ONLY the subject
-  property column is populated — all other columns must be empty strings.
+  property column is populated - all other columns must be empty strings.
   Reject any row_insert that fills comparable property columns.
 - **Schedule dates** must match the schedule data exactly. If a date was updated
   from the schedule, verify the correct task was referenced. Date formatting must
@@ -1058,7 +1140,7 @@ def _call_validation_api(
 
     if property_name:
         pn_section = (
-            f"\n## Property Name — CRITICAL TARGETING CHECK\n"
+            f"\n## Property Name - CRITICAL TARGETING CHECK\n"
             f"The proforma data corresponds to **\"{property_name}\"** in the memo. "
             f"The proforma's own internal name may differ (old/rebranded name).\n\n"
             f"Verify that:\n"
@@ -1114,7 +1196,7 @@ def _call_validation_api(
     empty_result = {"rejected": [], "corrections": [], "missed": []}
     result = _parse_json_response(raw)
     if result is None:
-        log.info("Validation returned empty/unparseable response — all entries pass")
+        log.info("Validation returned empty/unparseable response - all entries pass")
         return empty_result
 
     return result
@@ -1129,7 +1211,7 @@ def validate_mappings(
     property_name: str = "",
 ) -> dict:
     """
-    Second Claude API call — validates the proposed mappings by cross-checking
+    Second Claude API call - validates the proposed mappings by cross-checking
     old values against the memo and new values against the proforma.
 
     The prompt asks Claude to return ONLY rejections, corrections, and missed
@@ -1165,9 +1247,9 @@ def validate_mappings(
                    + len(json.dumps(indexed_mappings)))
 
     if prompt_size > BATCH_THRESHOLD:
-        # Batch by page groups — split memo into chunks and only send
+        # Batch by page groups - split memo into chunks and only send
         # the mappings relevant to each chunk's pages.
-        log.info("Large validation prompt (%d chars) — batching by page groups",
+        log.info("Large validation prompt (%d chars) - batching by page groups",
                  prompt_size)
         memo_chunks = chunk_memo_by_pages(memo_content, pages_per_chunk=5)
 
@@ -1200,7 +1282,7 @@ def validate_mappings(
                          + len(chunk_indexed["text_updates"])
                          + len(chunk_indexed["row_inserts"]))
             if n_entries == 0:
-                log.info("Validation batch %d/%d: no mappings for pages %s — skipping",
+                log.info("Validation batch %d/%d: no mappings for pages %s - skipping",
                          ci, len(memo_chunks), sorted(chunk_pages))
                 continue
 
@@ -1302,7 +1384,7 @@ def validate_mappings(
                         cor.get("reason", "unknown"))
     if n_missed > 0:
         for miss in result["missed"]:
-            log.warning("  MISSED: page %s — %s", miss.get("page", "?"),
+            log.warning("  MISSED: page %s - %s", miss.get("page", "?"),
                         miss.get("description", ""))
 
     # Build rejected list for change log (include full original entries)
@@ -1484,7 +1566,7 @@ def _replace_in_shape(shape, old_text: str, new_text: str) -> bool:
             continue
         if _replace_in_para(para, old_text, new_text):
             return True
-    # Pass 2: normalized match — find the actual text in the shape that
+    # Pass 2: normalized match - find the actual text in the shape that
     # corresponds to the normalized old_text, then replace that
     norm_old = _normalize_unicode(old_text)
     for para in shape.text_frame.paragraphs:
@@ -1675,7 +1757,7 @@ def apply_updates(memo_path: str, mappings: dict, dry_run: bool = False) -> list
     Open the memo, apply every table_update and text_update from the
     Claude-validated mappings, and save. Returns a list of change records.
     """
-    prs = Presentation(memo_path)
+    prs = _load_presentation(memo_path)
     changes = []
 
     # --- Table updates ---
@@ -1836,13 +1918,13 @@ def apply_updates(memo_path: str, mappings: dict, dry_run: bool = False) -> list
 # ============================================================================
 # Subtext Brand palette (from Subtext Brand Theme.thmx)
 _BRAND_COLORS = [
-    (0x2B, 0x28, 0x25),  # dk1 — near-black brown
-    (0xFF, 0xFF, 0xFF),  # lt1 — white
-    (0x16, 0x35, 0x2E),  # dk2 — deep forest green
-    (0xF7, 0xF1, 0xE3),  # lt2 — warm cream
-    (0xC1, 0xD1, 0x00),  # accent1 — lime/chartreuse
-    (0xA9, 0x58, 0x18),  # accent3 — burnt orange
-    (0x51, 0x22, 0x13),  # accent4 — dark mahogany
+    (0x2B, 0x28, 0x25),  # dk1 - near-black brown
+    (0xFF, 0xFF, 0xFF),  # lt1 - white
+    (0x16, 0x35, 0x2E),  # dk2 - deep forest green
+    (0xF7, 0xF1, 0xE3),  # lt2 - warm cream
+    (0xC1, 0xD1, 0x00),  # accent1 - lime/chartreuse
+    (0xA9, 0x58, 0x18),  # accent3 - burnt orange
+    (0x51, 0x22, 0x13),  # accent4 - dark mahogany
 ]
 
 
@@ -1879,8 +1961,6 @@ def apply_branding(memo_path: str, theme_path: str, cfg: dict) -> int:
     Returns the number of text runs reformatted.
     """
     import zipfile
-    from pptx.dml.color import RGBColor
-    from pptx.enum.text import PP_ALIGN
 
     branding_cfg = cfg.get("branding", {})
     heading_threshold = branding_cfg.get("heading_size_threshold", 18)
@@ -1901,7 +1981,7 @@ def apply_branding(memo_path: str, theme_path: str, cfg: dict) -> int:
         # Find the theme file path in the PPTX
         theme_entries = [n for n in zin.namelist() if n.startswith("ppt/theme/theme") and n.endswith(".xml")]
         if not theme_entries:
-            log.warning("No theme XML found in PPTX — skipping theme replacement")
+            log.warning("No theme XML found in PPTX - skipping theme replacement")
         else:
             theme_entry = theme_entries[0]
             # Rewrite the zip with the new theme
@@ -1919,7 +1999,7 @@ def apply_branding(memo_path: str, theme_path: str, cfg: dict) -> int:
 
     # --- Step 2 & 3: Reformat fonts and colors ---
     log.info("Reformatting fonts and colors...")
-    prs = Presentation(memo_path)
+    prs = _load_presentation(memo_path)
     runs_reformatted = 0
 
     for slide in prs.slides:
@@ -1954,8 +2034,6 @@ def apply_branding(memo_path: str, theme_path: str, cfg: dict) -> int:
 def _reformat_run(run, is_heading_context: bool, size_threshold: int,
                   heading_font: str, body_font: str, color_threshold: float):
     """Reformat a single text run's font and color."""
-    from pptx.dml.color import RGBColor
-
     # Determine if this run is a heading
     font_size = run.font.size
     if font_size is not None:
@@ -1977,7 +2055,7 @@ def _reformat_run(run, is_heading_context: bool, size_threshold: int,
             if nearest is not None:
                 run.font.color.rgb = nearest
     except (AttributeError, TypeError):
-        pass  # No color set or theme color — skip
+        pass  # No color set or theme color - skip
 
 
 # ============================================================================
@@ -1990,7 +2068,7 @@ def normalize_layout(memo_path: str, cfg: dict) -> dict:
     """
     from collections import Counter
     from pptx.enum.text import PP_ALIGN, MSO_AUTO_SIZE
-    from pptx.util import Inches, Emu
+    from pptx.util import Inches
 
     layout_cfg = cfg.get("layout", {})
     margin_left = Inches(layout_cfg.get("margin_left", 0.50))
@@ -1999,7 +2077,7 @@ def normalize_layout(memo_path: str, cfg: dict) -> dict:
     margin_bottom = Inches(layout_cfg.get("margin_bottom", 0.50))
     snap_tol = Inches(layout_cfg.get("snap_tolerance", 0.05))
 
-    prs = Presentation(memo_path)
+    prs = _load_presentation(memo_path)
     slide_width = prs.slide_width
     slide_height = prs.slide_height
 
@@ -2013,7 +2091,7 @@ def normalize_layout(memo_path: str, cfg: dict) -> dict:
     }
 
     # ------------------------------------------------------------------
-    # 1a. Title alignment — snap outlier titles to the dominant position
+    # 1a. Title alignment - snap outlier titles to the dominant position
     # ------------------------------------------------------------------
     title_positions = []  # list of (slide_idx, shape, left, top, width, height)
     for idx, slide in enumerate(prs.slides):
@@ -2357,8 +2435,7 @@ def main():
 
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
-        log.error("ANTHROPIC_API_KEY not set. Copy .env.example to .env and "
-                  "add your key.")
+        log.error("ANTHROPIC_API_KEY not set. Copy .env.example to .env and add your key.")
         sys.exit(1)
 
     # Validate inputs
@@ -2376,244 +2453,246 @@ def main():
         sys.exit(1)
     proforma_ext = os.path.splitext(args.proforma)[1].lower()
     if proforma_ext not in (".xlsx", ".xlsm"):
-        log.error("Proforma file must be .xlsx or .xlsm, got '%s': %s",
-                  proforma_ext, args.proforma)
+        log.error("Proforma file must be .xlsx or .xlsm, got '%s': %s", proforma_ext, args.proforma)
         sys.exit(1)
 
-    # Load config
-    cfg = load_config(args.config)
-    log.info("Config loaded from %s", args.config)
+    try:
+        # Load config
+        cfg = load_config(args.config)
+        log.info("Config loaded from %s", args.config)
 
-    # Output directory
-    output_dir = args.output_dir or os.path.dirname(os.path.abspath(args.memo))
-    os.makedirs(output_dir, exist_ok=True)
+        # Output directory
+        output_dir = args.output_dir or os.path.dirname(os.path.abspath(args.memo))
+        os.makedirs(output_dir, exist_ok=True)
 
-    # Initialize Claude client (shared for mapping + validation)
-    log.info("Mapping model: %s  |  Validation model: %s",
-             cfg["claude"]["model"], cfg["claude"]["validation_model"])
-    client = anthropic.Anthropic(
-        api_key=api_key,
-        max_retries=5,
-        timeout=900.0,  # 15 min — needed for large batches and Opus thinking
-    )
+        # Initialize Claude client (shared for mapping + validation)
+        log.info("Mapping model: %s  |  Validation model: %s",
+                 cfg["claude"]["model"], cfg["claude"]["validation_model"])
+        client = anthropic.Anthropic(
+            api_key=api_key,
+            max_retries=5,
+            timeout=900.0,  # 15 min; needed for large batches and Opus thinking
+        )
 
-    # ---- Step 1: Backup ----
-    log.info("=" * 60)
-    log.info("STEP 1: Creating backup")
-    log.info("=" * 60)
-    backup_path = create_backup(args.memo, output_dir)
+        # ---- Step 1: Backup ----
+        log.info("=" * 60)
+        log.info("STEP 1: Creating backup")
+        log.info("=" * 60)
+        backup_path = create_backup(args.memo, output_dir)
 
-    # ---- Step 2: Extract proforma data ----
-    log.info("=" * 60)
-    log.info("STEP 2: Extracting proforma data")
-    log.info("=" * 60)
-    proforma_data = extract_proforma_data(args.proforma, cfg)
+        # ---- Step 2: Extract proforma data ----
+        log.info("=" * 60)
+        log.info("STEP 2: Extracting proforma data")
+        log.info("=" * 60)
+        proforma_data = extract_proforma_data(args.proforma, cfg)
 
-    # Warn if extraction produced very little data
-    pf_line_count = len([l for l in proforma_data.split("\n") if l.startswith("Row ")])
-    if pf_line_count == 0:
-        log.warning("Proforma extraction produced 0 data rows — output may be empty. "
-                     "Ensure formulas are cached (open and save in Excel first).")
+        # Save extraction for debugging / audit
+        pf_dump = os.path.join(output_dir, "proforma_extract.txt")
+        with open(pf_dump, "w", encoding="utf-8") as f:
+            f.write(proforma_data)
+        log.info("Proforma data saved to %s", pf_dump)
 
-    # Save extraction for debugging / audit
-    pf_dump = os.path.join(output_dir, "proforma_extract.txt")
-    with open(pf_dump, "w", encoding="utf-8") as f:
-        f.write(proforma_data)
-    log.info("Proforma data saved to %s", pf_dump)
+        # ---- Step 3: Extract memo content (full deck) ----
+        log.info("=" * 60)
+        log.info("STEP 3: Extracting memo content (all slides)")
+        log.info("=" * 60)
+        memo_content = extract_memo_content(args.memo, cfg)
 
-    # ---- Step 3: Extract memo content (full deck) ----
-    log.info("=" * 60)
-    log.info("STEP 3: Extracting memo content (all slides)")
-    log.info("=" * 60)
-    memo_content = extract_memo_content(args.memo, cfg)
+        memo_dump = os.path.join(output_dir, "memo_extract.txt")
+        with open(memo_dump, "w", encoding="utf-8") as f:
+            f.write(memo_content)
+        log.info("Memo content saved to %s", memo_dump)
 
-    memo_dump = os.path.join(output_dir, "memo_extract.txt")
-    with open(memo_dump, "w", encoding="utf-8") as f:
-        f.write(memo_content)
-    log.info("Memo content saved to %s", memo_dump)
-
-    # ---- Step 4: Claude API — metric mapping (reasoning step) ----
-    # This API call replaces human analysis: Claude reads the proforma and
-    # memo data, identifies which metrics map to which cells, and determines
-    # the exact old->new text replacements with proper formatting.
-    # For large decks the memo is split into batches of 10 slides to stay
-    # within the model's output token limit; results are merged afterward.
-    log.info("=" * 60)
-    log.info("STEP 4: Claude API — identifying metric mappings")
-    log.info("=" * 60)
-    BATCH_THRESHOLD = 80_000  # chars; above this, process slides in batches
-    RATE_LIMIT_INTERVAL = 65  # seconds between API calls for rate limiting
-    prompt_size = len(proforma_data) + len(memo_content)
-    if prompt_size > BATCH_THRESHOLD:
-        log.info("Large prompt (%d chars) — processing slides in batches of 3",
-                 prompt_size)
-        memo_chunks = chunk_memo_by_pages(memo_content, pages_per_chunk=3)
-        mappings = {"table_updates": [], "text_updates": [], "row_inserts": []}
-        last_api_call = 0
-        for i, chunk in enumerate(memo_chunks, 1):
-            if i > 1 and last_api_call > 0:
-                elapsed = time.time() - last_api_call
-                wait = RATE_LIMIT_INTERVAL - elapsed
-                if wait > 0:
-                    log.info("Rate limit: waiting %.0f seconds (%.0fs elapsed since last call)...",
-                             wait, elapsed)
-                    time.sleep(wait)
-                else:
-                    log.info("Rate limit: no wait needed (%.0fs elapsed since last call)",
-                             elapsed)
-            log.info("Mapping batch %d / %d ...", i, len(memo_chunks))
-            last_api_call = time.time()
-            try:
-                batch = get_metric_mappings(client, proforma_data, chunk, cfg,
-                                           property_name=args.property_name)
-            except Exception as batch_err:
-                log.warning("Batch %d failed (%s) — retrying as single-page sub-chunks",
-                            i, batch_err)
-                batch = {"table_updates": [], "text_updates": [],
-                         "row_inserts": [], "_truncated": True}
-
-            # --- Retry truncated/failed batches with single-page sub-chunks ---
-            if batch.pop("_truncated", False):
-                # Collect pages already covered by salvaged entries
-                covered_pages = set()
-                for e in batch.get("table_updates", []):
-                    covered_pages.add(e.get("page"))
-                for e in batch.get("text_updates", []):
-                    covered_pages.add(e.get("page"))
-                for e in batch.get("row_inserts", []):
-                    covered_pages.add(e.get("page"))
-                # Keep whatever was salvaged
-                mappings["table_updates"].extend(batch.get("table_updates", []))
-                mappings["text_updates"].extend(batch.get("text_updates", []))
-                mappings["row_inserts"].extend(batch.get("row_inserts", []))
-
-                log.info("Retrying truncated batch %d with single-page sub-chunks "
-                         "(covered pages so far: %s)", i, sorted(covered_pages))
-                sub_chunks = chunk_memo_by_pages(chunk, pages_per_chunk=1)
-                for j, sub_chunk in enumerate(sub_chunks, 1):
-                    sub_pages = set(
-                        int(m) for m in re.findall(r"PAGE (\d+)", sub_chunk)
-                    )
-                    if sub_pages and sub_pages.issubset(covered_pages):
-                        log.info("  Sub-chunk %d/%d (pages %s) already covered — skipping",
-                                 j, len(sub_chunks), sorted(sub_pages))
-                        continue
-
+        # ---- Step 4: Claude API - metric mapping ----
+        log.info("=" * 60)
+        log.info("STEP 4: Claude API - identifying metric mappings")
+        log.info("=" * 60)
+        BATCH_THRESHOLD = 80_000  # chars; above this, process slides in batches
+        RATE_LIMIT_INTERVAL = 65  # seconds between API calls for rate limiting
+        prompt_size = len(proforma_data) + len(memo_content)
+        if prompt_size > BATCH_THRESHOLD:
+            log.info("Large prompt (%d chars) - processing slides in batches of 3", prompt_size)
+            memo_chunks = chunk_memo_by_pages(memo_content, pages_per_chunk=3)
+            mappings = {"table_updates": [], "text_updates": [], "row_inserts": []}
+            last_api_call = 0
+            for i, chunk in enumerate(memo_chunks, 1):
+                if i > 1 and last_api_call > 0:
                     elapsed = time.time() - last_api_call
                     wait = RATE_LIMIT_INTERVAL - elapsed
                     if wait > 0:
-                        log.info("Rate limit: waiting %.0f seconds...", wait)
+                        log.info("Rate limit: waiting %.0f seconds (%.0fs elapsed since last call)...", wait, elapsed)
                         time.sleep(wait)
+                    else:
+                        log.info("Rate limit: no wait needed (%.0fs elapsed since last call)", elapsed)
+                log.info("Mapping batch %d / %d ...", i, len(memo_chunks))
+                last_api_call = time.time()
+                try:
+                    batch = get_metric_mappings(
+                        client, proforma_data, chunk, cfg,
+                        property_name=args.property_name,
+                    )
+                except Exception as batch_err:
+                    if _is_api_error(batch_err):
+                        raise
+                    log.warning("Batch %d failed (%s) - retrying as single-page sub-chunks", i, batch_err)
+                    batch = {
+                        "table_updates": [],
+                        "text_updates": [],
+                        "row_inserts": [],
+                        "_truncated": True,
+                    }
 
-                    log.info("  Sub-chunk %d/%d (pages %s)...",
-                             j, len(sub_chunks), sorted(sub_pages))
-                    last_api_call = time.time()
-                    try:
-                        sub_batch = get_metric_mappings(
-                            client, proforma_data, sub_chunk, cfg,
-                            property_name=args.property_name,
-                        )
-                    except Exception as sub_err:
-                        log.warning("  Sub-chunk %d failed (%s) — skipping pages %s",
-                                    j, sub_err, sorted(sub_pages))
-                        continue
-                    if sub_batch.pop("_truncated", False):
-                        log.warning("  Sub-chunk %d still truncated after single-page "
-                                    "retry — moving on", j)
-                    mappings["table_updates"].extend(
-                        sub_batch.get("table_updates", []))
-                    mappings["text_updates"].extend(
-                        sub_batch.get("text_updates", []))
-                    mappings["row_inserts"].extend(
-                        sub_batch.get("row_inserts", []))
-            else:
-                mappings["table_updates"].extend(batch.get("table_updates", []))
-                mappings["text_updates"].extend(batch.get("text_updates", []))
-                mappings["row_inserts"].extend(batch.get("row_inserts", []))
-    else:
-        mappings = get_metric_mappings(client, proforma_data, memo_content, cfg,
-                                       property_name=args.property_name)
-        mappings.pop("_truncated", None)
+                # Retry truncated/failed batches with single-page sub-chunks
+                if batch.pop("_truncated", False):
+                    covered_pages = set()
+                    for e in batch.get("table_updates", []):
+                        covered_pages.add(e.get("page"))
+                    for e in batch.get("text_updates", []):
+                        covered_pages.add(e.get("page"))
+                    for e in batch.get("row_inserts", []):
+                        covered_pages.add(e.get("page"))
 
-    # Save raw mappings for audit
-    map_dump = os.path.join(output_dir, "mappings_raw.json")
-    with open(map_dump, "w") as f:
-        json.dump(mappings, f, indent=2)
-    log.info("Raw mappings saved to %s", map_dump)
+                    mappings["table_updates"].extend(batch.get("table_updates", []))
+                    mappings["text_updates"].extend(batch.get("text_updates", []))
+                    mappings["row_inserts"].extend(batch.get("row_inserts", []))
 
-    # ---- Step 4a: Strip no-op entries (old == new) ----
-    pre_table = len(mappings["table_updates"])
-    pre_text = len(mappings["text_updates"])
-    mappings["table_updates"] = [
-        e for e in mappings["table_updates"]
-        if e.get("old_value") != e.get("new_value")
-    ]
-    mappings["text_updates"] = [
-        e for e in mappings["text_updates"]
-        if e.get("old_text") != e.get("new_text")
-    ]
-    n_stripped = (pre_table - len(mappings["table_updates"])
-                  + pre_text - len(mappings["text_updates"]))
-    if n_stripped > 0:
-        log.info("Stripped %d no-op entries (old == new)", n_stripped)
+                    log.info(
+                        "Retrying truncated batch %d with single-page sub-chunks (covered pages so far: %s)",
+                        i, sorted(covered_pages)
+                    )
+                    sub_chunks = chunk_memo_by_pages(chunk, pages_per_chunk=1)
+                    for j, sub_chunk in enumerate(sub_chunks, 1):
+                        sub_pages = set(int(m) for m in re.findall(r"PAGE (\d+)", sub_chunk))
+                        if sub_pages and sub_pages.issubset(covered_pages):
+                            log.info("  Sub-chunk %d/%d (pages %s) already covered - skipping",
+                                     j, len(sub_chunks), sorted(sub_pages))
+                            continue
 
-    # ---- Step 4b: Pre-validation (local Python check) ----
-    mappings = pre_validate_mappings(mappings, memo_content)
+                        elapsed = time.time() - last_api_call
+                        wait = RATE_LIMIT_INTERVAL - elapsed
+                        if wait > 0:
+                            log.info("Rate limit: waiting %.0f seconds...", wait)
+                            time.sleep(wait)
 
-    # ---- Step 5: Claude API — validation pass (QA reasoning step) ----
-    # Second API call: Claude cross-checks the proposed updates to catch
-    # errors — wrong old_value text, formatting mismatches, duplicates,
-    # or missed metrics. This replaces human review of the mapping output.
-    if args.skip_validation:
+                        log.info("  Sub-chunk %d/%d (pages %s)...", j, len(sub_chunks), sorted(sub_pages))
+                        last_api_call = time.time()
+                        try:
+                            sub_batch = get_metric_mappings(
+                                client, proforma_data, sub_chunk, cfg,
+                                property_name=args.property_name,
+                            )
+                        except Exception as sub_err:
+                            if _is_api_error(sub_err):
+                                raise
+                            log.warning("  Sub-chunk %d failed (%s) - skipping pages %s",
+                                        j, sub_err, sorted(sub_pages))
+                            continue
+
+                        if sub_batch.pop("_truncated", False):
+                            log.warning("  Sub-chunk %d still truncated after single-page retry - moving on", j)
+                        mappings["table_updates"].extend(sub_batch.get("table_updates", []))
+                        mappings["text_updates"].extend(sub_batch.get("text_updates", []))
+                        mappings["row_inserts"].extend(sub_batch.get("row_inserts", []))
+                else:
+                    mappings["table_updates"].extend(batch.get("table_updates", []))
+                    mappings["text_updates"].extend(batch.get("text_updates", []))
+                    mappings["row_inserts"].extend(batch.get("row_inserts", []))
+        else:
+            mappings = get_metric_mappings(
+                client, proforma_data, memo_content, cfg,
+                property_name=args.property_name,
+            )
+            mappings.pop("_truncated", None)
+
+        # Save raw mappings for audit
+        map_dump = os.path.join(output_dir, "mappings_raw.json")
+        with open(map_dump, "w", encoding="utf-8") as f:
+            json.dump(mappings, f, indent=2)
+        log.info("Raw mappings saved to %s", map_dump)
+
+        # ---- Step 4a: Strip no-op entries (old == new) ----
+        pre_table = len(mappings["table_updates"])
+        pre_text = len(mappings["text_updates"])
+        mappings["table_updates"] = [
+            e for e in mappings["table_updates"]
+            if e.get("old_value") != e.get("new_value")
+        ]
+        mappings["text_updates"] = [
+            e for e in mappings["text_updates"]
+            if e.get("old_text") != e.get("new_text")
+        ]
+        n_stripped = (pre_table - len(mappings["table_updates"]) + pre_text - len(mappings["text_updates"]))
+        if n_stripped > 0:
+            log.info("Stripped %d no-op entries (old == new)", n_stripped)
+
+        # ---- Step 4b: Pre-validation ----
+        mappings = pre_validate_mappings(mappings, memo_content)
+
+        # ---- Step 5: Claude API - validation pass ----
+        if args.skip_validation:
+            log.info("=" * 60)
+            log.info("STEP 5: SKIPPED (--skip-validation flag)")
+            log.info("=" * 60)
+            validated = mappings
+            validated.setdefault("rejected", [])
+            validated.setdefault("missed", [])
+        else:
+            log.info("=" * 60)
+            log.info("STEP 5: Claude API - validating mappings")
+            log.info("=" * 60)
+            validated = validate_mappings(
+                client, mappings, proforma_data, memo_content, cfg,
+                property_name=args.property_name,
+            )
+
+        # Save validated mappings for audit
+        val_dump = os.path.join(output_dir, "mappings_validated.json")
+        with open(val_dump, "w", encoding="utf-8") as f:
+            json.dump(validated, f, indent=2)
+        log.info("Validated mappings saved to %s", val_dump)
+
+        # ---- Step 6: Apply text / table updates ----
         log.info("=" * 60)
-        log.info("STEP 5: SKIPPED (--skip-validation flag)")
+        log.info("STEP 6: Applying text / table updates")
         log.info("=" * 60)
-        validated = mappings
-        validated.setdefault("rejected", [])
-        validated.setdefault("missed", [])
-    else:
+        changes = apply_updates(args.memo, validated, dry_run=args.dry_run)
+
+        # ---- Step 7: Change log ----
         log.info("=" * 60)
-        log.info("STEP 5: Claude API — validating mappings")
+        log.info("STEP 7: Writing change log")
         log.info("=" * 60)
-        validated = validate_mappings(client, mappings, proforma_data, memo_content, cfg,
-                                      property_name=args.property_name)
+        log_path = write_change_log(
+            output_dir, changes, validated,
+            args.memo, args.proforma, backup_path,
+        )
 
-    # Save validated mappings for audit
-    val_dump = os.path.join(output_dir, "mappings_validated.json")
-    with open(val_dump, "w") as f:
-        json.dump(validated, f, indent=2)
-    log.info("Validated mappings saved to %s", val_dump)
+        # ---- Summary ----
+        n_rejected = len(validated.get("rejected", []))
+        n_missed = len(validated.get("missed", []))
+        log.info("=" * 60)
+        log.info("MEMO AUTOMATOR COMPLETE")
+        log.info("=" * 60)
+        log.info("  Changes applied:     %d", len(changes))
+        log.info("  Rejected by QA:      %d", n_rejected)
+        log.info("  Potentially missed:  %d", n_missed)
+        log.info("  Backup:              %s", backup_path)
+        log.info("  Change log:          %s", log_path)
+        if args.dry_run:
+            log.info("  ** DRY RUN -- no files were modified **")
+        log.info("=" * 60)
 
-    # ---- Step 6: Apply text / table updates ----
-    log.info("=" * 60)
-    log.info("STEP 6: Applying text / table updates")
-    log.info("=" * 60)
-    changes = apply_updates(args.memo, validated, dry_run=args.dry_run)
-
-    # ---- Step 7: Change log ----
-    log.info("=" * 60)
-    log.info("STEP 7: Writing change log")
-    log.info("=" * 60)
-    log_path = write_change_log(
-        output_dir, changes, validated,
-        args.memo, args.proforma, backup_path,
-    )
-
-    # ---- Summary ----
-    n_rejected = len(validated.get("rejected", []))
-    n_missed = len(validated.get("missed", []))
-    log.info("=" * 60)
-    log.info("MEMO AUTOMATOR COMPLETE")
-    log.info("=" * 60)
-    log.info("  Changes applied:     %d", len(changes))
-    log.info("  Rejected by QA:      %d", n_rejected)
-    log.info("  Potentially missed:  %d", n_missed)
-    log.info("  Backup:              %s", backup_path)
-    log.info("  Change log:          %s", log_path)
-    if args.dry_run:
-        log.info("  ** DRY RUN -- no files were modified **")
-    log.info("=" * 60)
-
+    except ValueError as e:
+        log.error("%s", e)
+        sys.exit(1)
+    except OSError as e:
+        _exit_with_os_error(e, "reading/writing project files")
+    except Exception as e:
+        if _is_api_error(e):
+            _exit_with_api_error(e)
+        log.exception("Unexpected failure: %s", e)
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
+
+

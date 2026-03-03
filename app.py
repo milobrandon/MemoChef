@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Memo Chef — Streamlit dashboard wrapping memo_automator.py."""
+"""Memo Chef - Streamlit dashboard wrapping memo_automator.py."""
 
-import hashlib
 import logging
 import os
 import re
-import secrets as _secrets
 import tempfile
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 
@@ -15,6 +14,7 @@ import anthropic
 import psycopg2
 import streamlit as st
 
+from app_helpers import should_disable_fire_button, verify_password
 from memo_automator import (
     apply_branding,
     apply_updates,
@@ -38,24 +38,6 @@ st.set_page_config(page_title="Memo Chef", page_icon="\U0001f9d1\u200d\U0001f373
 
 
 # ============================================================================
-# PASSWORD HELPERS
-# ============================================================================
-def _hash_password(password: str, salt: bytes | None = None) -> str:
-    """Return ``"salt_hex:hash_hex"`` using PBKDF2-SHA256."""
-    if salt is None:
-        salt = _secrets.token_bytes(16)
-    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 260_000)
-    return f"{salt.hex()}:{dk.hex()}"
-
-
-def _verify_password(password: str, stored_hash: str) -> bool:
-    salt_hex, hash_hex = stored_hash.split(":", 1)
-    salt = bytes.fromhex(salt_hex)
-    candidate = _hash_password(password, salt)
-    return candidate == stored_hash
-
-
-# ============================================================================
 # CREDIT SYSTEM  (persistent Neon Postgres)
 # ============================================================================
 @st.cache_resource
@@ -74,6 +56,24 @@ def _get_db_conn():
     return conn
 
 
+@contextmanager
+def _db_cursor():
+    """
+    Yield a live DB cursor, retrying once with a fresh connection if the cached
+    connection went stale (common on Streamlit Cloud cold/warm cycles).
+    """
+    conn = _get_db_conn()
+    try:
+        with conn.cursor() as cur:
+            yield cur
+        return
+    except (psycopg2.InterfaceError, psycopg2.OperationalError):
+        _get_db_conn.clear()
+        conn = _get_db_conn()
+        with conn.cursor() as cur:
+            yield cur
+
+
 def _current_week_start() -> str:
     """ISO Monday date for the current week."""
     today = datetime.now()
@@ -83,9 +83,8 @@ def _current_week_start() -> str:
 
 def _get_user_credits(username: str, credits_per_week: int) -> tuple[int, int]:
     """Return (used, remaining). Auto-resets on week rollover."""
-    conn = _get_db_conn()
     week = _current_week_start()
-    with conn.cursor() as cur:
+    with _db_cursor() as cur:
         cur.execute(
             "SELECT week, used FROM credit_usage WHERE username = %s",
             (username,),
@@ -103,23 +102,35 @@ def _get_user_credits(username: str, credits_per_week: int) -> tuple[int, int]:
     return used, max(0, credits_per_week - used)
 
 
-def _consume_credit(username: str) -> None:
-    conn = _get_db_conn()
+def _consume_credit(username: str, credits_per_week: int) -> bool:
+    """
+    Consume one credit atomically for the current week.
+    Returns False if the weekly limit is already reached.
+    """
     week = _current_week_start()
-    with conn.cursor() as cur:
+    with _db_cursor() as cur:
+        # Ensure row exists and is reset if week rolled over.
         cur.execute(
-            "INSERT INTO credit_usage (username, week, used) VALUES (%s, %s, 1) "
+            "INSERT INTO credit_usage (username, week, used) VALUES (%s, %s, 0) "
             "ON CONFLICT (username) DO UPDATE SET "
-            "  used = CASE WHEN credit_usage.week = %s THEN credit_usage.used + 1 ELSE 1 END, "
+            "  used = CASE WHEN credit_usage.week = %s THEN credit_usage.used ELSE 0 END, "
             "  week = %s",
             (username, week, week, week),
         )
+        # Enforce weekly cap in the database to avoid race-condition overuse.
+        cur.execute(
+            "UPDATE credit_usage "
+            "SET used = used + 1 "
+            "WHERE username = %s AND week = %s AND used < %s "
+            "RETURNING used",
+            (username, week, credits_per_week),
+        )
+        return cur.fetchone() is not None
 
 
 def _reset_user_credits(username: str) -> None:
-    conn = _get_db_conn()
     week = _current_week_start()
-    with conn.cursor() as cur:
+    with _db_cursor() as cur:
         cur.execute(
             "INSERT INTO credit_usage (username, week, used) VALUES (%s, %s, 0) "
             "ON CONFLICT (username) DO UPDATE SET week = %s, used = 0",
@@ -155,7 +166,7 @@ def check_password() -> bool:
         submitted = st.form_submit_button("Log in")
     if submitted:
         user_cfg = users.get(username)
-        if user_cfg and _verify_password(password, user_cfg["password_hash"]):
+        if user_cfg and verify_password(password, user_cfg["password_hash"]):
             st.session_state["authenticated"] = True
             st.session_state["username"] = username
             st.session_state["role"] = user_cfg.get("role", "user")
@@ -177,11 +188,20 @@ if not check_password():
 _username = st.session_state["username"]
 _role = st.session_state["role"]
 _credits_per_week = st.session_state["credits_per_week"]
-_used, _remaining = _get_user_credits(_username, _credits_per_week)
+_credits_error = None
+try:
+    _used, _remaining = _get_user_credits(_username, _credits_per_week)
+except Exception as e:
+    _used, _remaining = 0, 0
+    _credits_error = str(e)
 
 with st.sidebar:
     st.markdown(f"**{_username}** &nbsp; `{_role}`")
-    st.caption(f"Credits: {_remaining} / {_credits_per_week} remaining this week")
+    if _credits_error:
+        st.warning("Credits service unavailable. Runs are temporarily disabled.")
+        st.caption("Credits: unavailable")
+    else:
+        st.caption(f"Credits: {_remaining} / {_credits_per_week} remaining this week")
     st.progress(
         min(_used / _credits_per_week, 1.0) if _credits_per_week > 0 else 1.0,
         text=f"{_used} used",
@@ -199,7 +219,10 @@ with st.sidebar:
         rows = []
         for uname, ucfg in users.items():
             cpw = int(ucfg.get("credits_per_week", 5))
-            u, r = _get_user_credits(uname, cpw)
+            try:
+                u, r = _get_user_credits(uname, cpw)
+            except Exception:
+                u, r = 0, 0
             rows.append(
                 {"User": uname, "Role": ucfg.get("role", "user"),
                  "Used": u, "Limit": cpw, "Remaining": r}
@@ -210,8 +233,12 @@ with st.sidebar:
             placeholder="Select a user...",
         )
         if reset_user and st.button(f"Reset {reset_user}"):
-            _reset_user_credits(reset_user)
-            st.rerun()
+            try:
+                _reset_user_credits(reset_user)
+            except Exception as e:
+                st.error(f"Failed to reset credits for {reset_user}: {e}")
+            else:
+                st.rerun()
 
 st.title("\U0001f9d1\u200d\U0001f373 Memo Chef")
 st.caption("From raw ingredients to a Michelin-star memo")
@@ -300,7 +327,9 @@ with st.expander("\U0001f9c2 Chef's Preferences"):
 # ============================================================================
 # FIRE BUTTON (credit-gated)
 # ============================================================================
-_fire_disabled = not (memo_file and proforma_file) or _remaining <= 0
+_fire_disabled = should_disable_fire_button(
+    memo_file, proforma_file, _remaining, _credits_error
+)
 _fire_label = (
     f"\U0001f525  Fire!  ({_remaining} credits left)"
     if _remaining > 0
@@ -308,9 +337,6 @@ _fire_label = (
 )
 
 if st.button(_fire_label, type="primary", disabled=_fire_disabled):
-    # Consume a credit up front
-    _consume_credit(_username)
-
     # Clear previous results
     for key in ["memo_bytes", "log_bytes", "filename", "n_changes",
                 "n_rejected", "n_missed", "log_lines"]:
@@ -573,6 +599,14 @@ if st.button(_fire_label, type="primary", disabled=_fire_disabled):
         st.session_state["n_rejected"] = n_rejected
         st.session_state["n_missed"] = n_missed
         st.session_state["log_lines"] = log_handler.lines[:]
+
+        # Charge one credit only after a successful end-to-end run.
+        try:
+            charged = _consume_credit(_username, _credits_per_week)
+            if not charged:
+                st.warning("Run completed, but no credits remained to charge this run.")
+        except Exception as credit_err:
+            st.warning(f"Run completed, but credit usage could not be updated: {credit_err}")
 
       except Exception as e:
         st.error(f"In the weeds! {e}")

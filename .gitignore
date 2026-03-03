@@ -1,6 +1,7 @@
 # Environment / secrets
 .env
 .streamlit/secrets.toml
+.streamlit/secrets_deploy.toml
 
 # Python
 __pycache__/
