@@ -1,6 +1,6 @@
 # Memo Automator — Execution Checklist
 
-> **Last updated:** 2026-03-02
+> **Last updated:** 2026-03-03
 > **Tracking:** Check boxes as tasks complete. Add dates and notes in the rightmost column.
 
 ---
@@ -30,9 +30,9 @@
 
 ### Logging & Error Handling
 
-- [ ] Replace `print()` with Python `logging` module — @developer — 2d — _No deps_
-- [ ] Add configurable log levels (DEBUG/INFO/WARNING/ERROR) — @developer — 0.5d — _Depends: logging_
-- [ ] Add `--verbose` / `--quiet` CLI flags — @developer — 0.5d — _Depends: logging_
+- [x] Replace `print()` with Python `logging` module — @developer — 2d — _No deps_ — Done 2026-03-02
+- [x] Add configurable log levels (DEBUG/INFO/WARNING/ERROR) — @developer — 0.5d — _Depends: logging_ — Done 2026-03-02
+- [x] Add `--verbose` / `--quiet` CLI flags — @developer — 0.5d — _Depends: logging_ — Done 2026-03-02
 - [ ] Add graceful error messages for common failures — @developer — 2d — _Depends: logging_
   - [ ] Missing/invalid API key
   - [ ] Malformed Excel (missing tabs, uncached formulas)
@@ -42,14 +42,14 @@
 
 ### Input Validation
 
-- [ ] Validate file extensions (.pptx, .xlsx/.xlsm, .mpp) — @developer — 0.5d — _No deps_
-- [ ] Validate proforma tab names exist before extraction — @developer — 0.5d — _No deps_
-- [ ] Validate non-empty data extraction (warn if 0 rows) — @developer — 0.5d — _Depends: tab validation_
-- [ ] Validate config.yaml schema on load — @developer — 1d — _No deps_
+- [x] Validate file extensions (.pptx, .xlsx/.xlsm, .mpp) — @developer — 0.5d — _No deps_ — Done 2026-03-02
+- [x] Validate proforma tab names exist before extraction — @developer — 0.5d — _No deps_ — Done 2026-03-02
+- [x] Validate non-empty data extraction (warn if 0 rows) — @developer — 0.5d — _Depends: tab validation_ — Done 2026-03-02
+- [x] Validate config.yaml schema on load — @developer — 1d — _No deps_ — Done 2026-03-02
 
 ### Testing
 
-- [ ] Set up pytest + conftest.py with fixtures — @developer — 1d — _No deps_
+- [x] Set up pytest + conftest.py with fixtures — @developer — 1d — _No deps_ — Done 2026-03-02
 - [ ] Create anonymized test fixtures (mini proforma + memo) — @developer — 1d — _No deps_
 - [ ] Unit tests: `extract_proforma()` — @developer — 1d — _Depends: fixtures_
 - [ ] Unit tests: `extract_memo()` — @developer — 1d — _Depends: fixtures_
@@ -58,8 +58,8 @@
 - [ ] Unit tests: `normalize_layout()` — @developer — 0.5d — _Depends: fixtures_
 - [ ] Unit tests: JSON parsing / truncation recovery — @developer — 0.5d — _No deps_
 - [ ] Integration test: full pipeline with mocked Claude — @developer — 2d — _Depends: all unit tests_
-- [ ] Migrate `test_row_inserts.py` to pytest — @developer — 0.5d — _Depends: pytest setup_
-- [ ] Migrate `test_schedule.py` to pytest — @developer — 0.5d — _Depends: pytest setup_
+- [x] Migrate `test_row_inserts.py` to pytest — @developer — 0.5d — _Depends: pytest setup_ — Done 2026-03-02
+- [x] Migrate `test_schedule.py` to pytest — @developer — 0.5d — _Depends: pytest setup_ — Done 2026-03-02
 
 ### Cleanup
 

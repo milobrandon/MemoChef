@@ -105,6 +105,10 @@ python memo_automator.py memo.pptx proforma.xlsm --dry-run
 | `--config`, `-c` | No | Path to YAML config (default: `config.yaml` beside the script) |
 | `--output-dir`, `-o` | No | Directory for output files (default: same folder as memo) |
 | `--dry-run` | No | Show what would change without modifying files |
+| `--skip-validation` | No | Skip the Claude validation pass for faster runs |
+| `--property-name` | No | Property name as shown in the proforma (helps match rebranded names) |
+| `--verbose`, `-v` | No | Enable DEBUG-level logging for detailed output |
+| `--quiet`, `-q` | No | Suppress all output except warnings and errors |
 
 ## Inputs
 
