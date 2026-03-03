@@ -19,3 +19,11 @@ output/
 Thumbs.db
 .DS_Store
 ~$*
+
+# Sandbox / internal directories
+a. Sandbox/
+b. Sandbox v2/
+x. Old/
+memo_automator_app/
+memo_automator_app_sandbox/
+.claude/
