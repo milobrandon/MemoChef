@@ -102,10 +102,45 @@ def parse_args():
 # ============================================================================
 # 2. CONFIGURATION
 # ============================================================================
+def _validate_config(cfg: dict) -> list[str]:
+    """Validate config schema. Returns a list of error messages (empty = valid)."""
+    errors = []
+    # proforma.tabs must be a non-empty list of strings
+    tabs = cfg.get("proforma", {}).get("tabs", [])
+    if not isinstance(tabs, list) or len(tabs) == 0:
+        errors.append("proforma.tabs must be a non-empty list of sheet names")
+    elif not all(isinstance(t, str) for t in tabs):
+        errors.append("proforma.tabs must contain only strings")
+
+    # Numeric bounds
+    for key, section in [("max_rows_per_tab", "proforma"),
+                         ("max_cols_per_tab", "proforma"),
+                         ("max_tasks", "schedule")]:
+        val = cfg.get(section, {}).get(key)
+        if val is not None and (not isinstance(val, int) or val < 0):
+            errors.append(f"{section}.{key} must be a non-negative integer")
+
+    # claude.model must be a non-empty string
+    model = cfg.get("claude", {}).get("model", "")
+    if not isinstance(model, str) or not model:
+        errors.append("claude.model must be a non-empty string")
+
+    # claude.temperature must be 0-1
+    temp = cfg.get("claude", {}).get("temperature")
+    if temp is not None and (not isinstance(temp, (int, float)) or temp < 0 or temp > 1):
+        errors.append("claude.temperature must be a number between 0 and 1")
+
+    return errors
+
+
 def load_config(config_path: str) -> dict:
     """Load and validate the YAML configuration file."""
     with open(config_path, "r") as f:
         cfg = yaml.safe_load(f)
+
+    if cfg is None:
+        cfg = {}
+
     # Apply defaults for missing keys
     cfg.setdefault("proforma", {})
     cfg["proforma"].setdefault("tabs", [
@@ -132,6 +167,12 @@ def load_config(config_path: str) -> dict:
     cfg["claude"].setdefault("validation_model", cfg["claude"]["model"])
     cfg["claude"].setdefault("max_tokens", 16000)
     cfg["claude"].setdefault("temperature", 0)
+
+    # Validate schema
+    errors = _validate_config(cfg)
+    if errors:
+        raise ValueError("Invalid config:\n  " + "\n  ".join(errors))
+
     return cfg
 
 
@@ -191,7 +232,19 @@ def extract_proforma_data(proforma_path: str, cfg: dict) -> str:
                 lines.append(f"Row {row[0].row}:\t" + "\t".join(row_data))
 
     wb.close()
+
+    # Validate that at least one tab was found and produced data
+    if not lines:
+        raise ValueError(
+            f"No configured tabs found in proforma. "
+            f"Expected tabs: {tabs}. Available sheets: {wb.sheetnames}"
+        )
+
     proforma_text = "\n".join(lines)
+    if len(proforma_text.strip()) == 0:
+        log.warning("Proforma extraction produced 0 data lines — "
+                     "check that formulas are cached (save in Excel first)")
+
     log.info("Proforma extraction complete (%d lines, %d chars)",
              len(lines), len(proforma_text))
     return proforma_text
@@ -2316,6 +2369,17 @@ def main():
         log.error("Proforma file not found: %s", args.proforma)
         sys.exit(1)
 
+    # Validate file extensions
+    memo_ext = os.path.splitext(args.memo)[1].lower()
+    if memo_ext != ".pptx":
+        log.error("Memo file must be .pptx, got '%s': %s", memo_ext, args.memo)
+        sys.exit(1)
+    proforma_ext = os.path.splitext(args.proforma)[1].lower()
+    if proforma_ext not in (".xlsx", ".xlsm"):
+        log.error("Proforma file must be .xlsx or .xlsm, got '%s': %s",
+                  proforma_ext, args.proforma)
+        sys.exit(1)
+
     # Load config
     cfg = load_config(args.config)
     log.info("Config loaded from %s", args.config)
@@ -2344,6 +2408,12 @@ def main():
     log.info("STEP 2: Extracting proforma data")
     log.info("=" * 60)
     proforma_data = extract_proforma_data(args.proforma, cfg)
+
+    # Warn if extraction produced very little data
+    pf_line_count = len([l for l in proforma_data.split("\n") if l.startswith("Row ")])
+    if pf_line_count == 0:
+        log.warning("Proforma extraction produced 0 data rows — output may be empty. "
+                     "Ensure formulas are cached (open and save in Excel first).")
 
     # Save extraction for debugging / audit
     pf_dump = os.path.join(output_dir, "proforma_extract.txt")
