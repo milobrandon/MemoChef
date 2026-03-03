@@ -85,6 +85,17 @@ def parse_args():
         default="",
         help="Property name as shown in the proforma (helps match rebranded names)",
     )
+    verbosity = p.add_mutually_exclusive_group()
+    verbosity.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Enable DEBUG-level logging for detailed output",
+    )
+    verbosity.add_argument(
+        "--quiet", "-q",
+        action="store_true",
+        help="Suppress all output except warnings and errors",
+    )
     return p.parse_args()
 
 
@@ -2281,6 +2292,12 @@ def write_change_log(output_dir: str, all_changes: list, mappings: dict,
 def main():
     args = parse_args()
 
+    # Set log level from --verbose / --quiet flags
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+    elif args.quiet:
+        logging.getLogger().setLevel(logging.WARNING)
+
     # Load environment (.env file in script dir or working directory)
     load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
     load_dotenv()  # also check cwd
@@ -2515,17 +2532,17 @@ def main():
     # ---- Summary ----
     n_rejected = len(validated.get("rejected", []))
     n_missed = len(validated.get("missed", []))
-    print("\n" + "=" * 60)
-    print("MEMO AUTOMATOR COMPLETE")
-    print("=" * 60)
-    print(f"  Changes applied:     {len(changes)}")
-    print(f"  Rejected by QA:      {n_rejected}")
-    print(f"  Potentially missed:  {n_missed}")
-    print(f"  Backup:              {backup_path}")
-    print(f"  Change log:          {log_path}")
+    log.info("=" * 60)
+    log.info("MEMO AUTOMATOR COMPLETE")
+    log.info("=" * 60)
+    log.info("  Changes applied:     %d", len(changes))
+    log.info("  Rejected by QA:      %d", n_rejected)
+    log.info("  Potentially missed:  %d", n_missed)
+    log.info("  Backup:              %s", backup_path)
+    log.info("  Change log:          %s", log_path)
     if args.dry_run:
-        print("  ** DRY RUN -- no files were modified **")
-    print("=" * 60)
+        log.info("  ** DRY RUN -- no files were modified **")
+    log.info("=" * 60)
 
 
 if __name__ == "__main__":
