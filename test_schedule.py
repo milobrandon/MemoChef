@@ -10,6 +10,9 @@ Usage:
     python test_schedule.py --memo "path/to/memo.pptx"
     python test_schedule.py --schedule "path/to/schedule.mpp"
     python test_schedule.py --skip-validation
+
+This file is also importable by pytest as an integration test (skipped
+unless real input files exist and ANTHROPIC_API_KEY is set).
 """
 import argparse
 import json
@@ -18,6 +21,8 @@ import shutil
 import sys
 import time
 from datetime import datetime
+
+import pytest
 
 # Add the app directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "memo_automator_app"))
@@ -220,6 +225,25 @@ def run_test(memo_path: str, proforma_path: str, schedule_path: str,
     print(f"  Output memo:         {memo_path}")
     print(f"  Change log:          {log_path}")
     print(f"{'='*70}")
+
+
+_skip_reason = (
+    "Integration test: requires real input files and ANTHROPIC_API_KEY"
+)
+
+_can_run = (
+    os.path.exists(DEFAULT_MEMO)
+    and os.path.exists(DEFAULT_PROFORMA)
+    and os.environ.get("ANTHROPIC_API_KEY")
+)
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _can_run, reason=_skip_reason)
+def test_full_pipeline():
+    """Run the full end-to-end pipeline as a pytest integration test."""
+    schedule = DEFAULT_SCHEDULE if os.path.exists(DEFAULT_SCHEDULE) else None
+    run_test(DEFAULT_MEMO, DEFAULT_PROFORMA, schedule, skip_validation=True)
 
 
 if __name__ == "__main__":
