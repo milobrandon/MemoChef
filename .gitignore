@@ -15,9 +15,6 @@ output/
 *.pptx
 *.xlsm
 
-# Credit tracking (resets on deploy)
-credit_usage.json
-
 # OS files
 Thumbs.db
 .DS_Store

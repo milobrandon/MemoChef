@@ -2,7 +2,6 @@
 """Memo Chef — Streamlit dashboard wrapping memo_automator.py."""
 
 import hashlib
-import json
 import logging
 import os
 import re
@@ -13,6 +12,7 @@ from datetime import datetime, timedelta
 
 
 import anthropic
+import psycopg2
 import streamlit as st
 
 from memo_automator import (
@@ -56,9 +56,22 @@ def _verify_password(password: str, stored_hash: str) -> bool:
 
 
 # ============================================================================
-# CREDIT SYSTEM
+# CREDIT SYSTEM  (persistent Neon Postgres)
 # ============================================================================
-_CREDIT_FILE = os.path.join(os.path.dirname(__file__), "credit_usage.json")
+@st.cache_resource
+def _get_db_conn():
+    """Return a psycopg2 connection to the credits database (cached)."""
+    conn = psycopg2.connect(st.secrets["CREDITS_DATABASE_URL"])
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS credit_usage ("
+            "  username TEXT PRIMARY KEY,"
+            "  week TEXT NOT NULL,"
+            "  used INTEGER NOT NULL DEFAULT 0"
+            ")"
+        )
+    return conn
 
 
 def _current_week_start() -> str:
@@ -68,48 +81,50 @@ def _current_week_start() -> str:
     return monday.strftime("%Y-%m-%d")
 
 
-def _load_credits() -> dict:
-    if os.path.exists(_CREDIT_FILE):
-        with open(_CREDIT_FILE, "r") as f:
-            return json.load(f)
-    return {}
-
-
-def _save_credits(data: dict) -> None:
-    with open(_CREDIT_FILE, "w") as f:
-        json.dump(data, f, indent=2)
-
-
 def _get_user_credits(username: str, credits_per_week: int) -> tuple[int, int]:
     """Return (used, remaining). Auto-resets on week rollover."""
-    data = _load_credits()
+    conn = _get_db_conn()
     week = _current_week_start()
-    user_data = data.get(username, {})
-    if user_data.get("week") != week:
-        # New week — reset
-        user_data = {"week": week, "used": 0}
-        data[username] = user_data
-        _save_credits(data)
-    used = user_data.get("used", 0)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT week, used FROM credit_usage WHERE username = %s",
+            (username,),
+        )
+        row = cur.fetchone()
+        if row is None or row[0] != week:
+            # New user or new week — upsert with reset
+            cur.execute(
+                "INSERT INTO credit_usage (username, week, used) VALUES (%s, %s, 0) "
+                "ON CONFLICT (username) DO UPDATE SET week = %s, used = 0",
+                (username, week, week),
+            )
+            return 0, credits_per_week
+        used = row[1]
     return used, max(0, credits_per_week - used)
 
 
 def _consume_credit(username: str) -> None:
-    data = _load_credits()
+    conn = _get_db_conn()
     week = _current_week_start()
-    user_data = data.get(username, {})
-    if user_data.get("week") != week:
-        user_data = {"week": week, "used": 0}
-    user_data["used"] = user_data.get("used", 0) + 1
-    data[username] = user_data
-    _save_credits(data)
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO credit_usage (username, week, used) VALUES (%s, %s, 1) "
+            "ON CONFLICT (username) DO UPDATE SET "
+            "  used = CASE WHEN credit_usage.week = %s THEN credit_usage.used + 1 ELSE 1 END, "
+            "  week = %s",
+            (username, week, week, week),
+        )
 
 
 def _reset_user_credits(username: str) -> None:
-    data = _load_credits()
+    conn = _get_db_conn()
     week = _current_week_start()
-    data[username] = {"week": week, "used": 0}
-    _save_credits(data)
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO credit_usage (username, week, used) VALUES (%s, %s, 0) "
+            "ON CONFLICT (username) DO UPDATE SET week = %s, used = 0",
+            (username, week, week),
+        )
 
 
 # ============================================================================
