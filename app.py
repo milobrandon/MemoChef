@@ -217,129 +217,38 @@ st.title("\U0001f9d1\u200d\U0001f373 Memo Chef")
 st.caption("From raw ingredients to a Michelin-star memo")
 
 # ============================================================================
-# ANIMATED SHRIMP HTML
+# ANIMATED SHRIMP GIFS — rotates between 5 quirky chef/shrimp GIFs
 # ============================================================================
-CHEF_SHRIMP_HTML = """
-<style>
-@keyframes chef-bounce {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-8px); }
-}
-@keyframes stir {
-  0%   { transform: rotate(-15deg); }
-  50%  { transform: rotate(15deg); }
-  100% { transform: rotate(-15deg); }
-}
-@keyframes flame-dance {
-  0%, 100% { transform: scaleY(1) scaleX(1); opacity: 0.85; }
-  25% { transform: scaleY(1.5) scaleX(0.8); opacity: 1; }
-  50% { transform: scaleY(0.8) scaleX(1.2); opacity: 0.7; }
-  75% { transform: scaleY(1.3) scaleX(0.9); opacity: 1; }
-}
-@keyframes steam-rise {
-  0% { opacity: 0.7; transform: translateY(0) scale(1); }
-  100% { opacity: 0; transform: translateY(-55px) scale(2); }
-}
-@keyframes pan-tilt {
-  0%, 100% { transform: rotate(0deg); }
-  30% { transform: rotate(-2deg); }
-  60% { transform: rotate(2deg); }
-}
-@keyframes sparkle {
-  0%, 100% { opacity: 0; transform: scale(0.5) translateY(0); }
-  50% { opacity: 1; transform: scale(1.2) translateY(-18px); }
-}
-.chef-scene {
-  display: flex; justify-content: center; align-items: flex-end;
-  height: 240px; margin: 10px 0 15px 0; user-select: none;
-  position: relative;
-}
-.chef-group {
-  position: relative;
-  display: flex; align-items: flex-end; gap: 0;
-}
-/* --- the shrimp chef character --- */
-.shrimp-chef {
-  position: relative; z-index: 5;
-  animation: chef-bounce 1.1s ease-in-out infinite;
-}
-.chef-toque {
-  font-size: 32px; position: absolute; z-index: 7;
-  top: -30px; left: 50%; transform: translateX(-50%);
-}
-.shrimp-body { font-size: 80px; display: block; }
-.chef-coat {
-  font-size: 11px; position: absolute; bottom: 8px;
-  left: 50%; transform: translateX(-50%);
-  background: #fff; border: 2px solid #ddd; border-radius: 4px;
-  padding: 1px 8px; white-space: nowrap; font-weight: bold;
-  color: #333; letter-spacing: 0.5px; z-index: 6;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.12);
-}
-/* spatula arm */
-.spatula {
-  font-size: 38px; position: absolute; z-index: 8;
-  top: 12px; right: -30px;
-  animation: stir 0.7s ease-in-out infinite;
-  transform-origin: bottom center;
-}
-/* --- pan + fire station --- */
-.station {
-  position: relative; margin-left: -10px; margin-bottom: -5px;
-}
-.pan-area {
-  animation: pan-tilt 1.2s ease-in-out infinite;
-  transform-origin: center bottom;
-  position: relative; z-index: 3;
-}
-.pan-emoji { font-size: 70px; }
-.flame-bit {
-  position: absolute; font-size: 24px; z-index: 2;
-  animation: flame-dance 0.35s ease-in-out infinite alternate;
-}
-.f1 { bottom: -12px; left: 8px; animation-delay: 0s; }
-.f2 { bottom: -9px;  left: 28px; animation-delay: 0.12s; }
-.f3 { bottom: -12px; left: 48px; animation-delay: 0.25s; }
-.f4 { bottom: -9px;  left: 68px; animation-delay: 0.08s; }
-.steam-puff {
-  position: absolute; font-size: 18px; z-index: 7;
-  animation: steam-rise 1.6s ease-out infinite;
-}
-.st1 { top: -15px; left: 10px; animation-delay: 0s; }
-.st2 { top: -20px; left: 35px; animation-delay: 0.5s; }
-.st3 { top: -12px; left: 60px; animation-delay: 1s; }
-.sparkle {
-  position: absolute; font-size: 14px; z-index: 9;
-  animation: sparkle 1.3s ease-in-out infinite;
-}
-.sp1 { top: -25px; left: 5px;  animation-delay: 0.2s; }
-.sp2 { top: -35px; left: 40px; animation-delay: 0.8s; }
-.sp3 { top: -20px; left: 72px; animation-delay: 1.2s; }
-</style>
-<div class="chef-scene">
-  <div class="chef-group">
-    <div class="shrimp-chef">
-      <div class="chef-toque">\U0001f9d1\u200d\U0001f373</div>
-      <span class="shrimp-body">\U0001f990</span>
-      <div class="chef-coat">CHEF</div>
-      <div class="spatula">\U0001f944</div>
-    </div>
-    <div class="station">
-      <div class="steam-puff st1">\u2668\ufe0f</div>
-      <div class="steam-puff st2">\u2668\ufe0f</div>
-      <div class="steam-puff st3">\u2668\ufe0f</div>
-      <div class="sparkle sp1">\u2728</div>
-      <div class="sparkle sp2">\u2728</div>
-      <div class="sparkle sp3">\u2728</div>
-      <div class="pan-area">
-        <div class="pan-emoji">\U0001f373</div>
-      </div>
-      <div class="flame-bit f1">\U0001f525</div>
-      <div class="flame-bit f2">\U0001f525</div>
-      <div class="flame-bit f3">\U0001f525</div>
-      <div class="flame-bit f4">\U0001f525</div>
-    </div>
-  </div>
+_CHEF_GIFS = [
+    # Dancing shrimp (nemomi) — cute bouncy shrimp dance
+    ("https://media.giphy.com/media/H4rDezQiLmkdbAzHcI/giphy.gif",
+     "The shrimp is vibing while your memo cooks..."),
+    # Chef shrimp by Walk-On's — shrimp with chef energy
+    ("https://media.giphy.com/media/37RfRKBoosceYgis5e/giphy.gif",
+     "Chef Shrimp is plating your metrics..."),
+    # Happy dancing shrimp (chopt) — joyful bouncing
+    ("https://media.giphy.com/media/3o7buikVSfLTuXjbC8/giphy.gif",
+     "Shrimp doing the happy dance for your data..."),
+    # Orange shrimp vibing — chill vibes
+    ("https://media.giphy.com/media/kFxSwhFVe3414uK8F5/giphy.gif",
+     "Shrimply vibing while the numbers simmer..."),
+    # Party shrimp — celebration mode
+    ("https://media.giphy.com/media/yGJdHAm1Vu0MlLq6CL/giphy.gif",
+     "Party shrimp is prepping the garnish..."),
+]
+
+
+def _chef_gif_html() -> str:
+    """Return HTML for a randomly chosen shrimp chef GIF."""
+    import random
+    url, caption = random.choice(_CHEF_GIFS)
+    return f"""
+<div style="text-align:center; margin: 15px 0;">
+  <img src="{url}" alt="Chef Shrimp"
+       style="max-height:220px; border-radius:12px;
+              box-shadow: 0 4px 15px rgba(0,0,0,0.15);" />
+  <p style="margin-top:8px; font-size:14px; color:#888;
+            font-style:italic;">{caption}</p>
 </div>
 """
 
@@ -445,9 +354,9 @@ if st.button(_fire_label, type="primary", disabled=_fire_disabled):
         progress_bar = st.progress(0, text="\U0001f525 Firing up the pass...")
 
         with st.status("\U0001f525 Firing up the pass...", expanded=True) as status:
-            # Show animated chef shrimp while processing
+            # Show a random quirky shrimp chef GIF while processing
             anim_placeholder = st.empty()
-            anim_placeholder.markdown(CHEF_SHRIMP_HTML, unsafe_allow_html=True)
+            anim_placeholder.markdown(_chef_gif_html(), unsafe_allow_html=True)
 
             # Step a: Backup
             progress_bar.progress(3, text="\U0001f9ca Icing the original...")
@@ -630,7 +539,6 @@ if st.button(_fire_label, type="primary", disabled=_fire_disabled):
                 progress_bar.progress(95, text="Aligning layout...")
                 st.write("\U0001f4d0 Aligning layout...")
                 layout_summary = normalize_layout(memo_path, cfg)
-                log.info("Layout normalized: %s", layout_summary)
                 st.write(f"\U0001f4d0 Layout healed: {layout_summary['titles_snapped']} titles, "
                          f"{layout_summary['page_numbers_snapped']} page numbers snapped")
 
