@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Memo Chef — Streamlit dashboard wrapping memo_automator.py."""
 
+import hashlib
+import json
 import logging
 import os
 import re
+import secrets as _secrets
 import tempfile
 import time
+from datetime import datetime, timedelta
 
 
 import anthropic
@@ -34,34 +38,165 @@ st.set_page_config(page_title="Memo Chef", page_icon="\U0001f9d1\u200d\U0001f373
 
 
 # ============================================================================
-# PASSWORD GATE
+# PASSWORD HELPERS
 # ============================================================================
+def _hash_password(password: str, salt: bytes | None = None) -> str:
+    """Return ``"salt_hex:hash_hex"`` using PBKDF2-SHA256."""
+    if salt is None:
+        salt = _secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 260_000)
+    return f"{salt.hex()}:{dk.hex()}"
+
+
+def _verify_password(password: str, stored_hash: str) -> bool:
+    salt_hex, hash_hex = stored_hash.split(":", 1)
+    salt = bytes.fromhex(salt_hex)
+    candidate = _hash_password(password, salt)
+    return candidate == stored_hash
+
+
+# ============================================================================
+# CREDIT SYSTEM
+# ============================================================================
+_CREDIT_FILE = os.path.join(os.path.dirname(__file__), "credit_usage.json")
+
+
+def _current_week_start() -> str:
+    """ISO Monday date for the current week."""
+    today = datetime.now()
+    monday = today - timedelta(days=today.weekday())
+    return monday.strftime("%Y-%m-%d")
+
+
+def _load_credits() -> dict:
+    if os.path.exists(_CREDIT_FILE):
+        with open(_CREDIT_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def _save_credits(data: dict) -> None:
+    with open(_CREDIT_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def _get_user_credits(username: str, credits_per_week: int) -> tuple[int, int]:
+    """Return (used, remaining). Auto-resets on week rollover."""
+    data = _load_credits()
+    week = _current_week_start()
+    user_data = data.get(username, {})
+    if user_data.get("week") != week:
+        # New week — reset
+        user_data = {"week": week, "used": 0}
+        data[username] = user_data
+        _save_credits(data)
+    used = user_data.get("used", 0)
+    return used, max(0, credits_per_week - used)
+
+
+def _consume_credit(username: str) -> None:
+    data = _load_credits()
+    week = _current_week_start()
+    user_data = data.get(username, {})
+    if user_data.get("week") != week:
+        user_data = {"week": week, "used": 0}
+    user_data["used"] = user_data.get("used", 0) + 1
+    data[username] = user_data
+    _save_credits(data)
+
+
+def _reset_user_credits(username: str) -> None:
+    data = _load_credits()
+    week = _current_week_start()
+    data[username] = {"week": week, "used": 0}
+    _save_credits(data)
+
+
+# ============================================================================
+# AUTH GATE
+# ============================================================================
+def _get_users() -> dict:
+    """Load user definitions from st.secrets['users']."""
+    try:
+        return dict(st.secrets["users"])
+    except (KeyError, FileNotFoundError):
+        return {}
+
+
 def check_password() -> bool:
-    """Show a login form and return True only when the correct password is entered."""
+    """Per-user login: username + password.  Sets session_state on success."""
     if st.session_state.get("authenticated"):
         return True
 
-    try:
-        app_password = st.secrets["APP_PASSWORD"]
-    except (KeyError, FileNotFoundError):
-        st.error("APP_PASSWORD not configured in Streamlit secrets.")
+    users = _get_users()
+    if not users:
+        st.error("No users configured in Streamlit secrets.")
         st.stop()
 
     st.title("\U0001f512 Memo Chef — Login")
     with st.form("login_form"):
+        username = st.text_input("Username")
         password = st.text_input("Password", type="password")
         submitted = st.form_submit_button("Log in")
     if submitted:
-        if password == app_password:
+        user_cfg = users.get(username)
+        if user_cfg and _verify_password(password, user_cfg["password_hash"]):
             st.session_state["authenticated"] = True
+            st.session_state["username"] = username
+            st.session_state["role"] = user_cfg.get("role", "user")
+            st.session_state["credits_per_week"] = int(
+                user_cfg.get("credits_per_week", 5)
+            )
             st.rerun()
         else:
-            st.error("Incorrect password.")
+            st.error("Invalid username or password.")
     st.stop()
 
 
 if not check_password():
     st.stop()
+
+# ============================================================================
+# SIDEBAR — user info, credits, admin panel
+# ============================================================================
+_username = st.session_state["username"]
+_role = st.session_state["role"]
+_credits_per_week = st.session_state["credits_per_week"]
+_used, _remaining = _get_user_credits(_username, _credits_per_week)
+
+with st.sidebar:
+    st.markdown(f"**{_username}** &nbsp; `{_role}`")
+    st.caption(f"Credits: {_remaining} / {_credits_per_week} remaining this week")
+    st.progress(
+        min(_used / _credits_per_week, 1.0) if _credits_per_week > 0 else 1.0,
+        text=f"{_used} used",
+    )
+    if st.button("Clock out"):
+        for k in list(st.session_state.keys()):
+            del st.session_state[k]
+        st.rerun()
+
+    # Admin panel
+    if _role == "admin":
+        st.divider()
+        st.subheader("Admin Panel")
+        users = _get_users()
+        rows = []
+        for uname, ucfg in users.items():
+            cpw = int(ucfg.get("credits_per_week", 5))
+            u, r = _get_user_credits(uname, cpw)
+            rows.append(
+                {"User": uname, "Role": ucfg.get("role", "user"),
+                 "Used": u, "Limit": cpw, "Remaining": r}
+            )
+        st.table(rows)
+        reset_user = st.selectbox(
+            "Reset credits for", [r["User"] for r in rows], index=None,
+            placeholder="Select a user...",
+        )
+        if reset_user and st.button(f"Reset {reset_user}"):
+            _reset_user_credits(reset_user)
+            st.rerun()
 
 st.title("\U0001f9d1\u200d\U0001f373 Memo Chef")
 st.caption("From raw ingredients to a Michelin-star memo")
@@ -239,13 +374,19 @@ with st.expander("\U0001f9c2 Chef's Preferences"):
     skip_validation = st.checkbox("Skip the sous-chef QA pass (express ticket)")
 
 # ============================================================================
-# FIRE BUTTON
+# FIRE BUTTON (credit-gated)
 # ============================================================================
-if st.button(
-    "\U0001f525  Fire!",
-    type="primary",
-    disabled=not (memo_file and proforma_file),
-):
+_fire_disabled = not (memo_file and proforma_file) or _remaining <= 0
+_fire_label = (
+    f"\U0001f525  Fire!  ({_remaining} credits left)"
+    if _remaining > 0
+    else "\U0001f6ab  No credits remaining"
+)
+
+if st.button(_fire_label, type="primary", disabled=_fire_disabled):
+    # Consume a credit up front
+    _consume_credit(_username)
+
     # Clear previous results
     for key in ["memo_bytes", "log_bytes", "filename", "n_changes",
                 "n_rejected", "n_missed", "log_lines"]:
