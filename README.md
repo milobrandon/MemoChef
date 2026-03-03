@@ -141,3 +141,52 @@ The script makes **two API calls**, each replacing a step that would normally re
 - **Dry run**: Use `--dry-run` to preview all changes before committing them. No files are modified in dry-run mode.
 - **Auditability**: The `CHANGE_LOG.md`, `mappings_raw.json`, and `mappings_validated.json` provide a full audit trail of what changed and why.
 - **Proforma caching**: If `openpyxl` returns `None` for formula cells, open the proforma in Excel, wait for it to calculate, save, and close before running the script.
+
+## Team Onboarding
+
+New to the project? Here's how to get productive quickly.
+
+### 1. Read These First
+
+| Document | What You'll Learn |
+|----------|------------------|
+| This README | How the tool works and how to run it |
+| [ROADMAP.md](ROADMAP.md) | Project vision, architecture, phased plan |
+| [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | Code style, branching, PR process |
+| [docs/SECURITY.md](docs/SECURITY.md) | API key handling, data sensitivity |
+| [docs/RUNBOOK.md](docs/RUNBOOK.md) | Deployment, key rotation, troubleshooting |
+
+### 2. Set Up Your Environment
+
+```bash
+git clone https://github.com/milobrandon/MemoChef.git
+cd MemoChef
+python -m venv .venv
+source .venv/bin/activate    # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env         # add your ANTHROPIC_API_KEY
+```
+
+### 3. Run the Tests
+
+```bash
+pytest                       # unit tests (no API key needed)
+pytest -m "not integration"  # skip integration tests
+```
+
+### 4. Try a Dry Run
+
+```bash
+python memo_automator.py memo.pptx proforma.xlsm --dry-run
+```
+
+This previews all changes without modifying any files. Review the `CHANGE_LOG.md` output to understand what the tool does.
+
+### 5. Architecture Overview
+
+The codebase is currently a single module (`memo_automator.py`, ~2,500 lines) with clearly separated sections. See [ROADMAP.md](ROADMAP.md) Section 3 for the current architecture diagram and the planned package refactor.
+
+Key decision records:
+- [ADR-001](docs/adr/001-monolith-to-packages.md) — Why the monolith hasn't been split yet
+- [ADR-002](docs/adr/002-claude-model-selection.md) — Claude model selection strategy
+- [ADR-003](docs/adr/003-market-data-approach.md) — Market data integration approach

@@ -1,6 +1,6 @@
 # Memo Automator — Execution Checklist
 
-> **Last updated:** 2026-03-01
+> **Last updated:** 2026-03-02
 > **Tracking:** Check boxes as tasks complete. Add dates and notes in the rightmost column.
 
 ---
@@ -13,14 +13,14 @@
 - [x] Create `CHECKLIST.md` (this file) — @brandon — 0.5d — _Depends: ROADMAP_ — Done 2026-03-01
 - [x] Create `docs/CONTRIBUTING.md` — @brandon — 0.5d — _No deps_ — Done 2026-03-01
 - [x] Create `docs/SECURITY.md` — @brandon — 0.5d — _No deps_ — Done 2026-03-01
-- [x] Create `docs/RUNBOOK.md` — @brandon — 0.5d — _No deps_ — Done 2026-03-01
-- [x] Create `docs/DATA_SOURCES.md` — @brandon — 1d — _No deps_ — Done 2026-03-01
-- [x] Create `docs/adr/README.md` (ADR index + template) — @brandon — 0.25d — _No deps_ — Done 2026-03-01
-- [x] Create `docs/adr/001-monolith-to-packages.md` — @brandon — 0.25d — _No deps_ — Done 2026-03-01
-- [x] Create `docs/adr/002-claude-model-selection.md` — @brandon — 0.25d — _No deps_ — Done 2026-03-01
-- [x] Create `docs/adr/003-market-data-approach.md` — @brandon — 0.25d — _No deps_ — Done 2026-03-01
-- [x] Update `.gitignore` — @brandon — 0.25d — _No deps_ — Done 2026-03-01
-- [ ] Update `README.md` with team onboarding section — @brandon — 1d — _Depends: CONTRIBUTING_
+- [x] Create `docs/RUNBOOK.md` — @brandon — 0.5d — _No deps_ — Done 2026-03-02
+- [x] Create `docs/DATA_SOURCES.md` — @brandon — 1d — _No deps_ — Done 2026-03-02
+- [x] Create `docs/adr/README.md` (ADR index + template) — @brandon — 0.25d — _No deps_ — Done 2026-03-02
+- [x] Create `docs/adr/001-monolith-to-packages.md` — @brandon — 0.25d — _No deps_ — Done 2026-03-02
+- [x] Create `docs/adr/002-claude-model-selection.md` — @brandon — 0.25d — _No deps_ — Done 2026-03-02
+- [x] Create `docs/adr/003-market-data-approach.md` — @brandon — 0.25d — _No deps_ — Done 2026-03-02
+- [x] Update `.gitignore` — @brandon — 0.25d — _No deps_ — Done 2026-03-02
+- [x] Update `README.md` with team onboarding section — @brandon — 1d — _Depends: CONTRIBUTING_ — Done 2026-03-02
 
 ---
 
