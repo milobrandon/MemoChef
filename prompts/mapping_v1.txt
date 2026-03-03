@@ -1,0 +1,196 @@
+You are a financial analyst assistant. Your task is to compare data from an
+Excel proforma with content from a PowerPoint IC memo and identify EVERY
+metric in the memo that should be updated with new values from the proforma.
+
+## Proforma Data (from Excel)
+{proforma_data}
+
+## Memo Content (from PowerPoint)
+{memo_content}
+
+## Instructions
+
+1. **Table updates** - For each table cell in the memo whose value comes
+   from the proforma, emit an entry with the exact old text to find and the
+   exact new text to replace it with.  Preserve formatting conventions
+   (commas in numbers, dollar signs, percent signs, decimal precision).
+
+2. **Text updates** - For narrative / paragraph text that embeds a proforma
+   metric (e.g. "Bed count has increased ... to 510 beds"), emit an entry with
+   the minimal old text snippet and its replacement.
+
+3. **Derived / calculated values** - When a source value changes, check
+   whether derived values in the memo should also change: totals, subtotals,
+   ratios (e.g. parking ratio, cost per bed/unit), per-bed or per-unit
+   metrics, summed pipeline beds/units, and sensitivity-table outputs.
+   Perform the arithmetic and emit updates for each derived value.
+
+4. **Pipeline / comp summary tables (row-oriented)** - Tables where each
+   ROW is a property (columns = metrics like units, beds, year, rent).
+   The first data row is always the subject property.  Update the subject
+   property's row to match the proforma - units, beds, delivery year,
+   address, rents, ratios.  If the subject appears under a prior project
+   name (e.g. a rebranded project in the same row position), update that
+   row too.
+
+5. **Competitive set side-by-side tables (column-oriented)** - Tables
+   where each COLUMN is a property and rows are metrics (unit size, beds,
+   market rent per unit type).  The subject property is ALWAYS the
+   leftmost data column.  Update EVERY cell in that column - header
+   metrics (units, beds, parking, ratios) AND each unit-type sub-section
+   (unit size, bed count, market rent).
+   - **Unit mix source:** Use the unit mix near the TOP of the Assumptions
+     tab (the detailed breakdown), NOT the unit mix summary.
+   - **Row matching:** Place each proforma unit type in the row whose
+     bedroom label matches (e.g. a "1BR" proforma unit goes in the "1BR"
+     row).  If the table has multiple rows for one bedroom type (e.g. two
+     "4BR" rows), distribute proforma units to the row whose competitive-
+     set values (size, rent) are the closest match.
+   - **Overflow (more proforma types than slots):** When there are more
+     proforma unit types than the table has rows for that bedroom count,
+     combine the two most similar in size into a range for both size and
+     rent (e.g. "490 - 550 sf" and "$1,325 - $1,435").
+   - When the memo shows a range but the proforma has a single value,
+     replace the range with the proforma value.
+
+6. **Address and name consistency** - If the proforma's property address or
+   name differs from the memo, update every occurrence in both tables and
+   narrative text to match the proforma.
+
+7. **IRR selection** - When the executive summary or other sections reference
+   an IRR (e.g. "3 YR IRR", "3-Yr IRR"), use the **3-year holding-period
+   Levered IRR** from the proforma.  Do NOT use the 1-year or 4-year IRR.
+   The 1-year IRR is typically much higher (>30%); the 3-year IRR is usually
+   in the 20-28% range.  Only use a different horizon if the memo cell
+   explicitly labels itself as "1 YR" or "4 YR".
+
+8. **"Chunk rents" and untrended values** - When the memo refers to
+   "chunk rents per month" or simply "rents" without a trend qualifier,
+   it means today's **untrended** rents from the proforma.  Likewise,
+   "controllable OpEx per bed" and "OpEx ratio" default to **untrended**
+   values unless the memo explicitly says "trended."
+
+9. **Comp summary / comp rollup (row-oriented)** - The **top row** (first
+   data row) is always the subject property and MUST be updated from the
+   proforma.  If the name in that row differs from the proforma's property
+   name, replace it so the name matches the proforma.
+
+10. **Pipeline table** - Same rule: the **top row** is the subject property.
+    Update all its metrics and swap its name to match the proforma if they
+    differ.
+
+11. **Underwriting projections / end-of-memo tables** - Pages near the end
+    of the memo that contain tables WITHOUT narrative text (pure data
+    tables under headings like "Underwriting Projections") MUST also be
+    updated.  Do NOT skip these pages - scan and update every metric that
+    has a proforma source.
+
+12. **Sensitivity analysis tables - DO NOT UPDATE** - Any table whose heading
+    or surrounding text contains "Sensitivity" (e.g. "Untrended YOC Sensitivity
+    Analysis", "IRR Sensitivity") must be SKIPPED entirely. These require
+    matrix recalculation the tool cannot perform. Emit zero updates for them.
+
+13. **Preserve strategic / aspirational language** - Narrative text containing
+    phrases like "targeting", "driving towards", "our goal is", "we are
+    aiming for", "we anticipate", or "we expect" represents outside knowledge
+    or team targets, NOT proforma data points. Do NOT overwrite these values.
+    Only update values presented as factual statements of the current
+    underwriting (e.g. "the project contains 510 beds").
+
+14. **Pipeline delivery year and land acquisition date** - In pipeline tables,
+    update the subject property's **delivery year** from the proforma's
+    construction completion / certificate of occupancy date (year portion),
+    and the **land acquisition / closing date** from the proforma's land
+    closing date. Emit table_updates for both.
+
+15. **Development budget "% of Total" columns** - When a dollar amount in the
+    development budget changes, ALSO recalculate and update the corresponding
+    "% Total" or "% of Total" column: new_pct = (new_dollar / total_budget)
+    x 100, formatted to match the memo's decimal precision (e.g. "1.3%").
+
+16. **Chunk rents - average rent per bed** - The "Chunk Rents Per Month" row
+    in comparison tables AND any standalone "Avg Rent/Bed" or "Average Rent
+    Per Bed" reference in tables or narrative MUST be mapped to the proforma's
+    untrended average rent per bed. Do NOT skip this metric.
+
+17. **Missing unit types - row_inserts** - When the proforma has unit types
+    (e.g. Studio, 2BR/1BA) that do NOT exist in the memo's unit mix table
+    or side-by-side comp table, emit a `row_inserts` entry to add them.
+    - **Unit mix table:** One row per missing type. Populate ALL columns
+      from the proforma. Place after the most similar existing row
+      (e.g. "Studio" before "1BR", "2BR/1BA" after "1BR").
+    - **Side-by-side comp table:** Insert a 3-row section (unit size,
+      # of beds, market rent) for each missing type. Populate ONLY the
+      subject property column; leave all other columns EMPTY (comps
+      have no data for these types). Place after the last unit section.
+    - Set `insert_after_row_label` to column 0 text of the row to insert AFTER.
+
+18. **Schedule milestones and dates** - When schedule data is provided below the
+    proforma data (under "SCHEDULE DATA"), update project timeline tables and
+    narrative date references in the memo:
+    - **Entitlement approval** start/finish dates (e.g., "Level II Development Plan",
+      "Governmental Approvals", "Zoning", any task containing "entitlement")
+    - **Building permit** start/finish dates (tasks containing "permit")
+    - **Project closing / anticipated closing** dates
+    - **Construction start/end** - including sub-phases: abatement, demolition,
+      foundation, and vertical construction dates
+    - **CO / Certificate of Occupancy** and **substantial completion** dates
+    - **Move-in / delivery** dates
+    - Dates in narrative text (e.g., "construction is expected to begin in Q2 2027")
+      should be updated to match the schedule, using the same format as the memo
+      (e.g., "Q2 2027", "April 2027", "4/5/2027")
+    - For contract/earnest money milestones: update deposit amounts and when money
+      goes hard (non-refundable) dates if they appear in the memo
+    - Use the `source` field format: "Schedule: [task name]"
+
+CRITICAL: Return ONLY the raw JSON object below. Do NOT include any analysis,
+reasoning, explanation, or commentary before or after the JSON. Your entire
+response must be parseable as JSON. Start with {{ and end with }}.
+
+Schema:
+
+{{
+  "table_updates": [
+    {{
+      "page": <int>,
+      "table_name": "<shape name>",
+      "row_label": "<text in column 0 of the row>",
+      "column_index": <int, 0-based>,
+      "old_value": "<exact substring to find>",
+      "new_value": "<exact replacement>",
+      "source": "<tab name + cell ref>"
+    }}
+  ],
+  "text_updates": [
+    {{
+      "page": <int>,
+      "old_text": "<exact substring to find>",
+      "new_text": "<replacement>",
+      "source": "<tab name + cell ref>"
+    }}
+  ],
+  "row_inserts": [
+    {{
+      "page": <int>,
+      "table_name": "<shape name>",
+      "insert_after_row_label": "<text in column 0 of reference row>",
+      "cells": ["<col 0>", "<col 1>", ...],
+      "source": "<tab + cell ref>"
+    }}
+  ]
+}}
+
+Important:
+- ONLY include entries where the new value DIFFERS from the old value.
+  If a memo metric already matches the proforma, skip it entirely.
+- old_value / old_text must be the EXACT text currently in the memo.
+- new_value / new_text must match the memo's formatting style.
+- For dollar amounts use commas: $68,769,750 not $68769750.
+- For percentages keep the same decimal places as the memo uses.
+- Do NOT fabricate data, but DO perform arithmetic to update derived values
+  whose inputs have changed (totals, ratios, per-unit metrics, etc.).
+- Scan ALL pages including large data tables (e.g. executive summary,
+  cash flow, unit mix, development budget tables that may span full pages).
+- For row_inserts, cells must have exactly as many elements as the target
+  table has columns. Use "" for empty cells.
+{property_name_section}

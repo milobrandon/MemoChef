@@ -37,12 +37,14 @@ import zipfile
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 import anthropic
 import openpyxl
 import yaml
 from dotenv import load_dotenv
 from openpyxl.utils.exceptions import InvalidFileException
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from pptx import Presentation
 from pptx.exc import PackageNotFoundError
 
@@ -179,78 +181,103 @@ def parse_args():
 # ============================================================================
 # 2. CONFIGURATION
 # ============================================================================
+class ProformaConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tabs: list[str] = Field(
+        default_factory=lambda: [
+            "Executive Summary",
+            "Development Summary",
+            "Cash Flow",
+            "Assumptions",
+            "Proforma Comparison",
+        ],
+        min_length=1,
+    )
+    max_rows_per_tab: int = Field(default=250, ge=0)
+    max_cols_per_tab: int = Field(default=30, ge=0)
+
+
+class MemoConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    pages: Literal["all"] | list[int] = "all"
+
+
+class ScheduleConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_tasks: int = Field(default=500, ge=0)
+
+
+class BrandingConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    theme_path: str = ""
+    heading_size_threshold: int = Field(default=18, ge=0)
+    color_distance_threshold: float = Field(default=80, ge=0)
+
+
+class LayoutConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    margin_left: float = Field(default=0.50, ge=0)
+    margin_right: float = Field(default=0.50, ge=0)
+    margin_top: float = Field(default=0.25, ge=0)
+    margin_bottom: float = Field(default=0.50, ge=0)
+    snap_tolerance: float = Field(default=0.05, ge=0)
+
+
+class ClaudeConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model: str = Field(default="claude-sonnet-4-6", min_length=1)
+    validation_model: str | None = None
+    max_tokens: int = Field(default=16000, ge=1)
+    temperature: float = Field(default=0, ge=0, le=1)
+
+    @model_validator(mode="after")
+    def set_validation_model_default(self):
+        if not self.validation_model:
+            self.validation_model = self.model
+        return self
+
+
+class AppConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    proforma: ProformaConfig = Field(default_factory=ProformaConfig)
+    memo: MemoConfig = Field(default_factory=MemoConfig)
+    schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
+    branding: BrandingConfig = Field(default_factory=BrandingConfig)
+    layout: LayoutConfig = Field(default_factory=LayoutConfig)
+    claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
+
+
+def _format_validation_error(e: dict) -> str:
+    location = ".".join(str(p) for p in e.get("loc", ()))
+    msg = e.get("msg", "invalid value")
+    return f"{location}: {msg}" if location else msg
+
+
 def _validate_config(cfg: dict) -> list[str]:
     """Validate config schema. Returns a list of error messages (empty = valid)."""
-    errors = []
-    # proforma.tabs must be a non-empty list of strings
-    tabs = cfg.get("proforma", {}).get("tabs", [])
-    if not isinstance(tabs, list) or len(tabs) == 0:
-        errors.append("proforma.tabs must be a non-empty list of sheet names")
-    elif not all(isinstance(t, str) for t in tabs):
-        errors.append("proforma.tabs must contain only strings")
-
-    # Numeric bounds
-    for key, section in [("max_rows_per_tab", "proforma"),
-                         ("max_cols_per_tab", "proforma"),
-                         ("max_tasks", "schedule")]:
-        val = cfg.get(section, {}).get(key)
-        if val is not None and (not isinstance(val, int) or val < 0):
-            errors.append(f"{section}.{key} must be a non-negative integer")
-
-    # claude.model must be a non-empty string
-    model = cfg.get("claude", {}).get("model", "")
-    if not isinstance(model, str) or not model:
-        errors.append("claude.model must be a non-empty string")
-
-    # claude.temperature must be 0-1
-    temp = cfg.get("claude", {}).get("temperature")
-    if temp is not None and (not isinstance(temp, (int, float)) or temp < 0 or temp > 1):
-        errors.append("claude.temperature must be a number between 0 and 1")
-
-    return errors
+    try:
+        AppConfig.model_validate(cfg)
+        return []
+    except ValidationError as exc:
+        return [_format_validation_error(e) for e in exc.errors()]
 
 
 def load_config(config_path: str) -> dict:
     """Load and validate the YAML configuration file."""
-    with open(config_path, "r") as f:
-        cfg = yaml.safe_load(f)
+    with open(config_path, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f)
 
-    if cfg is None:
-        cfg = {}
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError("Invalid config:\n  root: expected a YAML object")
 
-    # Apply defaults for missing keys
-    cfg.setdefault("proforma", {})
-    cfg["proforma"].setdefault("tabs", [
-        "Executive Summary", "Development Summary", "Cash Flow",
-        "Assumptions", "Proforma Comparison"
-    ])
-    cfg["proforma"].setdefault("max_rows_per_tab", 250)
-    cfg["proforma"].setdefault("max_cols_per_tab", 30)
-    cfg.setdefault("memo", {})
-    cfg["memo"].setdefault("pages", "all")
-    cfg.setdefault("schedule", {})
-    cfg["schedule"].setdefault("max_tasks", 500)
-    cfg.setdefault("branding", {})
-    cfg["branding"].setdefault("heading_size_threshold", 18)
-    cfg["branding"].setdefault("color_distance_threshold", 80)
-    cfg.setdefault("layout", {})
-    cfg["layout"].setdefault("margin_left", 0.50)
-    cfg["layout"].setdefault("margin_right", 0.50)
-    cfg["layout"].setdefault("margin_top", 0.25)
-    cfg["layout"].setdefault("margin_bottom", 0.50)
-    cfg["layout"].setdefault("snap_tolerance", 0.05)
-    cfg.setdefault("claude", {})
-    cfg["claude"].setdefault("model", "claude-sonnet-4-6")
-    cfg["claude"].setdefault("validation_model", cfg["claude"]["model"])
-    cfg["claude"].setdefault("max_tokens", 16000)
-    cfg["claude"].setdefault("temperature", 0)
-
-    # Validate schema
-    errors = _validate_config(cfg)
+    errors = _validate_config(raw)
     if errors:
         raise ValueError("Invalid config:\n  " + "\n  ".join(errors))
 
-    return cfg
+    cfg = AppConfig.model_validate(raw)
+    return cfg.model_dump(mode="python")
 
 
 # ============================================================================
@@ -535,6 +562,23 @@ def chunk_memo_by_pages(memo_content: str, pages_per_chunk: int = 10) -> list:
     return chunks
 
 
+PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
+
+
+def _load_prompt_template(filename: str, fallback: str) -> str:
+    """
+    Load a prompt template from prompts/filename.
+    Falls back to the inline template if the file is missing.
+    """
+    path = PROMPTS_DIR / filename
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+        return text if text else fallback
+    except OSError:
+        log.warning("Prompt template not found (%s). Using inline fallback.", path)
+        return fallback
+
+
 # ============================================================================
 # 7. CLAUDE API - METRIC MAPPING
 # ============================================================================
@@ -735,6 +779,7 @@ Important:
 - For row_inserts, cells must have exactly as many elements as the target
   table has columns. Use "" for empty cells.
 {property_name_section}"""
+MAPPING_PROMPT = _load_prompt_template("mapping_v1.txt", MAPPING_PROMPT)
 
 
 def _salvage_truncated_json(raw: str) -> dict | None:
@@ -906,6 +951,7 @@ def get_metric_mappings(
     memo_content: str,
     cfg: dict,
     property_name: str = "",
+    telemetry: dict | None = None,
 ) -> dict:
     """
     Send proforma data + memo content to Claude and receive structured
@@ -961,6 +1007,8 @@ def get_metric_mappings(
     else:
         api_kwargs["temperature"] = temperature
 
+    if telemetry is not None:
+        telemetry["mapping_api_calls"] = telemetry.get("mapping_api_calls", 0) + 1
     message = client.messages.create(**api_kwargs)
 
     # Extract text from response (skip thinking blocks)
@@ -1002,6 +1050,8 @@ def get_metric_mappings(
             "Start your response with { and end with }."
         )
         api_kwargs["messages"] = [{"role": "user", "content": retry_prompt}]
+        if telemetry is not None:
+            telemetry["mapping_api_calls"] = telemetry.get("mapping_api_calls", 0) + 1
         retry_msg = client.messages.create(**api_kwargs)
         retry_raw = ""
         for block in retry_msg.content:
@@ -1118,6 +1168,7 @@ Additional domain rules to enforce:
   match the memo's existing style (Q2 2027 vs April 2027 vs 4/5/2027). Flag as
   missed if the memo references timeline milestones that were not updated.
 {property_name_section}"""
+VALIDATION_PROMPT = _load_prompt_template("validation_v1.txt", VALIDATION_PROMPT)
 
 
 def _call_validation_api(
@@ -1127,6 +1178,7 @@ def _call_validation_api(
     memo_content: str,
     cfg: dict,
     property_name: str = "",
+    telemetry: dict | None = None,
 ) -> dict:
     """
     Single validation API call. Returns the parsed JSON result from Claude.
@@ -1173,6 +1225,8 @@ def _call_validation_api(
     else:
         api_kwargs["temperature"] = temperature
 
+    if telemetry is not None:
+        telemetry["validation_api_calls"] = telemetry.get("validation_api_calls", 0) + 1
     message = client.messages.create(**api_kwargs)
 
     # Extract text from response (skip thinking blocks)
@@ -1209,6 +1263,7 @@ def validate_mappings(
     memo_content: str,
     cfg: dict,
     property_name: str = "",
+    telemetry: dict | None = None,
 ) -> dict:
     """
     Second Claude API call - validates the proposed mappings by cross-checking
@@ -1299,6 +1354,7 @@ def validate_mappings(
             batch_result = _call_validation_api(
                 client, chunk_indexed, proforma_data, chunk, cfg,
                 property_name=property_name,
+                telemetry=telemetry,
             )
             merged_result["rejected"].extend(batch_result.get("rejected", []))
             merged_result["corrections"].extend(batch_result.get("corrections", []))
@@ -1309,6 +1365,7 @@ def validate_mappings(
         result = _call_validation_api(
             client, indexed_mappings, proforma_data, memo_content, cfg,
             property_name=property_name,
+            telemetry=telemetry,
         )
 
     # Reconstruct validated mappings: start with originals, remove rejections,
@@ -2361,7 +2418,8 @@ def normalize_layout(memo_path: str, cfg: dict) -> dict:
 # 10. CHANGE LOG
 # ============================================================================
 def write_change_log(output_dir: str, all_changes: list, mappings: dict,
-                     memo_path: str, proforma_path: str, backup_path: str):
+                     memo_path: str, proforma_path: str, backup_path: str,
+                     run_metadata: dict | None = None):
     """Write a Markdown change-log summarizing every modification."""
     def _md_cell(value: str) -> str:
         return str(value).replace("|", "\\|").replace("\n", "<br>")
@@ -2376,6 +2434,18 @@ def write_change_log(output_dir: str, all_changes: list, mappings: dict,
         f.write(f"**Proforma:** `{os.path.basename(proforma_path)}`\n\n")
         f.write(f"**Backup:** `{os.path.basename(backup_path)}`\n\n")
         f.write(f"**Total changes applied:** {len(all_changes)}\n\n")
+
+        if run_metadata:
+            f.write("## Run Telemetry\n\n")
+            steps = run_metadata.get("steps", {})
+            f.write(f"- Duration (sec): {run_metadata.get('run_duration_sec', 0):.2f}\n")
+            f.write(f"- Mapping API calls: {run_metadata.get('mapping_api_calls', 0)}\n")
+            f.write(f"- Validation API calls: {run_metadata.get('validation_api_calls', 0)}\n")
+            if steps:
+                f.write("- Step timings (sec):\n")
+                for k, v in steps.items():
+                    f.write(f"  - {k}: {v:.2f}\n")
+            f.write("\n")
 
         f.write("## Applied Changes\n\n")
         f.write("| # | Page | Type | Location | Old | New | Source |\n")
@@ -2473,18 +2543,24 @@ def main():
             max_retries=5,
             timeout=900.0,  # 15 min; needed for large batches and Opus thinking
         )
+        run_meta = {"steps": {}, "mapping_api_calls": 0, "validation_api_calls": 0}
+        run_started = time.time()
 
         # ---- Step 1: Backup ----
         log.info("=" * 60)
         log.info("STEP 1: Creating backup")
         log.info("=" * 60)
+        step_started = time.time()
         backup_path = create_backup(args.memo, output_dir)
+        run_meta["steps"]["backup"] = time.time() - step_started
 
         # ---- Step 2: Extract proforma data ----
         log.info("=" * 60)
         log.info("STEP 2: Extracting proforma data")
         log.info("=" * 60)
+        step_started = time.time()
         proforma_data = extract_proforma_data(args.proforma, cfg)
+        run_meta["steps"]["extract_proforma"] = time.time() - step_started
 
         # Save extraction for debugging / audit
         pf_dump = os.path.join(output_dir, "proforma_extract.txt")
@@ -2496,7 +2572,9 @@ def main():
         log.info("=" * 60)
         log.info("STEP 3: Extracting memo content (all slides)")
         log.info("=" * 60)
+        step_started = time.time()
         memo_content = extract_memo_content(args.memo, cfg)
+        run_meta["steps"]["extract_memo"] = time.time() - step_started
 
         memo_dump = os.path.join(output_dir, "memo_extract.txt")
         with open(memo_dump, "w", encoding="utf-8") as f:
@@ -2507,6 +2585,7 @@ def main():
         log.info("=" * 60)
         log.info("STEP 4: Claude API - identifying metric mappings")
         log.info("=" * 60)
+        step_started = time.time()
         BATCH_THRESHOLD = 80_000  # chars; above this, process slides in batches
         RATE_LIMIT_INTERVAL = 65  # seconds between API calls for rate limiting
         prompt_size = len(proforma_data) + len(memo_content)
@@ -2530,6 +2609,7 @@ def main():
                     batch = get_metric_mappings(
                         client, proforma_data, chunk, cfg,
                         property_name=args.property_name,
+                        telemetry=run_meta,
                     )
                 except Exception as batch_err:
                     if _is_api_error(batch_err):
@@ -2580,6 +2660,7 @@ def main():
                             sub_batch = get_metric_mappings(
                                 client, proforma_data, sub_chunk, cfg,
                                 property_name=args.property_name,
+                                telemetry=run_meta,
                             )
                         except Exception as sub_err:
                             if _is_api_error(sub_err):
@@ -2601,8 +2682,10 @@ def main():
             mappings = get_metric_mappings(
                 client, proforma_data, memo_content, cfg,
                 property_name=args.property_name,
+                telemetry=run_meta,
             )
             mappings.pop("_truncated", None)
+        run_meta["steps"]["mapping"] = time.time() - step_started
 
         # Save raw mappings for audit
         map_dump = os.path.join(output_dir, "mappings_raw.json")
@@ -2629,6 +2712,7 @@ def main():
         mappings = pre_validate_mappings(mappings, memo_content)
 
         # ---- Step 5: Claude API - validation pass ----
+        step_started = time.time()
         if args.skip_validation:
             log.info("=" * 60)
             log.info("STEP 5: SKIPPED (--skip-validation flag)")
@@ -2643,7 +2727,9 @@ def main():
             validated = validate_mappings(
                 client, mappings, proforma_data, memo_content, cfg,
                 property_name=args.property_name,
+                telemetry=run_meta,
             )
+        run_meta["steps"]["validation"] = time.time() - step_started
 
         # Save validated mappings for audit
         val_dump = os.path.join(output_dir, "mappings_validated.json")
@@ -2655,16 +2741,24 @@ def main():
         log.info("=" * 60)
         log.info("STEP 6: Applying text / table updates")
         log.info("=" * 60)
+        step_started = time.time()
         changes = apply_updates(args.memo, validated, dry_run=args.dry_run)
+        run_meta["steps"]["apply_updates"] = time.time() - step_started
 
         # ---- Step 7: Change log ----
         log.info("=" * 60)
         log.info("STEP 7: Writing change log")
         log.info("=" * 60)
+        run_meta["steps"].setdefault("write_changelog", 0.0)
+        run_meta["run_duration_sec"] = time.time() - run_started
+        step_started = time.time()
         log_path = write_change_log(
             output_dir, changes, validated,
             args.memo, args.proforma, backup_path,
+            run_metadata=run_meta,
         )
+        run_meta["steps"]["write_changelog"] = time.time() - step_started
+        run_meta["run_duration_sec"] = time.time() - run_started
 
         # ---- Summary ----
         n_rejected = len(validated.get("rejected", []))
@@ -2675,6 +2769,9 @@ def main():
         log.info("  Changes applied:     %d", len(changes))
         log.info("  Rejected by QA:      %d", n_rejected)
         log.info("  Potentially missed:  %d", n_missed)
+        log.info("  Mapping API calls:   %d", run_meta.get("mapping_api_calls", 0))
+        log.info("  Validation API calls:%d", run_meta.get("validation_api_calls", 0))
+        log.info("  Run duration (sec):  %.2f", run_meta.get("run_duration_sec", 0.0))
         log.info("  Backup:              %s", backup_path)
         log.info("  Change log:          %s", log_path)
         if args.dry_run:

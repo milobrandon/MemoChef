@@ -91,31 +91,31 @@
   - [ ] `cli.py`
   - [ ] `config.py`
   - [ ] `pipeline.py`
-- [ ] Extract prompt templates to `prompts/` directory - @developer - 2d - _Depends: package structure_
+- [x] Extract prompt templates to `prompts/` directory - @developer - 2d - _Depends: package structure_ - Done 2026-03-03
 - [ ] Add type hints to all public functions - @developer - 3d - _Depends: package structure_
 - [ ] Ensure all tests pass post-refactor - @developer - 2d - _Depends: refactor_
 
 ### CI/CD
 
 - [x] Set up GitHub Actions workflow (lint + test on push) - @devops - 1d - _Depends: tests_ - Done 2026-03-03
-- [ ] Add pre-commit hooks: ruff, black - @devops - 0.5d - _No deps_
+- [x] Add pre-commit hooks: ruff, black - @devops - 0.5d - _No deps_ - Done 2026-03-03
 - [ ] Add pre-commit hook: mypy (type checking) - @devops - 0.5d - _Depends: type hints_
-- [ ] Set up test coverage reporting - @devops - 0.5d - _Depends: CI_
+- [x] Set up test coverage reporting - @devops - 0.5d - _Depends: CI_ - Done 2026-03-03
 - [ ] Add branch protection rules (require CI pass for merge) - @devops - 0.25d - _Depends: CI_
 
 ### Reliability
 
 - [ ] API retry logic with exponential backoff - @developer - 2d - _Depends: ai/client.py_
 - [ ] Checkpoint/resume for interrupted runs - @developer - 3d - _Depends: retry logic_
-- [ ] Config validation with pydantic models - @developer - 2d - _Depends: config.py_
+- [x] Config validation with pydantic models - @developer - 2d - _Depends: config.py_ - Done 2026-03-03
 - [ ] Per-project config profiles (`configs/projectA.yaml`) - @developer - 1d - _Depends: config validation_
 
 ### Team Features
 
 - [ ] Streamlit session state for multi-user support - @developer - 2d - _No deps_
 - [ ] API cost tracking and per-run cost display - @developer - 1d - _Depends: ai/client.py_
-- [ ] Deployment guide (Streamlit Cloud or internal) - @devops - 2d - _No deps_
-- [ ] Team training documentation / walkthrough - @brandon - 2d - _Depends: v1.0 features_
+- [x] Deployment guide (Streamlit Cloud or internal) - @devops - 2d - _No deps_ - Done 2026-03-03
+- [x] Team training documentation / walkthrough - @brandon - 2d - _Depends: v1.0 features_ - Done 2026-03-03 (`docs/HOW_TO.md`)
 
 ---
 

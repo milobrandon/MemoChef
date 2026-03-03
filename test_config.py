@@ -45,12 +45,12 @@ class TestValidateConfig:
     def test_empty_tabs(self):
         cfg = {"proforma": {"tabs": []}, "claude": {"model": "x", "temperature": 0}, "schedule": {}}
         errors = _validate_config(cfg)
-        assert any("tabs" in e for e in errors)
+        assert any("proforma.tabs" in e for e in errors)
 
     def test_non_string_tabs(self):
         cfg = {"proforma": {"tabs": [1, 2]}, "claude": {"model": "x", "temperature": 0}, "schedule": {}}
         errors = _validate_config(cfg)
-        assert any("strings" in e for e in errors)
+        assert any("proforma.tabs" in e for e in errors)
 
     def test_negative_max_rows(self):
         cfg = {
@@ -59,21 +59,28 @@ class TestValidateConfig:
             "schedule": {},
         }
         errors = _validate_config(cfg)
-        assert any("max_rows_per_tab" in e for e in errors)
+        assert any("proforma.max_rows_per_tab" in e for e in errors)
 
     def test_empty_model(self):
         cfg = {"proforma": {"tabs": ["A"]}, "claude": {"model": "", "temperature": 0}, "schedule": {}}
         errors = _validate_config(cfg)
-        assert any("model" in e for e in errors)
+        assert any("claude.model" in e for e in errors)
 
     def test_temperature_out_of_range(self):
         cfg = {"proforma": {"tabs": ["A"]}, "claude": {"model": "x", "temperature": 2.0}, "schedule": {}}
         errors = _validate_config(cfg)
-        assert any("temperature" in e for e in errors)
+        assert any("claude.temperature" in e for e in errors)
 
     def test_load_config_raises_on_invalid(self, tmp_dir):
         path = os.path.join(tmp_dir, "bad.yaml")
         with open(path, "w") as f:
             f.write("proforma:\n  tabs: []\n")
         with pytest.raises(ValueError, match="Invalid config"):
+            load_config(path)
+
+    def test_load_config_rejects_unknown_key(self, tmp_dir):
+        path = os.path.join(tmp_dir, "bad_extra.yaml")
+        with open(path, "w") as f:
+            f.write("claude:\n  model: claude-sonnet-4-6\nunknown_section:\n  x: 1\n")
+        with pytest.raises(ValueError, match="unknown_section"):
             load_config(path)

@@ -6,6 +6,7 @@ import os
 import re
 import tempfile
 import time
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 
@@ -51,6 +52,15 @@ def _get_db_conn():
             "  username TEXT PRIMARY KEY,"
             "  week TEXT NOT NULL,"
             "  used INTEGER NOT NULL DEFAULT 0"
+            ")"
+        )
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS credit_charge_events ("
+            "  username TEXT NOT NULL,"
+            "  week TEXT NOT NULL,"
+            "  run_id TEXT NOT NULL,"
+            "  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
+            "  PRIMARY KEY (username, week, run_id)"
             ")"
         )
     return conn
@@ -102,13 +112,25 @@ def _get_user_credits(username: str, credits_per_week: int) -> tuple[int, int]:
     return used, max(0, credits_per_week - used)
 
 
-def _consume_credit(username: str, credits_per_week: int) -> bool:
+def _consume_credit(username: str, credits_per_week: int, run_id: str | None = None) -> bool:
     """
     Consume one credit atomically for the current week.
     Returns False if the weekly limit is already reached.
     """
     week = _current_week_start()
     with _db_cursor() as cur:
+        if run_id:
+            cur.execute(
+                "INSERT INTO credit_charge_events (username, week, run_id) "
+                "VALUES (%s, %s, %s) "
+                "ON CONFLICT DO NOTHING "
+                "RETURNING run_id",
+                (username, week, run_id),
+            )
+            inserted = cur.fetchone()
+            if inserted is None:
+                return True
+
         # Ensure row exists and is reset if week rolled over.
         cur.execute(
             "INSERT INTO credit_usage (username, week, used) VALUES (%s, %s, 0) "
@@ -125,7 +147,13 @@ def _consume_credit(username: str, credits_per_week: int) -> bool:
             "RETURNING used",
             (username, week, credits_per_week),
         )
-        return cur.fetchone() is not None
+        charged = cur.fetchone() is not None
+        if not charged and run_id:
+            cur.execute(
+                "DELETE FROM credit_charge_events WHERE username = %s AND week = %s AND run_id = %s",
+                (username, week, run_id),
+            )
+        return charged
 
 
 def _reset_user_credits(username: str) -> None:
@@ -200,6 +228,9 @@ with st.sidebar:
     if _credits_error:
         st.warning("Credits service unavailable. Runs are temporarily disabled.")
         st.caption("Credits: unavailable")
+        if st.button("Retry credits service"):
+            _get_db_conn.clear()
+            st.rerun()
     else:
         st.caption(f"Credits: {_remaining} / {_credits_per_week} remaining this week")
     st.progress(
@@ -337,6 +368,7 @@ _fire_label = (
 )
 
 if st.button(_fire_label, type="primary", disabled=_fire_disabled):
+    run_id = uuid.uuid4().hex
     # Clear previous results
     for key in ["memo_bytes", "log_bytes", "filename", "n_changes",
                 "n_rejected", "n_missed", "log_lines"]:
@@ -602,7 +634,7 @@ if st.button(_fire_label, type="primary", disabled=_fire_disabled):
 
         # Charge one credit only after a successful end-to-end run.
         try:
-            charged = _consume_credit(_username, _credits_per_week)
+            charged = _consume_credit(_username, _credits_per_week, run_id=run_id)
             if not charged:
                 st.warning("Run completed, but no credits remained to charge this run.")
         except Exception as credit_err:
@@ -610,7 +642,6 @@ if st.button(_fire_label, type="primary", disabled=_fire_disabled):
 
       except Exception as e:
         st.error(f"In the weeds! {e}")
-        raise
 
       finally:
         # Always clear animation and clean up logging handler

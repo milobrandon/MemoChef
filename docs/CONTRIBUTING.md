@@ -1,166 +1,83 @@
-# Contributing to Memo Automator
+﻿# Contributing to Memo Automator
 
-## Getting Started
+## Quick Start
 
-### Prerequisites
+## Prerequisites
 
 - Python 3.9+
-- An Anthropic API key (see [README](../README.md))
-- Java Runtime (only if working with schedule `.mpp` files)
 - Git
+- Anthropic API key (for live runs)
+- Java runtime (only for `.mpp` schedule extraction)
 
-### Local Setup
+## Local setup
 
 ```bash
-# Clone the repo
 git clone <repo-url>
 cd "g. Memo Automator/v2"
-
-# Create a virtual environment
 python -m venv .venv
-source .venv/bin/activate  # or .venv\Scripts\activate on Windows
-
-# Install dependencies
+# Windows
+.venv\Scripts\activate
+# macOS/Linux
+source .venv/bin/activate
 pip install -r requirements.txt
-
-# Copy environment file and add your API key
 cp .env.example .env
-# Edit .env with your ANTHROPIC_API_KEY
 ```
 
-### Running the Tool
+Set `ANTHROPIC_API_KEY` in `.env`.
+
+## Run locally
 
 ```bash
-# CLI
-python memo_automator.py memo.pptx proforma.xlsm
-
-# Web UI
+python memo_automator.py memo.pptx proforma.xlsm --dry-run
 streamlit run app.py
 ```
 
-### Running Tests
+## Quality checks
 
 ```bash
-# All tests
-pytest
-
-# Specific test file
-pytest test_row_inserts.py -v
-
-# With coverage
-pytest --cov=memo_automator --cov-report=html
+ruff check .
+pytest -q
+pytest -m "not integration" --cov=memo_automator --cov=app_helpers --cov-report=term-missing
 ```
 
----
+## Pre-commit hooks
 
-## Code Style
-
-### Python Standards
-
-- **Formatter:** [Black](https://black.readthedocs.io/) (line length 99)
-- **Linter:** [Ruff](https://docs.astral.sh/ruff/) with default rules
-- **Type checking:** mypy (strict mode, once type hints are added)
-- **Docstrings:** Google style for public functions
-
-### Naming Conventions
-
-| Element | Convention | Example |
-|---------|-----------|---------|
-| Files/modules | `snake_case.py` | `memo_automator.py` |
-| Functions | `snake_case` | `extract_proforma()` |
-| Classes | `PascalCase` | `MemoConfig` |
-| Constants | `UPPER_SNAKE` | `MAPPING_PROMPT` |
-| Config keys | `snake_case` | `max_rows_per_tab` |
-
-### Commit Messages
-
-Use conventional commit format:
-
-```
-type: short description
-
-Longer explanation if needed.
+```bash
+pip install pre-commit
+pre-commit install
+pre-commit run --all-files
 ```
 
-Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `style`
+Hooks are configured in `.pre-commit-config.yaml` and include Ruff, Black, and detect-secrets.
 
-Examples:
-```
-feat: add schedule extraction from .mpp files
-fix: handle unicode smart quotes in table matching
-docs: add RUNBOOK.md with troubleshooting guide
-refactor: extract branding logic to formatting/branding.py
-test: add pytest fixtures for proforma extraction
-```
+## Branching and PRs
 
----
+- `main`: production-ready
+- `dev`: integration branch
+- feature branches: `feat/<name>`
+- bugfix branches: `fix/<name>`
 
-## Branching Strategy
+PR checklist:
+1. Explain what changed and why.
+2. Include test evidence (commands + results).
+3. Include screenshots for UI changes.
+4. Confirm lint/tests pass locally.
 
-```
-main          ← production-ready, always passing
-├── dev       ← integration branch for features
-│   ├── feat/market-data-ingestion
-│   ├── feat/batch-processing
-│   └── fix/unicode-table-match
-```
+## Prompt workflow
 
-- **`main`**: Protected. Requires passing CI + review.
-- **`dev`**: Integration branch. Features merge here first.
-- **Feature branches**: `feat/<description>` off `dev`.
-- **Bug fix branches**: `fix/<description>` off `dev` (or `main` for hotfixes).
+Prompt templates live in:
+- `prompts/mapping_v1.txt`
+- `prompts/validation_v1.txt`
 
----
+When changing prompts:
+1. Update template file(s).
+2. Run tests and lint.
+3. Run at least one dry-run check.
+4. Document behavior impact in the PR.
 
-## Pull Request Process
+## Security rules
 
-1. Create a feature branch from `dev`.
-2. Make changes. Write/update tests.
-3. Run tests locally: `pytest`.
-4. Run linter: `ruff check .` and `black --check .`.
-5. Push and open a PR against `dev`.
-6. Fill in the PR template:
-   - **What** changed and **why**
-   - **Testing** done
-   - **Screenshots** if UI changes
-7. Request review from at least one team member.
-8. Address review feedback.
-9. Merge after approval + CI passes.
-
-### PR Size Guidelines
-
-- Prefer small, focused PRs (< 400 lines changed).
-- If a change is large, break it into stacked PRs or explain why in the description.
-- Docs-only PRs can be merged with a single approval.
-
----
-
-## Working with Prompts
-
-The Claude prompt templates (`MAPPING_PROMPT`, `VALIDATION_PROMPT`) are critical to the tool's accuracy. Changes to prompts require extra care:
-
-1. **Never modify prompts without testing** on at least 2 different memo/proforma pairs.
-2. **Document prompt changes** in the PR description with before/after examples.
-3. **Version prompts** — when prompts move to `prompts/` directory, use filenames like `mapping_v2.txt`.
-4. **Regression test** — ensure existing test cases still produce correct mappings.
-
----
-
-## Reporting Issues
-
-Use the project's issue tracker. Include:
-
-1. **What you expected** to happen.
-2. **What actually happened** (error message, incorrect output).
-3. **Steps to reproduce** (CLI command or UI steps).
-4. **Input files** (anonymized if they contain sensitive financial data).
-5. **Logs** (`CHANGE_LOG.md`, console output).
-6. **Environment** (Python version, OS, package versions).
-
----
-
-## Security
-
-- **Never commit API keys** or `.env` files.
-- **Never commit real proforma/memo files** — use anonymized test fixtures.
-- See [SECURITY.md](SECURITY.md) for the full security policy.
+- Never commit credentials (`.env`, raw secrets, private DB URLs).
+- Never commit real client memo/proforma/schedule files.
+- Use synthetic fixtures only (`tests/fixtures/`).
+- Run secret checks before opening a PR.
