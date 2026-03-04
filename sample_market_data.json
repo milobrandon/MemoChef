@@ -1,0 +1,175 @@
+{
+  "property": {
+    "name": "Meridian at Oakwood",
+    "address": "1200 Oakwood Blvd",
+    "city": "Charlotte",
+    "state": "NC",
+    "submarket": "South End",
+    "msa": "Charlotte-Concord-Gastonia",
+    "property_type": "Multifamily"
+  },
+  "metadata": {
+    "prepared_by": "Acquisitions Team",
+    "prepared_date": "2026-03-04",
+    "property_name": "Meridian at Oakwood",
+    "notes": "Sample data for demonstration purposes. All values are fictional."
+  },
+  "rent_comps": [
+    {
+      "name": "The Lexington",
+      "address": "800 S Tryon St",
+      "distance_mi": 0.4,
+      "units": 280,
+      "year_built": 2021,
+      "occupancy_pct": 0.94,
+      "unit_rents": {"Studio": 1425, "1BR": 1750, "2BR": 2250},
+      "concessions": "1 month free on 13-month lease",
+      "as_of_date": "2026-02-15",
+      "source": "CoStar"
+    },
+    {
+      "name": "Camden Southline",
+      "address": "2120 South Blvd",
+      "distance_mi": 0.8,
+      "units": 352,
+      "year_built": 2019,
+      "occupancy_pct": 0.96,
+      "unit_rents": {"Studio": 1350, "1BR": 1680, "2BR": 2100, "3BR": 2800},
+      "concessions": "None",
+      "as_of_date": "2026-02-15",
+      "source": "CoStar"
+    },
+    {
+      "name": "Novel South End",
+      "address": "1520 S Church St",
+      "distance_mi": 0.3,
+      "units": 315,
+      "year_built": 2023,
+      "occupancy_pct": 0.91,
+      "unit_rents": {"Studio": 1500, "1BR": 1850, "2BR": 2400},
+      "concessions": "6 weeks free on 14-month lease",
+      "as_of_date": "2026-02-15",
+      "source": "CoStar"
+    },
+    {
+      "name": "Aura South End",
+      "address": "425 W Tremont Ave",
+      "distance_mi": 0.6,
+      "units": 220,
+      "year_built": 2020,
+      "occupancy_pct": 0.93,
+      "unit_rents": {"Studio": 1380, "1BR": 1720, "2BR": 2200},
+      "concessions": "2 weeks free",
+      "as_of_date": "2026-02-15",
+      "source": "Yardi Matrix"
+    },
+    {
+      "name": "The Edison",
+      "address": "2035 Remount Rd",
+      "distance_mi": 1.2,
+      "units": 198,
+      "year_built": 2018,
+      "occupancy_pct": 0.97,
+      "unit_rents": {"1BR": 1580, "2BR": 1950, "3BR": 2600},
+      "concessions": "None",
+      "as_of_date": "2026-02-15",
+      "source": "Yardi Matrix"
+    },
+    {
+      "name": "Vantage South End",
+      "address": "1630 Camden Rd",
+      "distance_mi": 0.5,
+      "units": 260,
+      "year_built": 2022,
+      "occupancy_pct": 0.92,
+      "unit_rents": {"Studio": 1475, "1BR": 1800, "2BR": 2350},
+      "concessions": "1 month free",
+      "as_of_date": "2026-02-15",
+      "source": "CoStar"
+    }
+  ],
+  "sale_comps": [
+    {
+      "name": "The Lexington",
+      "address": "800 S Tryon St",
+      "sale_date": "2025-11-15",
+      "sale_price": 78400000,
+      "units": 280,
+      "price_per_unit": 280000,
+      "cap_rate": 0.048,
+      "source": "RCA"
+    },
+    {
+      "name": "Park & Kingston",
+      "address": "3015 S Kings Dr",
+      "sale_date": "2025-09-20",
+      "sale_price": 52000000,
+      "units": 195,
+      "price_per_unit": 266667,
+      "cap_rate": 0.051,
+      "source": "RCA"
+    },
+    {
+      "name": "Ascent South End",
+      "address": "2200 Hawkins St",
+      "sale_date": "2025-06-10",
+      "sale_price": 91500000,
+      "units": 340,
+      "price_per_unit": 269118,
+      "cap_rate": 0.049,
+      "source": "RCA"
+    },
+    {
+      "name": "Brookline Flats",
+      "address": "1400 Winnifred St",
+      "sale_date": "2025-03-22",
+      "sale_price": 38200000,
+      "units": 160,
+      "price_per_unit": 238750,
+      "cap_rate": 0.054,
+      "source": "CoStar"
+    },
+    {
+      "name": "The Standard CLT",
+      "address": "510 E Bland St",
+      "sale_date": "2024-12-05",
+      "sale_price": 65800000,
+      "units": 248,
+      "price_per_unit": 265323,
+      "cap_rate": 0.052,
+      "source": "RCA"
+    }
+  ],
+  "submarket": {
+    "name": "Charlotte - South End",
+    "avg_rent": 1785,
+    "vacancy_pct": 0.062,
+    "absorption_units": 1240,
+    "pipeline_units": 3800,
+    "rent_growth_yoy_pct": 0.032,
+    "median_hh_income": 72500,
+    "population": 48200,
+    "as_of_date": "2026-Q1",
+    "source": "CoStar Submarket Report"
+  },
+  "macro": [
+    {"date": "2025-03", "sofr_rate": 0.0433, "treasury_10yr": 0.0425, "cpi_yoy": 0.028, "unemployment": 0.041, "source": "FRED"},
+    {"date": "2025-04", "sofr_rate": 0.0430, "treasury_10yr": 0.0418, "cpi_yoy": 0.027, "unemployment": 0.040, "source": "FRED"},
+    {"date": "2025-05", "sofr_rate": 0.0425, "treasury_10yr": 0.0410, "cpi_yoy": 0.026, "unemployment": 0.040, "source": "FRED"},
+    {"date": "2025-06", "sofr_rate": 0.0420, "treasury_10yr": 0.0405, "cpi_yoy": 0.025, "unemployment": 0.039, "source": "FRED"},
+    {"date": "2025-07", "sofr_rate": 0.0415, "treasury_10yr": 0.0398, "cpi_yoy": 0.024, "unemployment": 0.039, "source": "FRED"},
+    {"date": "2025-08", "sofr_rate": 0.0408, "treasury_10yr": 0.0390, "cpi_yoy": 0.023, "unemployment": 0.038, "source": "FRED"},
+    {"date": "2025-09", "sofr_rate": 0.0400, "treasury_10yr": 0.0382, "cpi_yoy": 0.023, "unemployment": 0.038, "source": "FRED"},
+    {"date": "2025-10", "sofr_rate": 0.0393, "treasury_10yr": 0.0375, "cpi_yoy": 0.022, "unemployment": 0.037, "source": "FRED"},
+    {"date": "2025-11", "sofr_rate": 0.0385, "treasury_10yr": 0.0368, "cpi_yoy": 0.021, "unemployment": 0.037, "source": "FRED"},
+    {"date": "2025-12", "sofr_rate": 0.0378, "treasury_10yr": 0.0360, "cpi_yoy": 0.021, "unemployment": 0.036, "source": "FRED"},
+    {"date": "2026-01", "sofr_rate": 0.0370, "treasury_10yr": 0.0355, "cpi_yoy": 0.020, "unemployment": 0.036, "source": "FRED"},
+    {"date": "2026-02", "sofr_rate": 0.0365, "treasury_10yr": 0.0348, "cpi_yoy": 0.020, "unemployment": 0.035, "source": "FRED"}
+  ],
+  "unit_mix": [
+    {"unit_type": "Studio", "unit_count": 45, "avg_sf": 520, "avg_rent": 1450, "rent_per_sf": 2.79},
+    {"unit_type": "1BR", "unit_count": 120, "avg_sf": 725, "avg_rent": 1800, "rent_per_sf": 2.48},
+    {"unit_type": "2BR", "unit_count": 95, "avg_sf": 1050, "avg_rent": 2300, "rent_per_sf": 2.19},
+    {"unit_type": "3BR", "unit_count": 20, "avg_sf": 1350, "avg_rent": 2900, "rent_per_sf": 2.15}
+  ]
+}

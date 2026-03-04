@@ -30,6 +30,7 @@ from memo_automator import (
     validate_mappings,
     write_change_log,
 )
+import user_management as um
 
 # ============================================================================
 # PAGE CONFIG
@@ -71,6 +72,8 @@ def _get_db_conn():
             "  used INTEGER NOT NULL DEFAULT 0"
             ")"
         )
+    # Create user management tables (idempotent)
+    um.create_tables(conn)
     return conn
 
 
@@ -128,33 +131,124 @@ def _reset_user_credits(username: str) -> None:
 
 
 # ============================================================================
-# AUTH GATE
+# AUTH GATE  (DB-first, secrets.toml fallback)
 # ============================================================================
-def _get_users() -> dict:
-    """Load user definitions from st.secrets['users']."""
+def _get_secrets_users() -> dict:
+    """Load user definitions from st.secrets['users'] (legacy fallback)."""
     try:
         return dict(st.secrets["users"])
     except (KeyError, FileNotFoundError):
         return {}
 
 
+def _get_smtp_config() -> dict | None:
+    """Load SMTP settings from secrets, or return None if not configured."""
+    try:
+        return {
+            "host": st.secrets["SMTP_HOST"],
+            "port": st.secrets["SMTP_PORT"],
+            "user": st.secrets["SMTP_USER"],
+            "password": st.secrets["SMTP_PASSWORD"],
+            "from_name": st.secrets.get("SMTP_FROM_NAME", "Memo Chef"),
+        }
+    except (KeyError, FileNotFoundError):
+        return None
+
+
+def _get_app_url() -> str:
+    """Return the configured APP_URL or a sensible default."""
+    try:
+        return st.secrets["APP_URL"]
+    except (KeyError, FileNotFoundError):
+        return "http://localhost:8501"
+
+
+def _handle_invite_signup() -> bool:
+    """If ``?invite=TOKEN`` is in the URL, show the signup form.
+
+    Returns ``True`` if the invite flow consumed the page (caller should stop).
+    """
+    params = st.query_params
+    token = params.get("invite")
+    if not token:
+        return False
+
+    conn = _get_db_conn()
+    invite = um.get_invite(conn, token)
+
+    st.title("\U0001f4e8 Memo Chef — Accept Invite")
+
+    if invite is None:
+        st.error("Invalid invite link.")
+        return True
+    if invite["is_used"]:
+        st.info("This invite has already been used. Please log in.")
+        return True
+    from datetime import timezone as _tz
+    if invite["expires_at"].replace(tzinfo=_tz.utc) < datetime.now(_tz.utc):
+        st.error("This invite has expired. Ask your admin for a new one.")
+        return True
+
+    st.success(f"You've been invited as **{invite['role']}** by **{invite['invited_by']}**.")
+    with st.form("signup_form"):
+        new_username = st.text_input("Choose a username")
+        new_display = st.text_input("Display name")
+        new_password = st.text_input("Choose a password", type="password")
+        new_password2 = st.text_input("Confirm password", type="password")
+        submitted = st.form_submit_button("Create Account")
+
+    if submitted:
+        if not new_username or not new_password:
+            st.error("Username and password are required.")
+        elif new_password != new_password2:
+            st.error("Passwords do not match.")
+        elif um.get_user(conn, new_username):
+            st.error("Username already taken.")
+        else:
+            user = um.accept_invite(conn, token, new_username, new_password)
+            if user:
+                if new_display:
+                    um.update_user(conn, new_username, display_name=new_display)
+                st.success("Account created! You can now log in.")
+                st.query_params.clear()
+                st.rerun()
+            else:
+                st.error("Could not accept invite. It may have expired.")
+    return True
+
+
 def check_password() -> bool:
-    """Per-user login: username + password.  Sets session_state on success."""
+    """Per-user login: DB-first, secrets.toml fallback.  Sets session_state."""
     if st.session_state.get("authenticated"):
         return True
 
-    users = _get_users()
-    if not users:
-        st.error("No users configured in Streamlit secrets.")
+    # Handle invite signup flow first
+    if _handle_invite_signup():
         st.stop()
+
+    conn = _get_db_conn()
 
     st.title("\U0001f512 Memo Chef — Login")
     with st.form("login_form"):
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
         submitted = st.form_submit_button("Log in")
+
     if submitted:
-        user_cfg = users.get(username)
+        # Try database first
+        db_user = um.verify_user(conn, username, password)
+        if db_user:
+            st.session_state["authenticated"] = True
+            st.session_state["username"] = db_user["username"]
+            st.session_state["role"] = db_user["role"]
+            st.session_state["credits_per_week"] = db_user["credits_per_week"]
+            um.log_audit(conn, username, "login", username)
+            st.rerun()
+            return True
+
+        # Fallback to secrets.toml
+        secrets_users = _get_secrets_users()
+        user_cfg = secrets_users.get(username)
         if user_cfg and _verify_password(password, user_cfg["password_hash"]):
             st.session_state["authenticated"] = True
             st.session_state["username"] = username
@@ -163,8 +257,9 @@ def check_password() -> bool:
                 user_cfg.get("credits_per_week", 5)
             )
             st.rerun()
-        else:
-            st.error("Invalid username or password.")
+            return True
+
+        st.error("Invalid username or password.")
     st.stop()
 
 
@@ -191,27 +286,192 @@ with st.sidebar:
             del st.session_state[k]
         st.rerun()
 
-    # Admin panel
+    # ================================================================
+    # ADMIN PANEL (tabbed: Users / Invites / Audit)
+    # ================================================================
     if _role == "admin":
         st.divider()
         st.subheader("Admin Panel")
-        users = _get_users()
-        rows = []
-        for uname, ucfg in users.items():
-            cpw = int(ucfg.get("credits_per_week", 5))
-            u, r = _get_user_credits(uname, cpw)
-            rows.append(
-                {"User": uname, "Role": ucfg.get("role", "user"),
-                 "Used": u, "Limit": cpw, "Remaining": r}
-            )
-        st.table(rows)
-        reset_user = st.selectbox(
-            "Reset credits for", [r["User"] for r in rows], index=None,
-            placeholder="Select a user...",
+        _conn = _get_db_conn()
+        admin_tab = st.radio(
+            "Section", ["Users", "Invites", "Audit"], horizontal=True, label_visibility="collapsed",
         )
-        if reset_user and st.button(f"Reset {reset_user}"):
-            _reset_user_credits(reset_user)
-            st.rerun()
+
+        # ------ USERS TAB ------
+        if admin_tab == "Users":
+            # Show DB users + secrets.toml users merged
+            db_users = um.list_users(_conn)
+            secrets_users = _get_secrets_users()
+            db_usernames = {u["username"] for u in db_users}
+
+            rows = []
+            for u in db_users:
+                used, rem = _get_user_credits(u["username"], u["credits_per_week"])
+                rows.append({
+                    "User": u["username"],
+                    "Role": u["role"],
+                    "Credits": f"{used}/{u['credits_per_week']}",
+                    "Active": "Yes" if u["is_active"] else "No",
+                    "Source": "DB",
+                })
+            for uname, ucfg in secrets_users.items():
+                if uname not in db_usernames:
+                    cpw = int(ucfg.get("credits_per_week", 5))
+                    used, rem = _get_user_credits(uname, cpw)
+                    rows.append({
+                        "User": uname,
+                        "Role": ucfg.get("role", "user"),
+                        "Credits": f"{used}/{cpw}",
+                        "Active": "Yes",
+                        "Source": "Config",
+                    })
+            if rows:
+                st.table(rows)
+
+            # Reset credits
+            all_usernames = [r["User"] for r in rows]
+            reset_user = st.selectbox(
+                "Reset credits for", all_usernames, index=None,
+                placeholder="Select a user...", key="admin_reset_user",
+            )
+            if reset_user and st.button(f"Reset {reset_user}"):
+                _reset_user_credits(reset_user)
+                um.log_audit(_conn, _username, "credits_reset", reset_user)
+                st.rerun()
+
+            # Add new user
+            st.markdown("---")
+            st.markdown("**Add User**")
+            with st.form("add_user_form"):
+                new_uname = st.text_input("Username", key="new_user_name")
+                new_display = st.text_input("Display name", key="new_user_display")
+                new_email = st.text_input("Email (optional)", key="new_user_email")
+                new_pw = st.text_input("Password", type="password", key="new_user_pw")
+                new_role = st.selectbox("Role", ["user", "admin"], key="new_user_role")
+                new_cpw = st.number_input("Credits/week", min_value=1, max_value=100, value=5, key="new_user_cpw")
+                add_submitted = st.form_submit_button("Create User")
+            if add_submitted:
+                if not new_uname or not new_pw:
+                    st.error("Username and password required.")
+                elif um.get_user(_conn, new_uname):
+                    st.error(f"User '{new_uname}' already exists.")
+                else:
+                    um.create_user(
+                        _conn, new_uname, new_pw,
+                        email=new_email or None,
+                        display_name=new_display,
+                        role=new_role,
+                        credits_per_week=int(new_cpw),
+                    )
+                    um.log_audit(_conn, _username, "created", new_uname, {"role": new_role})
+                    st.success(f"User '{new_uname}' created.")
+                    st.rerun()
+
+            # Edit existing DB user
+            db_usernames_list = [u["username"] for u in db_users]
+            if db_usernames_list:
+                st.markdown("---")
+                st.markdown("**Edit User**")
+                edit_target = st.selectbox(
+                    "Select user", db_usernames_list, index=None,
+                    placeholder="Choose...", key="edit_target_user",
+                )
+                if edit_target:
+                    eu = um.get_user(_conn, edit_target)
+                    with st.form("edit_user_form"):
+                        ed_display = st.text_input("Display name", value=eu["display_name"], key="ed_display")
+                        ed_email = st.text_input("Email", value=eu.get("email") or "", key="ed_email")
+                        ed_role = st.selectbox(
+                            "Role", ["user", "admin"],
+                            index=0 if eu["role"] == "user" else 1, key="ed_role",
+                        )
+                        ed_cpw = st.number_input(
+                            "Credits/week", min_value=1, max_value=100,
+                            value=eu["credits_per_week"], key="ed_cpw",
+                        )
+                        ed_active = st.checkbox("Active", value=eu["is_active"], key="ed_active")
+                        save_submitted = st.form_submit_button("Save Changes")
+                    if save_submitted:
+                        um.update_user(
+                            _conn, edit_target,
+                            display_name=ed_display,
+                            email=ed_email or None,
+                            role=ed_role,
+                            credits_per_week=int(ed_cpw),
+                            is_active=ed_active,
+                        )
+                        um.log_audit(_conn, _username, "updated", edit_target, {
+                            "role": ed_role, "active": ed_active,
+                        })
+                        st.success(f"User '{edit_target}' updated.")
+                        st.rerun()
+
+        # ------ INVITES TAB ------
+        elif admin_tab == "Invites":
+            st.markdown("**Send Invite**")
+            with st.form("invite_form"):
+                inv_email = st.text_input("Email address", key="inv_email")
+                inv_role = st.selectbox("Role", ["user", "admin"], key="inv_role")
+                inv_cpw = st.number_input("Credits/week", min_value=1, max_value=100, value=5, key="inv_cpw")
+                inv_submitted = st.form_submit_button("Send Invite")
+            if inv_submitted:
+                if not inv_email:
+                    st.error("Email is required.")
+                else:
+                    token = um.create_invite(
+                        _conn, inv_email, _username,
+                        role=inv_role, credits_per_week=int(inv_cpw),
+                    )
+                    app_url = _get_app_url()
+                    invite_link = f"{app_url.rstrip('/')}/?invite={token}"
+
+                    # Try sending email
+                    smtp_cfg = _get_smtp_config()
+                    if smtp_cfg:
+                        sent = um.send_invite_email(inv_email, token, _username, app_url, smtp_cfg)
+                        if sent:
+                            st.success(f"Invite sent to {inv_email}")
+                        else:
+                            st.warning("Email delivery failed. Share the link manually:")
+                            st.code(invite_link)
+                    else:
+                        st.info("SMTP not configured. Share this link manually:")
+                        st.code(invite_link)
+
+            # Pending invites table
+            invites = um.list_invites(_conn)
+            if invites:
+                st.markdown("---")
+                st.markdown("**Recent Invites**")
+                from datetime import timezone as _tz
+                inv_rows = []
+                for inv in invites[:20]:
+                    if inv["is_used"]:
+                        status = "Accepted"
+                    elif inv["expires_at"].replace(tzinfo=_tz.utc) < datetime.now(_tz.utc):
+                        status = "Expired"
+                    else:
+                        status = "Pending"
+                    inv_rows.append({
+                        "Email": inv["email"],
+                        "Role": inv["role"],
+                        "Status": status,
+                        "Sent": inv["created_at"].strftime("%m/%d"),
+                        "By": inv["invited_by"],
+                    })
+                st.table(inv_rows)
+
+        # ------ AUDIT TAB ------
+        elif admin_tab == "Audit":
+            st.markdown("**Recent Activity**")
+            audit = um.get_audit_log(_conn, limit=30)
+            if audit:
+                for entry in audit:
+                    ts = entry["created_at"].strftime("%m/%d %H:%M")
+                    target = f' "{entry["target_user"]}"' if entry["target_user"] else ""
+                    st.caption(f"{ts} — **{entry['actor']}** {entry['action']}{target}")
+            else:
+                st.caption("No activity yet.")
 
 st.title("\U0001f9d1\u200d\U0001f373 Memo Chef")
 st.caption("From raw ingredients to a Michelin-star memo")

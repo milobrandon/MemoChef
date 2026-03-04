@@ -1,6 +1,6 @@
 # Memo Automator — Project Roadmap
 
-> **Last updated:** 2026-03-01
+> **Last updated:** 2026-03-04
 > **Status:** Active development
 > **Owner:** @brandon
 
@@ -202,21 +202,26 @@ memo_automator/
 
 **Goal:** Multi-user, tested, CI-enabled, documented.
 
-| Task | Owner | Est. | Depends On |
-|------|-------|------|------------|
-| Refactor into package structure | @developer | 5d | MVP tests passing |
-| Extract prompts to versioned template files | @developer | 2d | Package refactor |
-| Set up GitHub Actions CI (lint + test) | @devops | 2d | Tests exist |
-| Add pre-commit hooks (ruff, black, mypy) | @devops | 1d | CI |
-| Add type hints to public interfaces | @developer | 3d | Package refactor |
-| API retry logic with exponential backoff | @developer | 2d | Package refactor |
-| Checkpoint/resume for interrupted runs | @developer | 3d | Retry logic |
-| Config validation + schema (pydantic) | @developer | 2d | Package refactor |
-| Per-project config profiles | @developer | 1d | Config validation |
-| Streamlit multi-user support (session state) | @developer | 2d | — |
-| API cost tracking + logging | @developer | 1d | Logging |
-| Deployment guide (Streamlit Cloud or internal) | @devops | 2d | — |
-| Team training documentation | @brandon | 2d | v1.0 features |
+| Task | Owner | Est. | Depends On | Status |
+|------|-------|------|------------|--------|
+| **DB-backed user management** (`user_management.py`) | @developer | 2d | — | **Done** |
+| **Admin portal** (Users/Invites/Audit tabs) | @developer | 2d | User management | **Done** |
+| **Email invite system** (SMTP + fallback link) | @developer | 1d | User management | **Done** |
+| **Invite signup flow** (`?invite=TOKEN`) | @developer | 1d | Invites | **Done** |
+| **Market data workbook scaffold** (`market_workbook.py`) | @developer | 2d | — | **Done** |
+| Refactor into package structure | @developer | 5d | MVP tests passing | Planned |
+| Extract prompts to versioned template files | @developer | 2d | Package refactor | Planned |
+| Set up GitHub Actions CI (lint + test) | @devops | 2d | Tests exist | Planned |
+| Add pre-commit hooks (ruff, black, mypy) | @devops | 1d | CI | Planned |
+| Add type hints to public interfaces | @developer | 3d | Package refactor | Planned |
+| API retry logic with exponential backoff | @developer | 2d | Package refactor | Planned |
+| Checkpoint/resume for interrupted runs | @developer | 3d | Retry logic | Planned |
+| Config validation + schema (pydantic) | @developer | 2d | Package refactor | Planned |
+| Per-project config profiles | @developer | 1d | Config validation | Planned |
+| Streamlit multi-user support (session state) | @developer | 2d | — | **Done** |
+| API cost tracking + logging | @developer | 1d | Logging | Planned |
+| Deployment guide (Streamlit Cloud or internal) | @devops | 2d | — | Planned |
+| Team training documentation | @brandon | 2d | v1.0 features | Planned |
 
 ### Phase 3: v1.5 — Market Data & Intelligence (Weeks 7-12)
 

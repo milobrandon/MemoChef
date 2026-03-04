@@ -9,6 +9,7 @@
 | [001](001-monolith-to-packages.md) | Defer monolith-to-packages refactor until tests exist | Accepted | 2026-03-01 |
 | [002](002-claude-model-selection.md) | Claude model selection strategy | Accepted | 2026-03-01 |
 | [003](003-market-data-approach.md) | Start with free data sources, defer commercial | Accepted | 2026-03-01 |
+| [004](004-database-backed-users.md) | Database-backed user management | Accepted | 2026-03-04 |
 
 ## Template
 

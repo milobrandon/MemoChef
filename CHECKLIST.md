@@ -1,6 +1,6 @@
 # Memo Automator — Execution Checklist
 
-> **Last updated:** 2026-03-03
+> **Last updated:** 2026-03-04
 > **Tracking:** Check boxes as tasks complete. Add dates and notes in the rightmost column.
 
 ---
@@ -74,6 +74,30 @@
 
 > **Goal:** Multi-user, CI-enabled, properly structured codebase.
 
+### User Management & Admin Portal
+
+- [x] Design doc: User management & email invites — @brandon — Done 2026-03-04
+- [x] ADR-004: Database-backed user management — @brandon — Done 2026-03-04
+- [x] Create `user_management.py` module (CRUD, auth, invites, audit) — @developer — Done 2026-03-04
+- [x] Database schema: `users`, `invites`, `user_audit_log` tables — @developer — Done 2026-03-04
+- [x] DB-first auth with secrets.toml fallback — @developer — Done 2026-03-04
+- [x] Admin portal: Users tab (list, add, edit, activate/deactivate) — @developer — Done 2026-03-04
+- [x] Admin portal: Invites tab (send invite, view pending) — @developer — Done 2026-03-04
+- [x] Admin portal: Audit tab (user lifecycle events) — @developer — Done 2026-03-04
+- [x] Email invite system with SMTP + fallback link — @developer — Done 2026-03-04
+- [x] Invite signup flow (`?invite=TOKEN` URL handling) — @developer — Done 2026-03-04
+- [x] Password hashing tests — @developer — Done 2026-03-04
+
+### Market Data Workbook
+
+- [x] Design doc: Market data workbook — @brandon — Done 2026-03-04
+- [x] Create `market_workbook.py` module (dataclasses, Excel generation, charts) — @developer — Done 2026-03-04
+- [x] Sample data file (`sample_market_data.json`) — @developer — Done 2026-03-04
+- [x] Workbook generation tests (17 tests passing) — @developer — Done 2026-03-04
+- [ ] Streamlit UI integration ("Generate Market Workbook" button) — @developer — _Depends: v1.0_
+- [ ] FRED API integration for macro data — @developer — _Depends: Phase 3_
+- [ ] Census API integration for demographics — @developer — _Depends: Phase 3_
+
 ### Refactoring
 
 - [ ] Create `memo_automator/` package structure — @developer — 2d — _Depends: MVP tests passing_
@@ -112,7 +136,7 @@
 
 ### Team Features
 
-- [ ] Streamlit session state for multi-user support — @developer — 2d — _No deps_
+- [x] Streamlit multi-user support (DB-backed auth + session state) — @developer — Done 2026-03-04
 - [ ] API cost tracking and per-run cost display — @developer — 1d — _Depends: ai/client.py_
 - [ ] Deployment guide (Streamlit Cloud or internal) — @devops — 2d — _No deps_
 - [ ] Team training documentation / walkthrough — @brandon — 2d — _Depends: v1.0 features_
@@ -125,7 +149,8 @@
 
 ### Market Data
 
-- [ ] Define final market data schema (JSON Schema or pydantic) — @brandon — 2d — _No deps_
+- [x] Define market data schema (dataclasses in `market_workbook.py`) — @developer — Done 2026-03-04
+- [x] Market data workbook generator scaffold — @developer — Done 2026-03-04
 - [ ] Build ingestion pipeline framework — @developer — 3d — _Depends: schema_
 - [ ] Integrate FRED API (macro indicators) — @developer — 2d — _Depends: ingestion pipeline_
 - [ ] Integrate Census/ACS API (demographics) — @developer — 2d — _Depends: ingestion pipeline_
