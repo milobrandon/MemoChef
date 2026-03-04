@@ -284,34 +284,37 @@ st.title("\U0001f9d1\u200d\U0001f373 Memo Chef")
 st.caption("From raw ingredients to a Michelin-star memo")
 
 # ============================================================================
-# ANIMATED SHRIMP GIFS — rotates between 5 quirky chef/shrimp GIFs
+# ANIMATED SHRIMP GIF — locally generated cooking shrimp chef
 # ============================================================================
-_CHEF_GIFS = [
-    # Dancing shrimp (nemomi) — cute bouncy shrimp dance
-    ("https://media.giphy.com/media/H4rDezQiLmkdbAzHcI/giphy.gif",
-     "The shrimp is vibing while your memo cooks..."),
-    # Chef shrimp by Walk-On's — shrimp with chef energy
-    ("https://media.giphy.com/media/37RfRKBoosceYgis5e/giphy.gif",
-     "Chef Shrimp is plating your metrics..."),
-    # Happy dancing shrimp (chopt) — joyful bouncing
-    ("https://media.giphy.com/media/3o7buikVSfLTuXjbC8/giphy.gif",
-     "Shrimp doing the happy dance for your data..."),
-    # Orange shrimp vibing — chill vibes
-    ("https://media.giphy.com/media/kFxSwhFVe3414uK8F5/giphy.gif",
-     "Shrimply vibing while the numbers simmer..."),
-    # Party shrimp — celebration mode
-    ("https://media.giphy.com/media/yGJdHAm1Vu0MlLq6CL/giphy.gif",
-     "Party shrimp is prepping the garnish..."),
+_CHEF_CAPTIONS = [
+    "The shrimp is vibing while your memo cooks...",
+    "Chef Shrimp is plating your metrics...",
+    "Shrimp doing the happy dance for your data...",
+    "Shrimply vibing while the numbers simmer...",
+    "Party shrimp is prepping the garnish...",
 ]
+
+_COOKING_SHRIMP_B64: str | None = None
+
+
+def _load_cooking_shrimp_b64() -> str:
+    """Load the cooking shrimp GIF as a base64 data URI (cached)."""
+    global _COOKING_SHRIMP_B64
+    if _COOKING_SHRIMP_B64 is None:
+        import base64, pathlib
+        gif_path = pathlib.Path(__file__).parent / "assets" / "cooking_shrimp.gif"
+        _COOKING_SHRIMP_B64 = base64.b64encode(gif_path.read_bytes()).decode()
+    return _COOKING_SHRIMP_B64
 
 
 def _chef_gif_html() -> str:
-    """Return HTML for a randomly chosen shrimp chef GIF."""
+    """Return HTML for the animated cooking shrimp chef GIF."""
     import random
-    url, caption = random.choice(_CHEF_GIFS)
+    caption = random.choice(_CHEF_CAPTIONS)
+    b64 = _load_cooking_shrimp_b64()
     return f"""
 <div style="text-align:center; margin: 15px 0;">
-  <img src="{url}" alt="Chef Shrimp"
+  <img src="data:image/gif;base64,{b64}" alt="Chef Shrimp"
        style="max-height:220px; border-radius:12px;
               box-shadow: 0 4px 15px rgba(0,0,0,0.15);" />
   <p style="margin-top:8px; font-size:14px; color:#888;
