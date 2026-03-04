@@ -3,6 +3,7 @@
 
 import logging
 import os
+import random
 import re
 import tempfile
 import time
@@ -21,6 +22,7 @@ from memo_automator import (
     apply_updates,
     chunk_memo_by_pages,
     create_backup,
+    extract_market_data,
     extract_memo_content,
     extract_proforma_data,
     extract_schedule_data,
@@ -187,7 +189,14 @@ def check_password() -> bool:
         st.error("No users configured in Streamlit secrets.")
         st.stop()
 
+    _LOGIN_SLOGANS = [
+        "The only James Beard Award Winning Chef in Memo City!",
+        "Serving memos fresh out the kitchen.",
+        "No reservations needed — just credentials.",
+        "Where every memo is a chef's kiss.",
+    ]
     st.title("\U0001f512 Memo Chef — Login")
+    st.caption(random.choice(_LOGIN_SLOGANS))
     with st.form("login_form"):
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
@@ -337,10 +346,11 @@ class _LogCapture(logging.Handler):
 # MISE EN PLACE  (ingredient uploaders)
 # ============================================================================
 st.subheader("\U0001f52a Mise en Place")
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 memo_file = col1.file_uploader("The Memo (.pptx)", type=["pptx"])
 proforma_file = col2.file_uploader("The Proforma (.xlsx / .xlsm)", type=["xlsx", "xlsm"])
 schedule_file = col3.file_uploader("The Schedule (.mpp)", type=["mpp"])
+market_data_file = col4.file_uploader("Market Data (.xlsx)", type=["xlsx", "xlsm"])
 
 property_name = st.text_input(
     "Property Name (as shown in proforma)",
@@ -409,7 +419,45 @@ if st.button(_fire_label, type="primary", disabled=_fire_disabled):
         )
 
         # Progress bar (outside status so it's always visible)
-        progress_bar = st.progress(0, text="\U0001f525 Firing up the pass...")
+        _PROGRESS_SLOGANS = {
+            "fire": [
+                "\U0001f525 Firing up the pass...",
+                "\U0001f525 Preheating the kitchen...",
+                "\U0001f525 Lighting the burners...",
+            ],
+            "sear": [
+                "\U0001f373 Searing the metrics...",
+                "\U0001f373 Heating the yield up above a 6.50%...",
+                "\U0001f373 Getting a nice crust on these numbers...",
+                "\U0001f373 Caramelizing the cap rates...",
+            ],
+            "reduce": [
+                "\U0001f373 Reducing the sauce...",
+                "\U0001f373 Letting the flavors meld...",
+                "\U0001f373 Deglazing the pan...",
+            ],
+            "plate": [
+                "\U0001f37d\ufe0f Plating the dish...",
+                "\U0001f37d\ufe0f Garnishing the entrée...",
+                "\U0001f37d\ufe0f Wiping the rim of the plate...",
+            ],
+            "ticket": [
+                "\U0001f4cb Printing the ticket...",
+                "\U0001f4cb Hanging the ticket on the rail...",
+                "\U0001f4cb Calling the check...",
+            ],
+            "market": [
+                "\U0001f4ca Reading the market data...",
+                "\U0001f4ca Checking the comps...",
+                "\U0001f4ca Scanning the rent rolls...",
+                "\U0001f4ca Pulling the market pulse...",
+            ],
+        }
+
+        def _slogan(key: str) -> str:
+            return random.choice(_PROGRESS_SLOGANS[key])
+
+        progress_bar = st.progress(0, text=_slogan("fire"))
 
         with st.status("\U0001f525 Firing up the pass...", expanded=True) as status:
             # Show a random quirky shrimp chef GIF while processing
@@ -444,6 +492,23 @@ if st.button(_fire_label, type="primary", disabled=_fire_disabled):
                     st.error(f"Could not read the schedule. Is it a valid .mpp? ({e})")
                     st.stop()
 
+            # Step b3: Extract market data (optional)
+            if market_data_file:
+                progress_bar.progress(13, text=_slogan("market"))
+                st.write("\U0001f4ca Reading the market data...")
+                market_data_path = os.path.join(tmpdir, market_data_file.name)
+                with open(market_data_path, "wb") as f:
+                    f.write(market_data_file.getvalue())
+                try:
+                    market_text = extract_market_data(market_data_path, cfg)
+                    if market_text:
+                        proforma_data += "\n\n" + market_text
+                        st.write(f"\U0001f4ca Market data extracted ({len(market_text):,} chars)")
+                    else:
+                        st.warning("No dashboard tabs found in market data file — continuing without it.")
+                except Exception as e:
+                    st.warning(f"Could not read market data: {e}. Continuing without it.")
+
             # Step c: Extract memo
             progress_bar.progress(15, text="\U0001f4dc Reading the old ticket...")
             st.write("\U0001f4dc Reading the old ticket...")
@@ -456,7 +521,7 @@ if st.button(_fire_label, type="primary", disabled=_fire_disabled):
             # Step d: Map metrics (mirrors main() batching logic exactly)
             # Progress: 15% -> 70% for mapping
             SEAR_START, SEAR_END = 15, 70
-            progress_bar.progress(SEAR_START, text="\U0001f373 Searing the metrics...")
+            progress_bar.progress(SEAR_START, text=_slogan("sear"))
             st.write("\U0001f373 Searing the metrics (~1-2 min on high heat)...")
             BATCH_THRESHOLD = 80_000
             RATE_LIMIT_INTERVAL = 65
@@ -543,7 +608,7 @@ if st.button(_fire_label, type="primary", disabled=_fire_disabled):
                                                property_name=property_name)
                 mappings.pop("_truncated", None)
 
-            progress_bar.progress(70, text="\U0001f373 Reducing the sauce...")
+            progress_bar.progress(70, text=_slogan("reduce"))
 
             # Strip no-op entries (old == new)
             mappings["table_updates"] = [
@@ -575,7 +640,7 @@ if st.button(_fire_label, type="primary", disabled=_fire_disabled):
                 progress_bar.progress(88, text="\U0001f9d1\u200d\U0001f373 QA complete...")
 
             # Step f: Apply updates — 90%
-            progress_bar.progress(90, text="\U0001f37d\ufe0f Plating the dish...")
+            progress_bar.progress(90, text=_slogan("plate"))
             st.write("\U0001f37d\ufe0f Plating the dish...")
             changes = apply_updates(memo_path, validated, dry_run=dry_run)
 
@@ -601,7 +666,7 @@ if st.button(_fire_label, type="primary", disabled=_fire_disabled):
                          f"{layout_summary['page_numbers_snapped']} page numbers snapped")
 
             # Step h: Write change log — 96%
-            progress_bar.progress(96, text="\U0001f4cb Printing the ticket...")
+            progress_bar.progress(96, text=_slogan("ticket"))
             st.write("\U0001f4cb Printing the ticket...")
             log_path = write_change_log(
                 tmpdir, changes, validated, memo_path, proforma_path, backup_path

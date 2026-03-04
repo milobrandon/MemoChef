@@ -143,6 +143,21 @@ metric in the memo that should be updated with new values from the proforma.
       goes hard (non-refundable) dates if they appear in the memo
     - Use the `source` field format: "Schedule: [task name]"
 
+19. **Market data & chart updates** — When MARKET DATA sections are present
+    and the memo contains embedded charts (type=CHART shapes):
+    a. Match market data tabs to memo charts by semantic similarity of chart
+       titles, series names, and axis labels. Names may differ slightly
+       (e.g. "Florida" in data vs "UF" in chart title).
+    b. For each matched chart, emit a chart_update entry per series with the
+       updated values from market data.
+    c. Preserve all existing series — do not add or remove series unless the
+       market data clearly warrants it.
+    d. If a chart's year range or comparison markets differ from the data,
+       adapt the data to fit the chart's existing structure.
+    e. Only update values that actually differ from the current chart data.
+    f. If a match is uncertain, include it but add "(uncertain match)" to
+       the source field so the validator can flag it.
+
 CRITICAL: Return ONLY the raw JSON object below. Do NOT include any analysis,
 reasoning, explanation, or commentary before or after the JSON. Your entire
 response must be parseable as JSON. Start with {{ and end with }}.
@@ -176,6 +191,18 @@ Schema:
       "insert_after_row_label": "<text in column 0 of reference row>",
       "cells": ["<col 0>", "<col 1>", ...],
       "source": "<tab + cell ref>"
+    }}
+  ],
+  "chart_updates": [
+    {{
+      "page": <int>,
+      "chart_name": "<shape name from memo>",
+      "chart_title": "<chart title text, if visible>",
+      "series_name": "<name of series to update>",
+      "old_values": [<current values as numbers>],
+      "new_values": [<replacement values from market data>],
+      "categories": [<category labels if changed, else omit>],
+      "source": "<market data tab name + cell reference>"
     }}
   ]
 }}

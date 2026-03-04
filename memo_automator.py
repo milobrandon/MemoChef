@@ -368,6 +368,101 @@ def extract_proforma_data(proforma_path: str, cfg: dict) -> str:
     )
     return proforma_text
 
+
+# ============================================================================
+# 4a. MARKET DATA EXTRACTION  (openpyxl, data_only=True)
+# ============================================================================
+_MARKET_DASHBOARD_TABS = [
+    "Tables",
+    "Comparison Graph",
+    "Uncaptured Demand Comparison",
+    "Rent Growth Comparison By Year",
+    "Occupancy Comparison By Year",
+    "Comp Set",
+]
+
+
+def extract_market_data(market_data_path: str, cfg: dict) -> str:
+    """
+    Read the RealPage market data workbook and return a compact text
+    representation of the 6 dashboard tabs (ignoring back-end data tabs).
+
+    Uses data_only=True so formulas resolve to their cached values.
+    Returns empty string if no dashboard tabs are found (non-fatal).
+    """
+    max_rows = cfg["proforma"]["max_rows_per_tab"]
+    max_cols = cfg["proforma"]["max_cols_per_tab"]
+
+    log.info("Opening market data (data_only): %s", market_data_path)
+    try:
+        wb = openpyxl.load_workbook(market_data_path, data_only=True)
+    except (InvalidFileException, zipfile.BadZipFile) as e:
+        log.warning(
+            "Unable to open market data '%s': %s. Continuing without market data.",
+            market_data_path, e,
+        )
+        return ""
+    except FileNotFoundError:
+        log.warning("Market data file not found: %s", market_data_path)
+        return ""
+    log.info("Market data sheets: %s", wb.sheetnames)
+
+    lines = [
+        f"\n{'='*70}",
+        "MARKET DATA (from RealPage)",
+        f"{'='*70}",
+    ]
+    found_tabs = 0
+    data_rows = 0
+    for tab_name in _MARKET_DASHBOARD_TABS:
+        if tab_name not in wb.sheetnames:
+            log.warning("Market data tab '%s' not found - skipping", tab_name)
+            continue
+        found_tabs += 1
+        ws = wb[tab_name]
+        lines.append(f"\n{'='*70}")
+        lines.append(f"TAB: {tab_name}")
+        lines.append(f"{'='*70}")
+
+        end_row = ws.max_row if max_rows == 0 else min(ws.max_row, max_rows)
+        end_col = ws.max_column if max_cols == 0 else min(ws.max_column, max_cols)
+
+        for row in ws.iter_rows(
+            min_row=1, max_row=end_row, max_col=end_col, values_only=False
+        ):
+            row_data = []
+            for cell in row:
+                if cell.value is not None:
+                    row_data.append(str(cell.value))
+            if row_data:
+                lines.append(f"Row {row[0].row}:\t" + "\t".join(row_data))
+                data_rows += 1
+
+    wb.close()
+
+    if found_tabs == 0:
+        log.warning(
+            "No dashboard tabs found in market data file. "
+            "Expected tabs: %s. Available: %s. Skipping market data.",
+            _MARKET_DASHBOARD_TABS, wb.sheetnames,
+        )
+        return ""
+
+    if data_rows == 0:
+        log.warning(
+            "Market data extraction found no non-empty values. "
+            "If this workbook contains formulas, open it in Excel, let it "
+            "recalculate, save, and retry."
+        )
+        return ""
+
+    market_text = "\n".join(lines)
+    log.info(
+        "Market data extraction complete (%d tabs, %d lines, %d chars)",
+        found_tabs, len(lines), len(market_text),
+    )
+    return market_text
+
 # ============================================================================
 # 4b. SCHEDULE DATA EXTRACTION  (mpxj via jpype)
 # ============================================================================
@@ -535,6 +630,47 @@ def extract_memo_content(memo_path: str, cfg: dict) -> str:
                             cells.append(f"[{ci}]={ct}")
                     if cells:
                         lines.append(f"    Row {ri}: {' | '.join(cells)}")
+
+            # Charts (embedded Excel chart objects)
+            if shape.has_chart:
+                chart = shape.chart
+                chart_type_name = str(chart.chart_type) if chart.chart_type else "UNKNOWN"
+                lines.append(f"    Chart type: {chart_type_name}")
+
+                # Chart title
+                if chart.has_title and chart.chart_title and chart.chart_title.has_text_frame:
+                    title_text = chart.chart_title.text_frame.text.strip()
+                    lines.append(f"    Chart title: '{title_text}'")
+
+                # Extract series and data
+                try:
+                    for s_idx, series in enumerate(chart.series):
+                        s_name = ""
+                        try:
+                            s_name = series.tx.strRef.strCache.pt[0].v if series.tx and series.tx.strRef else f"Series {s_idx}"
+                        except (AttributeError, IndexError):
+                            s_name = f"Series {s_idx}"
+
+                        # Extract series values
+                        vals = []
+                        try:
+                            if series.values:
+                                vals = [v for v in series.values if v is not None]
+                        except Exception:
+                            pass
+
+                        lines.append(f"    Series {s_idx} ('{s_name}'): {vals[:20]}")
+                except Exception as e:
+                    lines.append(f"    (chart data extraction failed: {e})")
+
+                # Extract category labels (x-axis)
+                try:
+                    plot = chart.plots[0]
+                    if plot.categories:
+                        cats = list(plot.categories)[:30]
+                        lines.append(f"    Categories: {cats}")
+                except Exception:
+                    pass
 
     memo_text = "\n".join(lines)
     log.info("Memo extraction complete (%d lines, %d chars)",
@@ -728,6 +864,21 @@ metric in the memo that should be updated with new values from the proforma.
       goes hard (non-refundable) dates if they appear in the memo
     - Use the `source` field format: "Schedule: [task name]"
 
+19. **Market data & chart updates** — When MARKET DATA sections are present
+    and the memo contains embedded charts (type=CHART shapes):
+    a. Match market data tabs to memo charts by semantic similarity of chart
+       titles, series names, and axis labels. Names may differ slightly
+       (e.g. "Florida" in data vs "UF" in chart title).
+    b. For each matched chart, emit a chart_update entry per series with the
+       updated values from market data.
+    c. Preserve all existing series — do not add or remove series unless the
+       market data clearly warrants it.
+    d. If a chart's year range or comparison markets differ from the data,
+       adapt the data to fit the chart's existing structure.
+    e. Only update values that actually differ from the current chart data.
+    f. If a match is uncertain, include it but add "(uncertain match)" to
+       the source field so the validator can flag it.
+
 CRITICAL: Return ONLY the raw JSON object below. Do NOT include any analysis,
 reasoning, explanation, or commentary before or after the JSON. Your entire
 response must be parseable as JSON. Start with {{ and end with }}.
@@ -761,6 +912,18 @@ Schema:
       "insert_after_row_label": "<text in column 0 of reference row>",
       "cells": ["<col 0>", "<col 1>", ...],
       "source": "<tab + cell ref>"
+    }}
+  ],
+  "chart_updates": [
+    {{
+      "page": <int>,
+      "chart_name": "<shape name from memo>",
+      "chart_title": "<chart title text, if visible>",
+      "series_name": "<name of series to update>",
+      "old_values": [<current values as numbers>],
+      "new_values": [<replacement values from market data>],
+      "categories": [<category labels if changed, else omit>],
+      "source": "<market data tab name + cell reference>"
     }}
   ]
 }}
@@ -1573,15 +1736,44 @@ def _replace_in_para(para, old_text: str, new_text: str) -> bool:
             run.text = run.text.replace(old_text, new_text)
             return True
 
-    # Pass 2: cross-run replacement
+    # Pass 2: cross-run replacement (format-preserving)
     full_text = "".join(r.text for r in para.runs)
-    if old_text in full_text:
-        new_full = full_text.replace(old_text, new_text)
-        if para.runs:
-            para.runs[0].text = new_full
-            for run in para.runs[1:]:
-                run.text = ""
-        return True
+    if old_text not in full_text:
+        return False
+
+    if para.runs:
+        # Calculate character positions for each run
+        run_starts = []
+        pos = 0
+        for run in para.runs:
+            run_starts.append(pos)
+            pos += len(run.text)
+
+        # Find where old_text starts and ends
+        match_start = full_text.index(old_text)
+        match_end = match_start + len(old_text)
+
+        # Find first and last runs that overlap with the match
+        first_run_idx = None
+        last_run_idx = None
+        for i, run in enumerate(para.runs):
+            run_end = run_starts[i] + len(run.text)
+            if first_run_idx is None and run_end > match_start:
+                first_run_idx = i
+            if run_starts[i] < match_end:
+                last_run_idx = i
+
+        if first_run_idx is not None and last_run_idx is not None:
+            # Preserve text before match in first overlapping run
+            pre = full_text[run_starts[first_run_idx]:match_start]
+            # Preserve text after match in last overlapping run
+            last_run_end = run_starts[last_run_idx] + len(para.runs[last_run_idx].text)
+            post = full_text[match_end:last_run_end]
+            # Write replacement into first overlapping run, clear the rest
+            para.runs[first_run_idx].text = pre + new_text + post
+            for i in range(first_run_idx + 1, last_run_idx + 1):
+                para.runs[i].text = ""
+            return True
 
     return False
 
@@ -1967,6 +2159,132 @@ def apply_updates(memo_path: str, mappings: dict, dry_run: bool = False) -> list
     else:
         log.info("Dry-run: %d updates identified (not saved).", len(changes))
 
+    # --- Chart updates (separate pass - charts need fresh prs load) ---
+    chart_updates_list = mappings.get("chart_updates", [])
+    if chart_updates_list:
+        chart_changes = _apply_chart_updates(memo_path, chart_updates_list, dry_run=dry_run)
+        changes.extend(chart_changes)
+
+    return changes
+
+
+def _apply_chart_updates(memo_path: str, chart_updates: list, dry_run: bool = False) -> list:
+    """
+    Update embedded PowerPoint chart data based on chart_updates from the
+    mapping pass. Preserves all visual formatting (colors, styles, etc.).
+
+    Returns a list of change records.
+    """
+    if not chart_updates:
+        return []
+
+    prs = _load_presentation(memo_path)
+    changes = []
+
+    for upd in chart_updates:
+        page = upd["page"]
+        chart_name = upd.get("chart_name", "")
+        chart_title = upd.get("chart_title", "")
+        series_name = upd.get("series_name", "")
+        new_values = upd.get("new_values", [])
+        old_values = upd.get("old_values", [])
+        new_categories = upd.get("categories", None)
+        source = upd.get("source", "")
+
+        try:
+            slide = prs.slides[page - 1]
+        except IndexError:
+            log.warning("Chart update SKIPPED: page %d does not exist", page)
+            continue
+
+        # Find the target chart
+        target_chart = None
+        target_shape = None
+        for shape in slide.shapes:
+            if not shape.has_chart:
+                continue
+            # Match by shape name or chart title
+            name_match = chart_name and _loose_match(chart_name, shape.name)
+            title_match = False
+            if shape.chart.has_title and shape.chart.chart_title:
+                try:
+                    ct_text = shape.chart.chart_title.text_frame.text.strip()
+                    title_match = chart_title and _loose_match(chart_title, ct_text)
+                except Exception:
+                    pass
+            if name_match or title_match:
+                target_chart = shape.chart
+                target_shape = shape
+                break
+
+        if target_chart is None:
+            # Fallback: if only one chart on the page, use it
+            chart_shapes = [s for s in slide.shapes if s.has_chart]
+            if len(chart_shapes) == 1:
+                target_chart = chart_shapes[0].chart
+                target_shape = chart_shapes[0]
+                log.info("Chart update: single chart fallback on page %d", page)
+            else:
+                log.warning(
+                    "Chart update NOT FOUND: page %d, name='%s', title='%s'",
+                    page, chart_name, chart_title,
+                )
+                continue
+
+        # Find and update the target series
+        found_series = False
+        for series in target_chart.series:
+            s_name = ""
+            try:
+                s_name = series.tx.strRef.strCache.pt[0].v if series.tx and series.tx.strRef else ""
+            except (AttributeError, IndexError):
+                pass
+            if not _loose_match(series_name, s_name):
+                continue
+
+            found_series = True
+            if dry_run:
+                changes.append({
+                    "page": page, "type": "chart",
+                    "location": f"{target_shape.name} / series '{s_name}'",
+                    "old": str(old_values[:5]) + ("..." if len(old_values) > 5 else ""),
+                    "new": str(new_values[:5]) + ("..." if len(new_values) > 5 else ""),
+                    "source": source,
+                })
+                break
+
+            # Update series values via the underlying XML cache
+            try:
+                num_ref = series.val
+                if num_ref is not None and hasattr(num_ref, 'numRef') and num_ref.numRef is not None:
+                    cache = num_ref.numRef.numCache
+                    pts = list(cache.pt)
+                    for i, pt in enumerate(pts):
+                        if i < len(new_values):
+                            pt.v = str(new_values[i])
+                    changes.append({
+                        "page": page, "type": "chart",
+                        "location": f"{target_shape.name} / series '{s_name}'",
+                        "old": str(old_values[:5]) + ("..." if len(old_values) > 5 else ""),
+                        "new": str(new_values[:5]) + ("..." if len(new_values) > 5 else ""),
+                        "source": source,
+                    })
+                else:
+                    log.warning("Chart series '%s' has no numeric reference cache", s_name)
+            except Exception as e:
+                log.warning("Chart update FAILED for series '%s': %s", s_name, e)
+            break
+
+        if not found_series:
+            log.warning(
+                "Chart series '%s' NOT FOUND in chart on page %d",
+                series_name, page,
+            )
+
+    if not dry_run and changes:
+        prs.save(memo_path)
+        log.info("Chart updates saved: %d changes.", len(changes))
+
     return changes
 
 
@@ -2063,7 +2381,10 @@ def apply_branding(memo_path: str, theme_path: str, cfg: dict) -> int:
         for shape in slide.shapes:
             # Process text frames (text boxes, placeholders)
             if shape.has_text_frame:
-                is_title = shape.shape_type is not None and "TITLE" in str(shape.shape_type)
+                _stype = str(shape.shape_type) if shape.shape_type is not None else ""
+                is_title = ("TITLE" in _stype or "SUBTITLE" in _stype
+                            or "CENTER_TITLE" in _stype
+                            or (shape.name and shape.name.lower().startswith(("title", "subtitle"))))
                 for para in shape.text_frame.paragraphs:
                     for run in para.runs:
                         _reformat_run(run, is_title, heading_threshold,
@@ -2090,7 +2411,11 @@ def apply_branding(memo_path: str, theme_path: str, cfg: dict) -> int:
 
 def _reformat_run(run, is_heading_context: bool, size_threshold: int,
                   heading_font: str, body_font: str, color_threshold: float):
-    """Reformat a single text run's font and color."""
+    """Reformat a single text run's font and color, preserving bold/italic."""
+    # Snapshot existing formatting BEFORE changes
+    was_bold = run.font.bold
+    was_italic = run.font.italic
+
     # Determine if this run is a heading
     font_size = run.font.size
     if font_size is not None:
@@ -2102,6 +2427,13 @@ def _reformat_run(run, is_heading_context: bool, size_threshold: int,
 
     # Set font family
     run.font.name = heading_font if is_heading else body_font
+
+    # Restore bold/italic (they may have been inherited from theme,
+    # which we just replaced)
+    if was_bold is not None:
+        run.font.bold = was_bold
+    if was_italic is not None:
+        run.font.italic = was_italic
 
     # Remap color if it's a hard-coded RGB
     try:
