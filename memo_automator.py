@@ -647,7 +647,7 @@ def extract_memo_content(memo_path: str, cfg: dict) -> str:
                     for s_idx, series in enumerate(chart.series):
                         s_name = ""
                         try:
-                            s_name = series.tx.strRef.strCache.pt[0].v if series.tx and series.tx.strRef else f"Series {s_idx}"
+                            s_name = series.name if series.name else f"Series {s_idx}"
                         except (AttributeError, IndexError):
                             s_name = f"Series {s_idx}"
 
@@ -2236,7 +2236,7 @@ def _apply_chart_updates(memo_path: str, chart_updates: list, dry_run: bool = Fa
         for series in target_chart.series:
             s_name = ""
             try:
-                s_name = series.tx.strRef.strCache.pt[0].v if series.tx and series.tx.strRef else ""
+                s_name = series.name or ""
             except (AttributeError, IndexError):
                 pass
             if not _loose_match(series_name, s_name):
@@ -2255,13 +2255,21 @@ def _apply_chart_updates(memo_path: str, chart_updates: list, dry_run: bool = Fa
 
             # Update series values via the underlying XML cache
             try:
-                num_ref = series.val
-                if num_ref is not None and hasattr(num_ref, 'numRef') and num_ref.numRef is not None:
-                    cache = num_ref.numRef.numCache
-                    pts = list(cache.pt)
+                _nsmap = {
+                    "c": "http://schemas.openxmlformats.org/drawingml/2006/chart",
+                }
+                el = series._element
+                num_cache = el.find(".//c:numRef/c:numCache", _nsmap)
+                if num_cache is None:
+                    # Try numLit (inline values without external ref)
+                    num_cache = el.find(".//c:numLit", _nsmap)
+                if num_cache is not None:
+                    pts = num_cache.findall("c:pt", _nsmap)
                     for i, pt in enumerate(pts):
                         if i < len(new_values):
-                            pt.v = str(new_values[i])
+                            v_el = pt.find("c:v", _nsmap)
+                            if v_el is not None:
+                                v_el.text = str(new_values[i])
                     changes.append({
                         "page": page, "type": "chart",
                         "location": f"{target_shape.name} / series '{s_name}'",
@@ -2270,7 +2278,7 @@ def _apply_chart_updates(memo_path: str, chart_updates: list, dry_run: bool = Fa
                         "source": source,
                     })
                 else:
-                    log.warning("Chart series '%s' has no numeric reference cache", s_name)
+                    log.warning("Chart series '%s' has no numeric cache element", s_name)
             except Exception as e:
                 log.warning("Chart update FAILED for series '%s': %s", s_name, e)
             break
