@@ -39,6 +39,105 @@ from memo_automator import (
 # ============================================================================
 st.set_page_config(page_title="Memo Chef", page_icon="\U0001f9d1\u200d\U0001f373", layout="centered")
 
+# ============================================================================
+# SUBTEXT BRAND STYLING
+# ============================================================================
+# Palette: Slate Gray #2b2825, Everest Green #16352e, Birch #a95818,
+#          Brown #512213, Beige #f7f1e3, Lime Green #c1d100
+st.markdown("""
+<style>
+    /* ---------- Primary buttons (Fire!, Log in) ---------- */
+    .stButton > button[kind="primary"],
+    button[kind="primary"] {
+        background-color: #16352e !important;
+        border-color: #16352e !important;
+        color: #f7f1e3 !important;
+    }
+    .stButton > button[kind="primary"]:hover,
+    button[kind="primary"]:hover {
+        background-color: #1e4a3f !important;
+        border-color: #1e4a3f !important;
+    }
+
+    /* ---------- Secondary / default buttons ---------- */
+    .stButton > button:not([kind="primary"]),
+    .stDownloadButton > button {
+        background-color: #e8dece !important;
+        border: 1px solid #2b2825 !important;
+        color: #2b2825 !important;
+    }
+    .stDownloadButton > button:hover,
+    .stButton > button:not([kind="primary"]):hover {
+        background-color: #d9cab5 !important;
+    }
+
+    /* ---------- Sidebar ---------- */
+    section[data-testid="stSidebar"] {
+        background-color: #2b2825 !important;
+    }
+    section[data-testid="stSidebar"] * {
+        color: #f7f1e3 !important;
+    }
+    section[data-testid="stSidebar"] .stProgress > div > div {
+        background-color: #c1d100 !important;
+    }
+
+    /* ---------- Progress bar (main area) ---------- */
+    .stProgress > div > div > div {
+        background-color: #16352e !important;
+    }
+
+    /* ---------- File uploader ---------- */
+    [data-testid="stFileUploader"] {
+        border-color: #a95818 !important;
+    }
+    [data-testid="stFileUploader"] button {
+        color: #16352e !important;
+        border-color: #16352e !important;
+    }
+
+    /* ---------- Expander headers ---------- */
+    .streamlit-expanderHeader {
+        color: #512213 !important;
+    }
+
+    /* ---------- Metrics ---------- */
+    [data-testid="stMetricValue"] {
+        color: #16352e !important;
+    }
+
+    /* ---------- Status container ---------- */
+    [data-testid="stStatusWidget"] {
+        border-color: #a95818 !important;
+    }
+
+    /* ---------- Text input focus ring ---------- */
+    .stTextInput input:focus {
+        border-color: #16352e !important;
+        box-shadow: 0 0 0 1px #16352e !important;
+    }
+
+    /* ---------- Form submit button ---------- */
+    .stForm button[kind="secondaryFormSubmit"] {
+        background-color: #16352e !important;
+        color: #f7f1e3 !important;
+        border-color: #16352e !important;
+    }
+
+    /* ---------- Success alert ---------- */
+    .stAlert [data-testid="stAlertContentSuccess"] {
+        background-color: #16352e !important;
+        color: #f7f1e3 !important;
+    }
+
+    /* ---------- Links ---------- */
+    a { color: #a95818 !important; }
+    a:hover { color: #512213 !important; }
+
+    /* ---------- Dividers ---------- */
+    hr { border-color: #a95818 !important; }
+</style>
+""", unsafe_allow_html=True)
 
 # ============================================================================
 # CREDIT SYSTEM  (persistent Neon Postgres)
@@ -314,7 +413,7 @@ def _chef_gif_html() -> str:
   <img src="{url}" alt="Chef Shrimp"
        style="max-height:220px; border-radius:12px;
               box-shadow: 0 4px 15px rgba(0,0,0,0.15);" />
-  <p style="margin-top:8px; font-size:14px; color:#888;
+  <p style="margin-top:8px; font-size:14px; color:#512213;
             font-style:italic;">{caption}</p>
 </div>
 """
