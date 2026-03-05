@@ -224,7 +224,39 @@ def _get_db_conn():
             "  PRIMARY KEY (username, week, run_id)"
             ")"
         )
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS memo_chef_users ("
+            "  username TEXT PRIMARY KEY,"
+            "  password_hash TEXT NOT NULL,"
+            "  role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin','user')),"
+            "  credits_per_week INTEGER NOT NULL DEFAULT 5,"
+            "  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
+            "  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()"
+            ")"
+        )
     return conn
+
+
+def _ensure_users_seeded():
+    """Copy users from st.secrets into memo_chef_users if the table is empty."""
+    try:
+        secrets_users = dict(st.secrets["users"])
+    except (KeyError, FileNotFoundError):
+        return
+    conn = _get_db_conn()
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM memo_chef_users")
+        if cur.fetchone()[0] > 0:
+            return
+        for uname, ucfg in secrets_users.items():
+            cur.execute(
+                "INSERT INTO memo_chef_users (username, password_hash, role, credits_per_week) "
+                "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                (uname, ucfg["password_hash"], ucfg.get("role", "user"),
+                 int(ucfg.get("credits_per_week", 5))),
+            )
+
+_ensure_users_seeded()
 
 
 @contextmanager
@@ -327,11 +359,77 @@ def _reset_user_credits(username: str) -> None:
         )
 
 
+def _add_user(username: str, password: str, role: str, credits_per_week: int) -> bool:
+    """Add a new user. Returns False if username already exists."""
+    from app_helpers import hash_password
+    pw_hash = hash_password(password)
+    with _db_cursor() as cur:
+        cur.execute(
+            "INSERT INTO memo_chef_users (username, password_hash, role, credits_per_week) "
+            "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING RETURNING username",
+            (username, pw_hash, role, credits_per_week),
+        )
+        return cur.fetchone() is not None
+
+
+def _update_user(username: str, role: str | None = None,
+                 credits_per_week: int | None = None,
+                 new_password: str | None = None) -> None:
+    """Update user fields. Only non-None arguments are changed."""
+    from app_helpers import hash_password
+    with _db_cursor() as cur:
+        if role is not None:
+            cur.execute(
+                "UPDATE memo_chef_users SET role = %s, updated_at = now() WHERE username = %s",
+                (role, username),
+            )
+        if credits_per_week is not None:
+            cur.execute(
+                "UPDATE memo_chef_users SET credits_per_week = %s, updated_at = now() WHERE username = %s",
+                (credits_per_week, username),
+            )
+        if new_password is not None:
+            pw_hash = hash_password(new_password)
+            cur.execute(
+                "UPDATE memo_chef_users SET password_hash = %s, updated_at = now() WHERE username = %s",
+                (pw_hash, username),
+            )
+
+
+def _delete_user(username: str) -> None:
+    """Delete a user and their credit_usage row."""
+    with _db_cursor() as cur:
+        cur.execute("DELETE FROM credit_usage WHERE username = %s", (username,))
+        cur.execute("DELETE FROM credit_charge_events WHERE username = %s", (username,))
+        cur.execute("DELETE FROM memo_chef_users WHERE username = %s", (username,))
+
+
+def _get_all_usernames() -> list[str]:
+    """Return all usernames from memo_chef_users."""
+    with _db_cursor() as cur:
+        cur.execute("SELECT username FROM memo_chef_users ORDER BY username")
+        return [r[0] for r in cur.fetchall()]
+
+
 # ============================================================================
 # AUTH GATE
 # ============================================================================
 def _get_users() -> dict:
-    """Load user definitions from st.secrets['users']."""
+    """Load users from memo_chef_users DB table, falling back to secrets."""
+    try:
+        with _db_cursor() as cur:
+            cur.execute(
+                "SELECT username, password_hash, role, credits_per_week "
+                "FROM memo_chef_users"
+            )
+            rows = cur.fetchall()
+        if rows:
+            return {
+                r[0]: {"password_hash": r[1], "role": r[2], "credits_per_week": r[3]}
+                for r in rows
+            }
+    except Exception:
+        pass
     try:
         return dict(st.secrets["users"])
     except (KeyError, FileNotFoundError):
@@ -427,17 +525,91 @@ with st.sidebar:
                  "Used": u, "Limit": cpw, "Remaining": r}
             )
         st.table(rows)
-        reset_user = st.selectbox(
-            "Reset credits for", [r["User"] for r in rows], index=None,
-            placeholder="Select a user...",
-        )
-        if reset_user and st.button(f"Reset {reset_user}"):
-            try:
-                _reset_user_credits(reset_user)
-            except Exception as e:
-                st.error(f"Failed to reset credits for {reset_user}: {e}")
+
+        with st.expander("Add User"):
+            with st.form("add_user_form"):
+                new_username = st.text_input("Username")
+                new_password = st.text_input("Password", type="password")
+                new_role = st.selectbox("Role", ["user", "admin"], index=0)
+                new_credits = st.number_input("Credits per week", min_value=1, value=5)
+                add_submitted = st.form_submit_button("Add User")
+            if add_submitted:
+                new_username = new_username.strip()
+                if not new_username:
+                    st.error("Username is required.")
+                elif len(new_password) < 6:
+                    st.error("Password must be at least 6 characters.")
+                else:
+                    try:
+                        if _add_user(new_username, new_password, new_role, new_credits):
+                            st.success(f"User '{new_username}' created.")
+                            st.rerun()
+                        else:
+                            st.error(f"User '{new_username}' already exists.")
+                    except Exception as e:
+                        st.error(f"Failed to add user: {e}")
+
+        with st.expander("Edit User"):
+            all_usernames = [r["User"] for r in rows]
+            edit_user = st.selectbox("Select user", all_usernames, index=None,
+                                     placeholder="Select a user...", key="edit_user_select")
+            if edit_user:
+                edit_cfg = users.get(edit_user, {})
+                with st.form("edit_user_form"):
+                    edit_role = st.selectbox("Role", ["user", "admin"],
+                                            index=0 if edit_cfg.get("role", "user") == "user" else 1)
+                    edit_credits = st.number_input("Credits per week", min_value=1,
+                                                   value=int(edit_cfg.get("credits_per_week", 5)))
+                    edit_password = st.text_input("New password (leave blank to keep current)",
+                                                  type="password")
+                    edit_submitted = st.form_submit_button("Save Changes")
+                if edit_submitted:
+                    if edit_password and len(edit_password) < 6:
+                        st.error("Password must be at least 6 characters.")
+                    else:
+                        try:
+                            _update_user(
+                                edit_user,
+                                role=edit_role,
+                                credits_per_week=edit_credits,
+                                new_password=edit_password if edit_password else None,
+                            )
+                            if edit_user == _username and edit_role != _role:
+                                st.session_state["role"] = edit_role
+                            if edit_user == _username:
+                                st.session_state["credits_per_week"] = edit_credits
+                            st.success(f"User '{edit_user}' updated.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed to update user: {e}")
+
+        with st.expander("Delete User"):
+            deletable = [r["User"] for r in rows if r["User"] != _username]
+            if deletable:
+                del_user = st.selectbox("Select user", deletable, index=None,
+                                        placeholder="Select a user...", key="del_user_select")
+                if del_user and st.button(f"Delete {del_user}"):
+                    try:
+                        _delete_user(del_user)
+                        st.success(f"User '{del_user}' deleted.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to delete user: {e}")
             else:
-                st.rerun()
+                st.info("No other users to delete.")
+
+        with st.expander("Reset Credits"):
+            reset_user = st.selectbox(
+                "Reset credits for", [r["User"] for r in rows], index=None,
+                placeholder="Select a user...", key="reset_user_select",
+            )
+            if reset_user and st.button(f"Reset {reset_user}"):
+                try:
+                    _reset_user_credits(reset_user)
+                    st.success(f"Credits reset for '{reset_user}'.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to reset credits: {e}")
 
 st.title("\U0001f9d1\u200d\U0001f373 Memo Chef")
 st.caption("From raw ingredients to a Michelin-star memo")
