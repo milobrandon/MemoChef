@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import glob
 import os
 import time
 import uuid
@@ -48,6 +49,26 @@ except Exception:
     pass
 
 
+_CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
+
+
+def _list_config_profiles() -> list[str]:
+    """Return stem names of YAML files in configs/, sorted."""
+    if not os.path.isdir(_CONFIGS_DIR):
+        return []
+    return sorted(
+        os.path.splitext(os.path.basename(p))[0]
+        for p in glob.glob(os.path.join(_CONFIGS_DIR, "*.yaml"))
+    )
+
+
+def _config_override_path(profile_name: str | None) -> str | None:
+    if not profile_name:
+        return None
+    path = os.path.join(_CONFIGS_DIR, f"{profile_name}.yaml")
+    return path if os.path.exists(path) else None
+
+
 def _get_api_key() -> str | None:
     try:
         return st.secrets["ANTHROPIC_API_KEY"]
@@ -81,6 +102,7 @@ def _queue_item_from_inputs(
     dry_run: bool,
     skip_validation: bool,
     profile_name: str | None,
+    config_profile_name: str | None = None,
 ) -> dict:
     return {
         "job_id": uuid.uuid4().hex,
@@ -96,6 +118,7 @@ def _queue_item_from_inputs(
         "dry_run": dry_run,
         "skip_validation": skip_validation,
         "profile_name": profile_name or "",
+        "config_profile_name": config_profile_name or "",
     }
 
 
@@ -173,6 +196,7 @@ def _execute_job(
         output_dir=str(run_dir),
         api_key=api_key,
         config_path=os.path.join(os.path.dirname(__file__), "config.yaml"),
+        config_override_path=_config_override_path(job.get("config_profile_name")),
         run_id=run_id,
         property_name=job.get("property_name"),
         dry_run=job.get("dry_run", False),
@@ -372,6 +396,17 @@ def render_new_run_tab() -> None:
         help="Use this when the property has been renamed or appears differently across sources.",
     )
 
+    config_profiles = _list_config_profiles()
+    config_profile_name = st.selectbox(
+        "Config profile",
+        options=[""] + config_profiles,
+        index=(config_profiles.index(profile["Config Profile"]) + 1)
+        if profile.get("Config Profile") and profile["Config Profile"] in config_profiles
+        else 0,
+        format_func=lambda v: "Default (config.yaml)" if v == "" else v.replace("_", " ").title(),
+        help="Override proforma tabs, model, or other settings for this property type.",
+    )
+
     pref_cols = st.columns(2)
     with pref_cols[0]:
         dry_run = st.checkbox(
@@ -413,6 +448,7 @@ def render_new_run_tab() -> None:
                 dry_run,
                 skip_validation,
                 profile_notes or None,
+                config_profile=config_profile_name or None,
             )
             st.success(f"Saved profile `{save_profile_name.strip()}`.")
             st.rerun()
@@ -434,6 +470,7 @@ def render_new_run_tab() -> None:
             dry_run=dry_run,
             skip_validation=skip_validation,
             profile_name=selected_profile or save_profile_name.strip() or None,
+            config_profile_name=config_profile_name or None,
         )
         _execute_job(job=job, username=username, credits_per_week=credits_per_week)
 
@@ -451,6 +488,7 @@ def render_new_run_tab() -> None:
             dry_run=dry_run,
             skip_validation=skip_validation,
             profile_name=selected_profile or save_profile_name.strip() or None,
+            config_profile_name=config_profile_name or None,
         )
         enqueue_job(username, job)
         st.success(f"Queued `{job['memo_name']}`.")

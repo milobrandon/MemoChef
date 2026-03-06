@@ -1,0 +1,17 @@
+# Config profile: Senior Housing
+# Overrides base config.yaml for senior / assisted living proformas.
+
+proforma:
+  tabs:
+    - "Executive Summary"
+    - "Development Summary"
+    - "Cash Flow"
+    - "Assumptions"
+    - "Care Revenue"
+    - "Staffing"
+    - "Proforma Comparison"
+
+claude:
+  # Senior housing memos tend to have complex care/staffing metrics;
+  # bump max_tokens to avoid truncation.
+  max_tokens: 80000

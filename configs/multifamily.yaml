@@ -1,0 +1,13 @@
+# Config profile: Multifamily
+# Overrides base config.yaml for standard multifamily proformas.
+# Only keys listed here are changed; everything else inherits from config.yaml.
+
+proforma:
+  tabs:
+    - "Executive Summary"
+    - "Development Summary"
+    - "Cash Flow"
+    - "Assumptions"
+    - "Proforma Comparison"
+    - "Unit Mix"
+    - "Rent Roll"

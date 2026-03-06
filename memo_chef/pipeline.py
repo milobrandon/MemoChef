@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable
 
 import anthropic
+import yaml
 
 from memo_automator import (
     _is_api_error,
@@ -107,6 +108,17 @@ class CheckpointManager:
     def set_count(self, key: str, value: int) -> None:
         self.manifest.counts[key] = value
         self.save()
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge override into base, returning a new dict."""
+    result = dict(base)
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
 
 
 def _emit(callback: StageCallback, key: str, label: str, percent: int, detail: str = "") -> None:
@@ -240,8 +252,13 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
 
     try:
         checkpoint.manifest.status = "running"
+        checkpoint.manifest.config_profile = request.config_override_path and Path(request.config_override_path).stem
         checkpoint.save()
         cfg = load_config(request.config_path)
+        if request.config_override_path and Path(request.config_override_path).exists():
+            with open(request.config_override_path, encoding="utf-8") as f:
+                override = yaml.safe_load(f) or {}
+            cfg = _deep_merge(cfg, override)
         client = anthropic.Anthropic(
             api_key=request.api_key,
             max_retries=5,

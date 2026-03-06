@@ -26,6 +26,7 @@ class RunRequest(BaseModel):
     dry_run: bool = False
     skip_validation: bool = False
     resume_from_checkpoint: bool = True
+    config_override_path: str | None = None
 
     @property
     def memo_name(self) -> str:
@@ -59,6 +60,7 @@ class RunManifest(BaseModel):
     property_name: str | None = None
     dry_run: bool = False
     skip_validation: bool = False
+    config_profile: str | None = None
     outputs: dict[str, str] = Field(default_factory=dict)
     counts: dict[str, int] = Field(default_factory=dict)
     warnings: list[RunWarning] = Field(default_factory=list)

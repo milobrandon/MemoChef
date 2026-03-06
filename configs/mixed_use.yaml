@@ -1,0 +1,12 @@
+# Config profile: Mixed Use
+# Overrides base config.yaml for mixed-use (retail + residential) proformas.
+
+proforma:
+  tabs:
+    - "Executive Summary"
+    - "Development Summary"
+    - "Cash Flow"
+    - "Assumptions"
+    - "Retail Assumptions"
+    - "Residential Assumptions"
+    - "Proforma Comparison"

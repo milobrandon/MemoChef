@@ -86,9 +86,13 @@ def get_db_conn():
             "  dry_run BOOLEAN NOT NULL DEFAULT false,"
             "  skip_validation BOOLEAN NOT NULL DEFAULT false,"
             "  notes TEXT,"
+            "  config_profile TEXT,"
             "  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
             "  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()"
             ")"
+        )
+        cur.execute(
+            "ALTER TABLE memo_chef_profiles ADD COLUMN IF NOT EXISTS config_profile TEXT"
         )
         cur.execute(
             "CREATE TABLE IF NOT EXISTS memo_chef_jobs ("
@@ -441,19 +445,22 @@ def save_profile(
     dry_run: bool,
     skip_validation: bool,
     notes: str | None = None,
+    config_profile: str | None = None,
 ) -> None:
     with db_cursor() as cur:
         cur.execute(
-            "INSERT INTO memo_chef_profiles (profile_name, owner_username, property_name, dry_run, skip_validation, notes) "
-            "VALUES (%s, %s, %s, %s, %s, %s) "
+            "INSERT INTO memo_chef_profiles "
+            "(profile_name, owner_username, property_name, dry_run, skip_validation, notes, config_profile) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s) "
             "ON CONFLICT (profile_name) DO UPDATE SET "
             "owner_username = EXCLUDED.owner_username, "
             "property_name = EXCLUDED.property_name, "
             "dry_run = EXCLUDED.dry_run, "
             "skip_validation = EXCLUDED.skip_validation, "
             "notes = EXCLUDED.notes, "
+            "config_profile = EXCLUDED.config_profile, "
             "updated_at = now()",
-            (profile_name, owner_username, property_name, dry_run, skip_validation, notes),
+            (profile_name, owner_username, property_name, dry_run, skip_validation, notes, config_profile or None),
         )
 
 
@@ -461,14 +468,14 @@ def get_profiles(owner_username: str | None = None) -> list[dict]:
     with db_cursor() as cur:
         if owner_username:
             cur.execute(
-                "SELECT profile_name, owner_username, property_name, dry_run, skip_validation, notes, updated_at "
+                "SELECT profile_name, owner_username, property_name, dry_run, skip_validation, notes, updated_at, config_profile "
                 "FROM memo_chef_profiles WHERE owner_username = %s "
                 "ORDER BY profile_name",
                 (owner_username,),
             )
         else:
             cur.execute(
-                "SELECT profile_name, owner_username, property_name, dry_run, skip_validation, notes, updated_at "
+                "SELECT profile_name, owner_username, property_name, dry_run, skip_validation, notes, updated_at, config_profile "
                 "FROM memo_chef_profiles ORDER BY profile_name"
             )
         rows = cur.fetchall()
@@ -481,6 +488,7 @@ def get_profiles(owner_username: str | None = None) -> list[dict]:
             "Skip QA": row[4],
             "Notes": row[5] or "",
             "Updated": row[6].strftime("%Y-%m-%d %H:%M") if row[6] else "",
+            "Config Profile": row[7] or "",
         }
         for row in rows
     ]
