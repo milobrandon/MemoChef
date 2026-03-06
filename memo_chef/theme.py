@@ -1,4 +1,13 @@
-"""Shared design tokens and small UI helpers."""
+"""Shared design tokens and small UI helpers.
+
+Brand palette sourced from the Subtext Brand Guide (October 2023):
+  Slate Gray     #2b2825   — primary dark background
+  Everest Green  #16352e   — secondary dark, accent panels
+  Birch          #a95818   — warm highlight / warning
+  Brown          #512213   — deep accent
+  Beige          #f7f1e3   — primary text on dark backgrounds
+  Lime Green     #c1d100   — call-to-action, primary accent
+"""
 
 APP_TITLE = "Memo Automator"
 APP_SUBTITLE = "Institutional-grade memo updates with reviewable automation."
@@ -17,25 +26,37 @@ def app_css() -> str:
     return """
 <style>
 :root {
-    --bg: #111827;
-    --bg-elevated: #172033;
-    --panel: rgba(23, 32, 51, 0.82);
-    --panel-soft: rgba(148, 163, 184, 0.08);
-    --text: #f8fafc;
-    --muted: #94a3b8;
-    --line: rgba(148, 163, 184, 0.18);
-    --accent: #c1d100;
-    --accent-strong: #d9eb39;
-    --success: #22c55e;
-    --warning: #f59e0b;
-    --danger: #ef4444;
+    /* ── Subtext Brand Palette (Oct 2023) ── */
+    --slate-gray: #2b2825;
+    --everest-green: #16352e;
+    --birch: #a95818;
+    --brown: #512213;
+    --beige: #f7f1e3;
+    --lime-green: #c1d100;
+
+    /* ── Semantic tokens derived from palette ── */
+    --bg: var(--slate-gray);
+    --bg-elevated: #322f2b;
+    --panel: rgba(43, 40, 37, 0.88);
+    --panel-soft: rgba(247, 241, 227, 0.06);
+    --text: var(--beige);
+    --muted: #bfb8a8;
+    --line: rgba(247, 241, 227, 0.14);
+    --accent: var(--lime-green);
+    --accent-strong: #d4e82a;
+    --success: var(--lime-green);
+    --warning: var(--birch);
+    --danger: #d44;
     --radius: 18px;
-    --shadow: 0 20px 50px rgba(15, 23, 42, 0.28);
+    --shadow: 0 20px 50px rgba(22, 53, 46, 0.30);
 }
+
+/* ── Global background & text ── */
 .stApp {
     background:
-        radial-gradient(circle at top right, rgba(193, 209, 0, 0.09), transparent 24%),
-        linear-gradient(180deg, #0b1220 0%, #111827 100%) !important;
+        radial-gradient(ellipse at 20% -10%, rgba(22, 53, 46, 0.45), transparent 50%),
+        radial-gradient(ellipse at 80% 105%, rgba(193, 209, 0, 0.06), transparent 35%),
+        var(--bg) !important;
     color: var(--text) !important;
 }
 [data-testid="stHeader"] {
@@ -46,8 +67,12 @@ def app_css() -> str:
     padding-top: 2rem;
     padding-bottom: 3rem;
 }
+
+/* ── Hero banner ── */
 .memo-hero {
-    background: linear-gradient(135deg, rgba(23,32,51,0.96), rgba(30,52,46,0.92));
+    background: linear-gradient(135deg,
+        rgba(43, 40, 37, 0.96),
+        rgba(22, 53, 46, 0.88));
     border: 1px solid var(--line);
     border-radius: 24px;
     padding: 1.75rem 1.75rem 1.5rem;
@@ -73,6 +98,8 @@ def app_css() -> str:
     font-size: 1rem;
     max-width: 58rem;
 }
+
+/* ── Stage indicator pills ── */
 .memo-stage-row {
     display: grid;
     grid-template-columns: repeat(6, minmax(0, 1fr));
@@ -84,6 +111,11 @@ def app_css() -> str:
     background: var(--panel-soft);
     border-radius: 14px;
     padding: 0.8rem 0.9rem;
+    transition: border-color 0.2s, background 0.2s;
+}
+.memo-stage:hover {
+    border-color: rgba(193, 209, 0, 0.3);
+    background: rgba(193, 209, 0, 0.06);
 }
 .memo-stage-num {
     color: var(--accent);
@@ -96,6 +128,8 @@ def app_css() -> str:
     font-weight: 600;
     margin-top: 0.2rem;
 }
+
+/* ── Info cards ── */
 .memo-card {
     border: 1px solid var(--line);
     background: var(--panel);
@@ -113,30 +147,49 @@ def app_css() -> str:
     color: var(--muted);
     font-size: 0.92rem;
 }
+
+/* ── Sidebar ── */
 section[data-testid="stSidebar"] {
-    background: rgba(9, 13, 23, 0.92) !important;
+    background: rgba(34, 31, 28, 0.95) !important;
     border-right: 1px solid var(--line) !important;
 }
 section[data-testid="stSidebar"] * {
     color: var(--text) !important;
 }
+
+/* ── Primary buttons (Lime Green CTA) ── */
 .stButton > button[kind="primary"], button[kind="primary"],
 .stForm button[kind="secondaryFormSubmit"] {
     background: linear-gradient(135deg, var(--accent), var(--accent-strong)) !important;
-    color: #111827 !important;
+    color: var(--slate-gray) !important;
     border: none !important;
     border-radius: 999px !important;
     font-weight: 700 !important;
     min-height: 2.75rem;
-    box-shadow: 0 12px 24px rgba(193, 209, 0, 0.22);
+    box-shadow: 0 12px 24px rgba(193, 209, 0, 0.18);
+    transition: filter 0.15s, box-shadow 0.15s;
 }
+.stButton > button[kind="primary"]:hover, button[kind="primary"]:hover {
+    filter: brightness(1.08);
+    box-shadow: 0 14px 32px rgba(193, 209, 0, 0.28);
+}
+
+/* ── Secondary / download buttons ── */
 .stButton > button:not([kind="primary"]),
 .stDownloadButton > button {
     border: 1px solid var(--line) !important;
     border-radius: 999px !important;
     color: var(--text) !important;
-    background: rgba(255,255,255,0.03) !important;
+    background: rgba(247, 241, 227, 0.03) !important;
+    transition: border-color 0.15s, background 0.15s;
 }
+.stButton > button:not([kind="primary"]):hover,
+.stDownloadButton > button:hover {
+    border-color: rgba(193, 209, 0, 0.35) !important;
+    background: rgba(193, 209, 0, 0.06) !important;
+}
+
+/* ── Inputs, alerts, uploaders, expanders ── */
 [data-testid="stFileUploader"],
 [data-testid="stStatusWidget"],
 [data-testid="stAlert"],
@@ -144,26 +197,63 @@ details {
     border-color: var(--line) !important;
     background: var(--panel) !important;
 }
+
+/* ── Progress bar (branded Lime Green with pulse) ── */
 .stProgress > div > div > div,
 section[data-testid="stSidebar"] .stProgress > div > div {
-    background: linear-gradient(135deg, var(--accent), var(--accent-strong)) !important;
+    background: linear-gradient(90deg, var(--accent), var(--accent-strong)) !important;
+    transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
+.stProgress > div > div > div {
+    animation: progress-glow 2s ease-in-out infinite;
+}
+@keyframes progress-glow {
+    0%, 100% { box-shadow: 0 0 8px rgba(193, 209, 0, 0.25); }
+    50% { box-shadow: 0 0 20px rgba(193, 209, 0, 0.50); }
+}
+
+/* ── Progress bar track (darker brand bg) ── */
+.stProgress > div > div {
+    background: rgba(22, 53, 46, 0.35) !important;
+}
+
+/* ── Metrics ── */
 [data-testid="stMetricValue"] { color: var(--text) !important; }
 [data-testid="stMetricLabel"], .stCaption { color: var(--muted) !important; }
+
+/* ── Tabs (pill-style) ── */
 .stTabs [data-baseweb="tab-list"] {
     gap: 0.5rem;
 }
 .stTabs [data-baseweb="tab"] {
     border-radius: 999px;
-    background: rgba(255,255,255,0.03);
+    background: rgba(247, 241, 227, 0.03);
     border: 1px solid var(--line);
     padding-inline: 1rem;
+    transition: background 0.15s, border-color 0.15s;
 }
 .stTabs [aria-selected="true"] {
     background: rgba(193, 209, 0, 0.12);
     border-color: rgba(193, 209, 0, 0.35);
 }
+
+/* ── Links ── */
 a { color: var(--accent) !important; }
+
+/* ── Select / inputs (Streamlit overrides) ── */
+[data-testid="stSelectbox"],
+[data-testid="stTextInput"],
+[data-testid="stTextArea"] {
+    color: var(--text);
+}
+
+/* ── Table / dataframe ── */
+[data-testid="stDataFrame"] th {
+    background: var(--panel) !important;
+    color: var(--accent) !important;
+}
+
+/* ── Responsive ── */
 @media (max-width: 980px) {
     .memo-stage-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

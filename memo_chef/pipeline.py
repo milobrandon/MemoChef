@@ -128,14 +128,21 @@ def _cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
 
 
 class _MessagesProxy:
-    """Intercepts messages.create to accumulate token usage."""
+    """Intercepts messages.create to accumulate token usage.
+
+    Forwards all other attribute access to the real messages object so
+    that code using client.messages.batches (etc.) still works.
+    """
 
     def __init__(self, client: "anthropic.Anthropic", tracker: "TokenTracker") -> None:
-        self._client = client
+        self._real_messages = client.messages
         self._tracker = tracker
 
+    def __getattr__(self, name: str):
+        return getattr(self._real_messages, name)
+
     def create(self, *args, **kwargs):
-        response = self._client.messages.create(*args, **kwargs)
+        response = self._real_messages.create(*args, **kwargs)
         if hasattr(response, "usage"):
             self._tracker.input_tokens += response.usage.input_tokens
             self._tracker.output_tokens += response.usage.output_tokens
