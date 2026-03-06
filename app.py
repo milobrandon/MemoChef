@@ -38,7 +38,7 @@ from app_services import (
 )
 from memo_chef.models import RunRequest, StageUpdate
 from memo_chef.pipeline import run_memo_pipeline
-from memo_chef.theme import APP_SUBTITLE, APP_TITLE, app_css, hero_html, info_card
+from memo_chef.theme import APP_SUBTITLE, APP_TITLE, app_css, info_card, render_hero
 
 st.set_page_config(page_title=APP_TITLE, page_icon="✨", layout="wide")
 st.markdown(app_css(), unsafe_allow_html=True)
@@ -278,7 +278,7 @@ def check_password() -> bool:
         st.error("No users configured. Add users to Streamlit secrets or the database.")
         st.stop()
 
-    st.markdown(hero_html(), unsafe_allow_html=True)
+    render_hero()
     st.markdown(
         info_card(
             "Secure workspace",
@@ -349,7 +349,7 @@ with st.sidebar:
             del st.session_state[key]
         st.rerun()
 
-st.markdown(hero_html(), unsafe_allow_html=True)
+render_hero()
 
 card_cols = st.columns(4)
 card_cols[0].markdown(
@@ -426,10 +426,10 @@ def render_new_run_tab() -> None:
         )
 
     review_cols = st.columns(4)
-    review_cols[0].info("Required inputs: memo + proforma")
-    review_cols[1].info("Optional enrichments: schedule + market data")
-    review_cols[2].info("Artifacts include a machine-readable run manifest")
-    review_cols[3].info("Queue jobs to run sequentially with shared settings")
+    review_cols[0].caption("Required inputs: memo + proforma")
+    review_cols[1].caption("Optional enrichments: schedule + market data")
+    review_cols[2].caption("Artifacts are downloadable after each run")
+    review_cols[3].caption("Queue jobs to run sequentially with shared settings")
 
     save_profile_name = st.text_input(
         "Save current preferences as profile",
@@ -540,9 +540,7 @@ def render_new_run_tab() -> None:
 
         with st.expander("Execution log"):
             st.code("\n".join(st.session_state["log_lines"]), language=None)
-
-        with st.expander("Run manifest"):
-            st.json(st.session_state["manifest"])
+        st.caption("Run manifest is available as a download artifact.")
 
 
 def render_history_tab() -> None:
