@@ -23,6 +23,14 @@ Thumbs.db
 .DS_Store
 ~$*
 
+# Ad-hoc analysis / one-off scripts
+analyze_memos.py
+compare_formatting.py
+deep_table_compare.py
+extract_chart_colors.py
+limestone_analysis.json
+template_analysis.json
+
 # Sandbox / internal directories
 a. Sandbox/
 b. Sandbox v2/
