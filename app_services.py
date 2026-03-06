@@ -1,15 +1,46 @@
 from __future__ import annotations
 
+import base64
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 import psycopg2
 import streamlit as st
 
 from app_helpers import hash_password
+
+
+_BINARY_PAYLOAD_KEY = "__memo_chef_binary__"
+_BINARY_DATA_KEY = "data"
+
+
+def _json_safe_payload(value: Any) -> Any:
+    """Convert bytes in queue payloads into JSON-safe base64 wrappers."""
+    if isinstance(value, bytes):
+        return {
+            _BINARY_PAYLOAD_KEY: True,
+            _BINARY_DATA_KEY: base64.b64encode(value).decode("ascii"),
+        }
+    if isinstance(value, dict):
+        return {key: _json_safe_payload(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_payload(item) for item in value]
+    return value
+
+
+def _restore_json_payload(value: Any) -> Any:
+    """Restore base64-wrapped queue payload bytes after JSON decoding."""
+    if isinstance(value, dict):
+        if value.get(_BINARY_PAYLOAD_KEY) is True and isinstance(value.get(_BINARY_DATA_KEY), str):
+            return base64.b64decode(value[_BINARY_DATA_KEY])
+        return {key: _restore_json_payload(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_restore_json_payload(item) for item in value]
+    return value
 
 
 @st.cache_resource
@@ -558,13 +589,14 @@ def get_platform_health() -> list[dict]:
 
 def enqueue_job(username: str, payload: dict) -> str:
     job_id = payload["job_id"]
+    payload_json = json.dumps(_json_safe_payload(payload))
     with db_cursor() as cur:
         cur.execute(
             "INSERT INTO memo_chef_jobs (job_id, username, status, payload_json) "
             "VALUES (%s, %s, 'queued', %s) "
             "ON CONFLICT (job_id) DO UPDATE SET payload_json = EXCLUDED.payload_json, "
             "status = 'queued', updated_at = now()",
-            (job_id, username, json.dumps(payload)),
+            (job_id, username, payload_json),
         )
     return job_id
 
@@ -600,7 +632,7 @@ def get_job_queue(username: str | None = None) -> list[dict]:
         rows = cur.fetchall()
     results = []
     for row in rows:
-        payload = json.loads(row[3])
+        payload = _restore_json_payload(json.loads(row[3]))
         results.append(
             {
                 "job_id": row[0],
@@ -635,7 +667,7 @@ def get_job(job_id: str) -> dict | None:
         "job_id": row[0],
         "username": row[1],
         "status": row[2],
-        "payload": json.loads(row[3]),
+        "payload": _restore_json_payload(json.loads(row[3])),
         "run_id": row[4] or "",
         "error_message": row[5] or "",
     }

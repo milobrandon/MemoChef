@@ -1,4 +1,6 @@
 from contextlib import contextmanager
+from datetime import datetime
+import json
 from pathlib import Path
 
 import app_services
@@ -73,3 +75,57 @@ def test_storage_root_and_run_artifact_paths(monkeypatch, tmp_path):
     paths = app_services.get_run_artifact_paths("run-123")
     assert paths["memo"].endswith("memo.pptx")
     assert paths["change_log"].endswith("change_log.md")
+
+
+def test_enqueue_job_serializes_binary_payload(monkeypatch):
+    captured: dict[str, str] = {}
+
+    @contextmanager
+    def fake_cursor():
+        class FakeCursor:
+            def execute(self, query, params):
+                captured["payload_json"] = params[2]
+
+        yield FakeCursor()
+
+    monkeypatch.setattr(app_services, "db_cursor", fake_cursor)
+    payload = {
+        "job_id": "job-1",
+        "memo_name": "memo.pptx",
+        "memo_bytes": b"\x00memo-bytes\xff",
+        "market_data_bytes": None,
+    }
+
+    app_services.enqueue_job("alice", payload)
+
+    stored = json.loads(captured["payload_json"])
+    assert stored["memo_bytes"][app_services._BINARY_PAYLOAD_KEY] is True
+    assert stored["market_data_bytes"] is None
+
+
+def test_get_job_queue_restores_binary_payload(monkeypatch):
+    payload = {
+        "job_id": "job-1",
+        "memo_name": "memo.pptx",
+        "memo_bytes": b"\x00memo-bytes\xff",
+        "nested": {"proforma_bytes": b"proforma-bytes"},
+    }
+    payload_json = json.dumps(app_services._json_safe_payload(payload))
+    now = datetime.now()
+
+    @contextmanager
+    def fake_cursor():
+        class FakeCursor:
+            def execute(self, query, params):
+                return None
+
+            def fetchall(self):
+                return [("job-1", "alice", "queued", payload_json, None, None, now, now)]
+
+        yield FakeCursor()
+
+    monkeypatch.setattr(app_services, "db_cursor", fake_cursor)
+
+    queue = app_services.get_job_queue("alice")
+
+    assert queue[0]["payload"] == payload

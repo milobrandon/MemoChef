@@ -1,6 +1,6 @@
 # Memo Automator - Execution Checklist
 
-> **Last updated:** 2026-03-05
+> **Last updated:** 2026-03-06
 > **Tracking:** Check boxes as tasks complete. Add dates and notes in the rightmost column.
 
 ---
@@ -98,7 +98,7 @@
 - [x] Extract service layer to `app_services.py` (DB, credits, runs, jobs, profiles) - @developer - Done 2026-03-05
 - [x] Extract prompt templates to `prompts/` directory - @developer - 2d - _Depends: package structure_ - Done 2026-03-03
 - [ ] Add type hints to all public functions - @developer - 3d - _Depends: package structure_
-- [ ] Ensure all tests pass post-refactor - @developer - 2d - _Depends: refactor_
+- [x] Ensure all tests pass post-refactor - @developer - 2d - _Depends: refactor_ - Done 2026-03-06 (66 passed, 1 skipped)
 
 ### CI/CD
 
@@ -113,12 +113,12 @@
 - [x] API retry logic with exponential backoff - @developer - Done 2026-03-05 (`memo_chef/pipeline.py` `_retry()`)
 - [x] Checkpoint/resume for interrupted runs - @developer - Done 2026-03-05 (`memo_chef/pipeline.py` `CheckpointManager`)
 - [x] Config validation with pydantic models - @developer - 2d - _Depends: config.py_ - Done 2026-03-03
-- [ ] Per-project config profiles (`configs/projectA.yaml`) - @developer - 1d - _Depends: config validation_
+- [x] Per-project config profiles (`configs/projectA.yaml`) - @developer - 1d - _Depends: config validation_ - Done 2026-03-05
 
 ### Team Features
 
-- [ ] Streamlit session state for multi-user support - @developer - 2d - _No deps_
-- [ ] API cost tracking and per-run cost display - @developer - 1d - _Depends: ai/client.py_
+- [x] Streamlit session state for multi-user support - @developer - 2d - _No deps_ - Done 2026-03-05 (session-backed auth + artifact persistence)
+- [x] API cost tracking and per-run cost display - @developer - 1d - _Depends: ai/client.py_ - Done 2026-03-05 (run manifest + UI cost metrics)
 - [x] Deployment guide (Streamlit Cloud or internal) - @devops - 2d - _No deps_ - Done 2026-03-03
 - [x] Team training documentation / walkthrough - @brandon - 2d - _Depends: v1.0 features_ - Done 2026-03-03 (`docs/HOW_TO.md`)
 
@@ -159,4 +159,3 @@
 | `2d` | Estimated effort in days |
 | _Depends: X_ | Must wait for task X to complete |
 | _No deps_ | Can start immediately |
-
