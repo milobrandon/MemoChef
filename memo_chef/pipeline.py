@@ -110,6 +110,56 @@ class CheckpointManager:
         self.save()
 
 
+# Approximate cost per million tokens (USD) by model prefix.
+_TOKEN_RATES: dict[str, tuple[float, float]] = {
+    "claude-opus": (15.0, 75.0),
+    "claude-sonnet": (3.0, 15.0),
+    "claude-haiku": (0.8, 4.0),
+}
+
+
+def _cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
+    rate_in, rate_out = 3.0, 15.0  # default to Sonnet pricing
+    for prefix, rates in _TOKEN_RATES.items():
+        if prefix in model.lower():
+            rate_in, rate_out = rates
+            break
+    return round((input_tokens * rate_in + output_tokens * rate_out) / 1_000_000, 6)
+
+
+class _MessagesProxy:
+    """Intercepts messages.create to accumulate token usage."""
+
+    def __init__(self, client: "anthropic.Anthropic", tracker: "TokenTracker") -> None:
+        self._client = client
+        self._tracker = tracker
+
+    def create(self, *args, **kwargs):
+        response = self._client.messages.create(*args, **kwargs)
+        if hasattr(response, "usage"):
+            self._tracker.input_tokens += response.usage.input_tokens
+            self._tracker.output_tokens += response.usage.output_tokens
+            model = kwargs.get("model", "")
+            self._tracker.estimated_cost_usd += _cost_usd(
+                model, response.usage.input_tokens, response.usage.output_tokens
+            )
+        return response
+
+
+class TokenTracker:
+    """Wraps an Anthropic client and tracks cumulative token usage."""
+
+    def __init__(self, client: "anthropic.Anthropic") -> None:
+        self._client = client
+        self.input_tokens: int = 0
+        self.output_tokens: int = 0
+        self.estimated_cost_usd: float = 0.0
+        self.messages = _MessagesProxy(client, self)
+
+    def __getattr__(self, name: str):
+        return getattr(self._client, name)
+
+
 def _deep_merge(base: dict, override: dict) -> dict:
     """Recursively merge override into base, returning a new dict."""
     result = dict(base)
@@ -259,11 +309,12 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
             with open(request.config_override_path, encoding="utf-8") as f:
                 override = yaml.safe_load(f) or {}
             cfg = _deep_merge(cfg, override)
-        client = anthropic.Anthropic(
+        _raw_client = anthropic.Anthropic(
             api_key=request.api_key,
             max_retries=5,
             timeout=900.0,
         )
+        client = TokenTracker(_raw_client)
 
         _emit(callback, "backup", "Create backup", 5)
         with checkpoint.stage("backup", "Creating backup copy"):
@@ -390,6 +441,13 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
             checkpoint.set_output("change_log", log_path)
             checkpoint.set_count("rejected", len(validated.get("rejected", [])))
             checkpoint.set_count("missed", len(validated.get("missed", [])))
+            checkpoint.set_count("input_tokens", client.input_tokens)
+            checkpoint.set_count("output_tokens", client.output_tokens)
+            # Store cost as integer microdollars to avoid float precision issues
+            checkpoint.set_count(
+                "estimated_cost_microdollars",
+                int(round(client.estimated_cost_usd * 1_000_000)),
+            )
 
         checkpoint.manifest.status = "completed"
         checkpoint.save()

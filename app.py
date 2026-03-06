@@ -212,6 +212,7 @@ def _execute_job(
         (run_dir / f"memo{os.path.splitext(job['memo_name'])[1]}").write_bytes(result.memo_bytes)
         (run_dir / "change_log.md").write_bytes(result.log_bytes)
         (run_dir / "run_manifest.json").write_bytes(result.manifest_bytes)
+        counts = result.manifest.counts
         record_run(
             run_id=run_id,
             username=username,
@@ -226,6 +227,9 @@ def _execute_job(
             missed_count=len(result.missed),
             duration_seconds=duration,
             warnings=st.session_state["warnings"],
+            input_tokens=counts.get("input_tokens", 0),
+            output_tokens=counts.get("output_tokens", 0),
+            estimated_cost_microdollars=counts.get("estimated_cost_microdollars", 0),
         )
         if job.get("job_id"):
             update_job_status(job["job_id"], "completed", run_id=run_id)
@@ -496,11 +500,14 @@ def render_new_run_tab() -> None:
     if "memo_bytes" in st.session_state:
         st.divider()
         st.success("Artifacts are ready for review and download.")
-        metric_cols = st.columns(4)
+        metric_cols = st.columns(5)
         metric_cols[0].metric("Applied changes", st.session_state["n_changes"])
         metric_cols[1].metric("Rejected", st.session_state["n_rejected"])
         metric_cols[2].metric("Needs review", st.session_state["n_missed"])
         metric_cols[3].metric("Warnings", len(st.session_state.get("warnings", [])))
+        _manifest_counts = st.session_state.get("manifest", {}).get("counts", {})
+        _cost_usd = _manifest_counts.get("estimated_cost_microdollars", 0) / 1_000_000
+        metric_cols[4].metric("Est. API cost", f"${_cost_usd:.4f}" if _cost_usd else "—")
 
         download_cols = st.columns(3)
         download_cols[0].download_button(

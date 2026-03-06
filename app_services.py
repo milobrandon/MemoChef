@@ -70,6 +70,15 @@ def get_db_conn():
             "ALTER TABLE memo_chef_runs ADD COLUMN IF NOT EXISTS approval_status TEXT NOT NULL DEFAULT 'pending'"
         )
         cur.execute(
+            "ALTER TABLE memo_chef_runs ADD COLUMN IF NOT EXISTS input_tokens INTEGER NOT NULL DEFAULT 0"
+        )
+        cur.execute(
+            "ALTER TABLE memo_chef_runs ADD COLUMN IF NOT EXISTS output_tokens INTEGER NOT NULL DEFAULT 0"
+        )
+        cur.execute(
+            "ALTER TABLE memo_chef_runs ADD COLUMN IF NOT EXISTS estimated_cost_microdollars INTEGER NOT NULL DEFAULT 0"
+        )
+        cur.execute(
             "ALTER TABLE memo_chef_runs ADD COLUMN IF NOT EXISTS approval_notes TEXT"
         )
         cur.execute(
@@ -311,21 +320,27 @@ def record_run(
     missed_count: int,
     duration_seconds: float | None,
     warnings: list[dict] | None,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    estimated_cost_microdollars: int = 0,
 ) -> None:
     with db_cursor() as cur:
         cur.execute(
             "INSERT INTO memo_chef_runs ("
             " run_id, username, status, memo_name, proforma_name, property_name,"
             " dry_run, skip_validation, change_count, rejected_count, missed_count,"
-            " duration_seconds, warnings_json"
-            ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            " duration_seconds, warnings_json, input_tokens, output_tokens, estimated_cost_microdollars"
+            ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
             "ON CONFLICT (run_id) DO UPDATE SET "
             " status = EXCLUDED.status,"
             " change_count = EXCLUDED.change_count,"
             " rejected_count = EXCLUDED.rejected_count,"
             " missed_count = EXCLUDED.missed_count,"
             " duration_seconds = EXCLUDED.duration_seconds,"
-            " warnings_json = EXCLUDED.warnings_json",
+            " warnings_json = EXCLUDED.warnings_json,"
+            " input_tokens = EXCLUDED.input_tokens,"
+            " output_tokens = EXCLUDED.output_tokens,"
+            " estimated_cost_microdollars = EXCLUDED.estimated_cost_microdollars",
             (
                 run_id,
                 username,
@@ -340,6 +355,9 @@ def record_run(
                 missed_count,
                 duration_seconds,
                 json.dumps(warnings or []),
+                input_tokens,
+                output_tokens,
+                estimated_cost_microdollars,
             ),
         )
 
@@ -364,7 +382,8 @@ def get_recent_runs(username: str | None = None, limit: int = 20) -> list[dict]:
             cur.execute(
                 "SELECT run_id, username, status, memo_name, proforma_name, property_name, "
                 "dry_run, skip_validation, change_count, rejected_count, missed_count, "
-                "duration_seconds, created_at, warnings_json, approval_status, approved_by "
+                "duration_seconds, created_at, warnings_json, approval_status, approved_by, "
+                "input_tokens, output_tokens, estimated_cost_microdollars "
                 "FROM memo_chef_runs WHERE username = %s "
                 "ORDER BY created_at DESC LIMIT %s",
                 (username, limit),
@@ -373,13 +392,15 @@ def get_recent_runs(username: str | None = None, limit: int = 20) -> list[dict]:
             cur.execute(
                 "SELECT run_id, username, status, memo_name, proforma_name, property_name, "
                 "dry_run, skip_validation, change_count, rejected_count, missed_count, "
-                "duration_seconds, created_at, warnings_json, approval_status, approved_by "
+                "duration_seconds, created_at, warnings_json, approval_status, approved_by, "
+                "input_tokens, output_tokens, estimated_cost_microdollars "
                 "FROM memo_chef_runs ORDER BY created_at DESC LIMIT %s",
                 (limit,),
             )
         rows = cur.fetchall()
     results = []
     for row in rows:
+        cost_usd = (row[18] or 0) / 1_000_000
         results.append(
             {
                 "Run ID": row[0],
@@ -398,6 +419,9 @@ def get_recent_runs(username: str | None = None, limit: int = 20) -> list[dict]:
                 "Warnings": len(json.loads(row[13] or "[]")),
                 "Approval": row[14],
                 "Reviewer": row[15] or "",
+                "Tokens In": row[16] or 0,
+                "Tokens Out": row[17] or 0,
+                "Est. Cost ($)": round(cost_usd, 4) if cost_usd else None,
             }
         )
     return results
