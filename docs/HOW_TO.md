@@ -55,7 +55,21 @@ python memo_automator.py memo.pptx proforma.xlsm ^
 streamlit run app.py
 ```
 
-Open `http://localhost:8501`, log in with credentials from Streamlit secrets, upload memo/proforma, then click **Fire**.
+Open `http://localhost:8501`, log in with credentials from Streamlit secrets, upload memo/proforma, then click **Generate draft**.
+
+The app now includes:
+- `New Run` for the primary workflow
+- `Run History` for recent activity and outcomes
+- `Operations` for queue execution, health checks, and saved profiles
+- an `Admin` tab for user and credit management (admins only)
+- downloadable `run_manifest.json` output for each successful run
+
+You can also:
+- save common run preferences as named profiles
+- add runs to a queue and execute them sequentially
+- record approval decisions and reviewer notes per run
+- requeue historical runs from stored input artifacts
+- inspect persistent jobs and retry failed queue items
 
 ## 4. Understand Outputs
 
@@ -66,6 +80,7 @@ Each run produces:
 - `mappings_raw.json`
 - `mappings_validated.json`
 - `CHANGE_LOG.md` (includes telemetry: duration and API call counts)
+- `run_manifest.json` (stage status, warnings, counts, and artifact locations)
 
 ## 5. Debug Fast
 

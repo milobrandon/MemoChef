@@ -1,659 +1,53 @@
 #!/usr/bin/env python3
-"""Memo Chef - Streamlit dashboard wrapping memo_automator.py."""
+"""Modern Streamlit dashboard for Memo Automator."""
 
-import logging
+from __future__ import annotations
+
 import os
-import random
-import re
-import tempfile
 import time
 import uuid
-from contextlib import contextmanager
-from datetime import datetime, timedelta
 
-
-import anthropic
-import psycopg2
 import streamlit as st
 
 from app_helpers import should_disable_fire_button, verify_password
-from memo_automator import (
-    apply_branding,
-    apply_updates,
-    chunk_memo_by_pages,
-    create_backup,
-    extract_market_data,
-    extract_memo_content,
-    extract_proforma_data,
-    extract_schedule_data,
-    get_metric_mappings,
-    load_config,
-    normalize_layout,
-    pre_validate_mappings,
-    validate_mappings,
-    write_change_log,
+from app_services import (
+    add_user,
+    consume_credit,
+    delete_job,
+    delete_user,
+    enqueue_job,
+    ensure_users_seeded,
+    get_db_conn,
+    get_job,
+    get_job_queue,
+    get_platform_health,
+    get_profiles,
+    get_recent_runs,
+    get_run_artifact_paths,
+    get_run_storage_dir,
+    get_run_details,
+    get_user_credits,
+    get_users,
+    record_run,
+    reset_user_credits,
+    save_profile,
+    update_job_status,
+    update_run_approval,
+    update_user,
 )
+from memo_chef.models import RunRequest, StageUpdate
+from memo_chef.pipeline import run_memo_pipeline
+from memo_chef.theme import APP_SUBTITLE, APP_TITLE, app_css, hero_html, info_card
 
-# ============================================================================
-# PAGE CONFIG
-# ============================================================================
-st.set_page_config(page_title="Memo Chef", page_icon="\U0001f9d1\u200d\U0001f373", layout="centered")
+st.set_page_config(page_title=APP_TITLE, page_icon="✨", layout="wide")
+st.markdown(app_css(), unsafe_allow_html=True)
 
-# ============================================================================
-# SUBTEXT BRAND STYLING
-# ============================================================================
-# Palette: Slate Gray #2b2825, Everest Green #1e342e, Birch #a95818,
-#          Brown #512213, Beige #f7f1e3, Lime Green #c1d100
-st.markdown("""
-<style>
-    /* ---------- Global background & text ---------- */
-    .stApp {
-        background-color: #2b2825 !important;
-    }
-
-    /* ---------- Primary buttons (Fire!, Log in) ---------- */
-    .stButton > button[kind="primary"],
-    button[kind="primary"] {
-        background-color: #c1d100 !important;
-        border-color: #c1d100 !important;
-        color: #2b2825 !important;
-        font-weight: 600 !important;
-        border-radius: 9999px !important;
-    }
-    .stButton > button[kind="primary"]:hover,
-    button[kind="primary"]:hover {
-        filter: brightness(110%) !important;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15) !important;
-    }
-
-    /* ---------- Secondary / default buttons ---------- */
-    .stButton > button:not([kind="primary"]),
-    .stDownloadButton > button {
-        background-color: transparent !important;
-        border: 2px solid #c1d100 !important;
-        color: #c1d100 !important;
-        border-radius: 9999px !important;
-        font-weight: 500 !important;
-    }
-    .stDownloadButton > button:hover,
-    .stButton > button:not([kind="primary"]):hover {
-        background-color: rgba(193,209,0,0.1) !important;
-    }
-
-    /* ---------- Sidebar ---------- */
-    section[data-testid="stSidebar"] {
-        background-color: #1e342e !important;
-        border-right: 3px solid #c1d100 !important;
-    }
-    section[data-testid="stSidebar"] * {
-        color: #f7f1e3 !important;
-    }
-    section[data-testid="stSidebar"] .stProgress > div > div {
-        background-color: #c1d100 !important;
-    }
-
-    /* ---------- Progress bar (main area) ---------- */
-    .stProgress > div > div > div {
-        background-color: #c1d100 !important;
-    }
-    .stProgress > div > div {
-        background-color: rgba(247,241,227,0.1) !important;
-    }
-
-    /* ---------- File uploader ---------- */
-    [data-testid="stFileUploader"] {
-        border-color: rgba(193,209,0,0.3) !important;
-    }
-    [data-testid="stFileUploader"]:hover {
-        border-color: #c1d100 !important;
-    }
-    [data-testid="stFileUploader"] button {
-        color: #c1d100 !important;
-        border-color: #c1d100 !important;
-    }
-
-    /* ---------- Expander ---------- */
-    .streamlit-expanderHeader {
-        color: #f7f1e3 !important;
-    }
-    details {
-        border-color: rgba(193,209,0,0.2) !important;
-    }
-
-    /* ---------- Metrics ---------- */
-    [data-testid="stMetricValue"] {
-        color: #c1d100 !important;
-    }
-    [data-testid="stMetricLabel"] {
-        color: #f7f1e3 !important;
-    }
-
-    /* ---------- Status container ---------- */
-    [data-testid="stStatusWidget"] {
-        border-color: #c1d100 !important;
-        background-color: #1e342e !important;
-    }
-
-    /* ---------- Text inputs ---------- */
-    .stTextInput input,
-    .stSelectbox [data-baseweb="select"],
-    .stMultiSelect [data-baseweb="select"] {
-        background-color: rgba(247,241,227,0.05) !important;
-        border-color: rgba(247,241,227,0.2) !important;
-        color: #f7f1e3 !important;
-    }
-    .stTextInput input:focus {
-        border-color: #c1d100 !important;
-        box-shadow: 0 0 0 1px #c1d100 !important;
-    }
-
-    /* ---------- Form submit button ---------- */
-    .stForm button[kind="secondaryFormSubmit"] {
-        background-color: #c1d100 !important;
-        color: #2b2825 !important;
-        border-color: #c1d100 !important;
-        border-radius: 9999px !important;
-        font-weight: 600 !important;
-    }
-
-    /* ---------- Success / info alerts ---------- */
-    [data-testid="stAlert"] {
-        background-color: rgba(30,52,46,0.8) !important;
-        border-left: 4px solid #c1d100 !important;
-        color: #f7f1e3 !important;
-    }
-
-    /* ---------- Links ---------- */
-    a { color: #c1d100 !important; }
-    a:hover { color: #d4e34d !important; }
-
-    /* ---------- Dividers (signature lime rule from website) ---------- */
-    hr {
-        border: none !important;
-        border-top: 3px solid #c1d100 !important;
-        margin: 1.5rem 0 !important;
-    }
-
-    /* ---------- Code blocks ---------- */
-    .stCodeBlock, code {
-        background-color: #1e342e !important;
-    }
-
-    /* ---------- Tables (admin panel) ---------- */
-    .stTable, [data-testid="stTable"] {
-        background-color: rgba(30,52,46,0.4) !important;
-    }
-    thead th {
-        color: #c1d100 !important;
-        border-bottom: 2px solid #c1d100 !important;
-    }
-    tbody td {
-        color: #f7f1e3 !important;
-        border-bottom: 1px solid rgba(247,241,227,0.1) !important;
-    }
-
-    /* ---------- Captions ---------- */
-    .stCaption, [data-testid="stCaptionContainer"] {
-        color: rgba(247,241,227,0.6) !important;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# ============================================================================
-# CREDIT SYSTEM  (persistent Neon Postgres)
-# ============================================================================
-@st.cache_resource
-def _get_db_conn():
-    """Return a psycopg2 connection to the credits database (cached)."""
-    conn = psycopg2.connect(st.secrets["CREDITS_DATABASE_URL"])
-    conn.autocommit = True
-    with conn.cursor() as cur:
-        cur.execute(
-            "CREATE TABLE IF NOT EXISTS credit_usage ("
-            "  username TEXT PRIMARY KEY,"
-            "  week TEXT NOT NULL,"
-            "  used INTEGER NOT NULL DEFAULT 0"
-            ")"
-        )
-        cur.execute(
-            "CREATE TABLE IF NOT EXISTS credit_charge_events ("
-            "  username TEXT NOT NULL,"
-            "  week TEXT NOT NULL,"
-            "  run_id TEXT NOT NULL,"
-            "  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
-            "  PRIMARY KEY (username, week, run_id)"
-            ")"
-        )
-        cur.execute(
-            "CREATE TABLE IF NOT EXISTS memo_chef_users ("
-            "  username TEXT PRIMARY KEY,"
-            "  password_hash TEXT NOT NULL,"
-            "  role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin','user')),"
-            "  credits_per_week INTEGER NOT NULL DEFAULT 5,"
-            "  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
-            "  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()"
-            ")"
-        )
-    return conn
-
-
-def _ensure_users_seeded():
-    """Copy users from st.secrets into memo_chef_users if the table is empty."""
-    try:
-        secrets_users = dict(st.secrets["users"])
-    except (KeyError, FileNotFoundError):
-        return
-    conn = _get_db_conn()
-    with conn.cursor() as cur:
-        cur.execute("SELECT count(*) FROM memo_chef_users")
-        if cur.fetchone()[0] > 0:
-            return
-        for uname, ucfg in secrets_users.items():
-            cur.execute(
-                "INSERT INTO memo_chef_users (username, password_hash, role, credits_per_week) "
-                "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
-                (uname, ucfg["password_hash"], ucfg.get("role", "user"),
-                 int(ucfg.get("credits_per_week", 5))),
-            )
-
-_ensure_users_seeded()
-
-
-@contextmanager
-def _db_cursor():
-    """
-    Yield a live DB cursor, retrying once with a fresh connection if the cached
-    connection went stale (common on Streamlit Cloud cold/warm cycles).
-    """
-    conn = _get_db_conn()
-    try:
-        with conn.cursor() as cur:
-            yield cur
-        return
-    except (psycopg2.InterfaceError, psycopg2.OperationalError):
-        _get_db_conn.clear()
-        conn = _get_db_conn()
-        with conn.cursor() as cur:
-            yield cur
-
-
-def _current_week_start() -> str:
-    """ISO Monday date for the current week."""
-    today = datetime.now()
-    monday = today - timedelta(days=today.weekday())
-    return monday.strftime("%Y-%m-%d")
-
-
-def _get_user_credits(username: str, credits_per_week: int) -> tuple[int, int]:
-    """Return (used, remaining). Auto-resets on week rollover."""
-    week = _current_week_start()
-    with _db_cursor() as cur:
-        cur.execute(
-            "SELECT week, used FROM credit_usage WHERE username = %s",
-            (username,),
-        )
-        row = cur.fetchone()
-        if row is None or row[0] != week:
-            # New user or new week — upsert with reset
-            cur.execute(
-                "INSERT INTO credit_usage (username, week, used) VALUES (%s, %s, 0) "
-                "ON CONFLICT (username) DO UPDATE SET week = %s, used = 0",
-                (username, week, week),
-            )
-            return 0, credits_per_week
-        used = row[1]
-    return used, max(0, credits_per_week - used)
-
-
-def _consume_credit(username: str, credits_per_week: int, run_id: str | None = None) -> bool:
-    """
-    Consume one credit atomically for the current week.
-    Returns False if the weekly limit is already reached.
-    """
-    week = _current_week_start()
-    with _db_cursor() as cur:
-        if run_id:
-            cur.execute(
-                "INSERT INTO credit_charge_events (username, week, run_id) "
-                "VALUES (%s, %s, %s) "
-                "ON CONFLICT DO NOTHING "
-                "RETURNING run_id",
-                (username, week, run_id),
-            )
-            inserted = cur.fetchone()
-            if inserted is None:
-                return True
-
-        # Ensure row exists and is reset if week rolled over.
-        cur.execute(
-            "INSERT INTO credit_usage (username, week, used) VALUES (%s, %s, 0) "
-            "ON CONFLICT (username) DO UPDATE SET "
-            "  used = CASE WHEN credit_usage.week = %s THEN credit_usage.used ELSE 0 END, "
-            "  week = %s",
-            (username, week, week, week),
-        )
-        # Enforce weekly cap in the database to avoid race-condition overuse.
-        cur.execute(
-            "UPDATE credit_usage "
-            "SET used = used + 1 "
-            "WHERE username = %s AND week = %s AND used < %s "
-            "RETURNING used",
-            (username, week, credits_per_week),
-        )
-        charged = cur.fetchone() is not None
-        if not charged and run_id:
-            cur.execute(
-                "DELETE FROM credit_charge_events WHERE username = %s AND week = %s AND run_id = %s",
-                (username, week, run_id),
-            )
-        return charged
-
-
-def _reset_user_credits(username: str) -> None:
-    week = _current_week_start()
-    with _db_cursor() as cur:
-        cur.execute(
-            "INSERT INTO credit_usage (username, week, used) VALUES (%s, %s, 0) "
-            "ON CONFLICT (username) DO UPDATE SET week = %s, used = 0",
-            (username, week, week),
-        )
-
-
-def _add_user(username: str, password: str, role: str, credits_per_week: int) -> bool:
-    """Add a new user. Returns False if username already exists."""
-    from app_helpers import hash_password
-    pw_hash = hash_password(password)
-    with _db_cursor() as cur:
-        cur.execute(
-            "INSERT INTO memo_chef_users (username, password_hash, role, credits_per_week) "
-            "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING RETURNING username",
-            (username, pw_hash, role, credits_per_week),
-        )
-        return cur.fetchone() is not None
-
-
-def _update_user(username: str, role: str | None = None,
-                 credits_per_week: int | None = None,
-                 new_password: str | None = None) -> None:
-    """Update user fields. Only non-None arguments are changed."""
-    from app_helpers import hash_password
-    with _db_cursor() as cur:
-        if role is not None:
-            cur.execute(
-                "UPDATE memo_chef_users SET role = %s, updated_at = now() WHERE username = %s",
-                (role, username),
-            )
-        if credits_per_week is not None:
-            cur.execute(
-                "UPDATE memo_chef_users SET credits_per_week = %s, updated_at = now() WHERE username = %s",
-                (credits_per_week, username),
-            )
-        if new_password is not None:
-            pw_hash = hash_password(new_password)
-            cur.execute(
-                "UPDATE memo_chef_users SET password_hash = %s, updated_at = now() WHERE username = %s",
-                (pw_hash, username),
-            )
-
-
-def _delete_user(username: str) -> None:
-    """Delete a user and their credit_usage row."""
-    with _db_cursor() as cur:
-        cur.execute("DELETE FROM credit_usage WHERE username = %s", (username,))
-        cur.execute("DELETE FROM credit_charge_events WHERE username = %s", (username,))
-        cur.execute("DELETE FROM memo_chef_users WHERE username = %s", (username,))
-
-
-def _get_all_usernames() -> list[str]:
-    """Return all usernames from memo_chef_users."""
-    with _db_cursor() as cur:
-        cur.execute("SELECT username FROM memo_chef_users ORDER BY username")
-        return [r[0] for r in cur.fetchall()]
-
-
-# ============================================================================
-# AUTH GATE
-# ============================================================================
-def _get_users() -> dict:
-    """Load users from memo_chef_users DB table, falling back to secrets."""
-    try:
-        with _db_cursor() as cur:
-            cur.execute(
-                "SELECT username, password_hash, role, credits_per_week "
-                "FROM memo_chef_users"
-            )
-            rows = cur.fetchall()
-        if rows:
-            return {
-                r[0]: {"password_hash": r[1], "role": r[2], "credits_per_week": r[3]}
-                for r in rows
-            }
-    except Exception:
-        pass
-    try:
-        return dict(st.secrets["users"])
-    except (KeyError, FileNotFoundError):
-        return {}
-
-
-def check_password() -> bool:
-    """Per-user login: username + password.  Sets session_state on success."""
-    if st.session_state.get("authenticated"):
-        return True
-
-    users = _get_users()
-    if not users:
-        st.error("No users configured in Streamlit secrets.")
-        st.stop()
-
-    _LOGIN_SLOGANS = [
-        "The only James Beard Award Winning Chef in Memo City!",
-        "Serving memos fresh out the kitchen.",
-        "No reservations needed — just credentials.",
-        "Where every memo is a chef's kiss.",
-    ]
-    st.title("\U0001f512 Memo Chef — Login")
-    st.caption(random.choice(_LOGIN_SLOGANS))
-    with st.form("login_form"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Log in")
-    if submitted:
-        user_cfg = users.get(username)
-        if user_cfg and verify_password(password, user_cfg["password_hash"]):
-            st.session_state["authenticated"] = True
-            st.session_state["username"] = username
-            st.session_state["role"] = user_cfg.get("role", "user")
-            st.session_state["credits_per_week"] = int(
-                user_cfg.get("credits_per_week", 5)
-            )
-            st.rerun()
-        else:
-            st.error("Invalid username or password.")
-    st.stop()
-
-
-if not check_password():
-    st.stop()
-
-# ============================================================================
-# SIDEBAR — user info, credits, admin panel
-# ============================================================================
-_username = st.session_state["username"]
-_role = st.session_state["role"]
-_credits_per_week = st.session_state["credits_per_week"]
-_credits_error = None
 try:
-    _used, _remaining = _get_user_credits(_username, _credits_per_week)
-except Exception as e:
-    _used, _remaining = 0, 0
-    _credits_error = str(e)
-
-with st.sidebar:
-    st.markdown(f"**{_username}** &nbsp; `{_role}`")
-    if _credits_error:
-        st.warning("Credits service unavailable. Runs are temporarily disabled.")
-        st.caption("Credits: unavailable")
-        if st.button("Retry credits service"):
-            _get_db_conn.clear()
-            st.rerun()
-    else:
-        st.caption(f"Credits: {_remaining} / {_credits_per_week} remaining this week")
-    st.progress(
-        min(_used / _credits_per_week, 1.0) if _credits_per_week > 0 else 1.0,
-        text=f"{_used} used",
-    )
-    if st.button("Clock out"):
-        for k in list(st.session_state.keys()):
-            del st.session_state[k]
-        st.rerun()
-
-    # Admin panel
-    if _role == "admin":
-        st.divider()
-        st.subheader("Admin Panel")
-        users = _get_users()
-        rows = []
-        for uname, ucfg in users.items():
-            cpw = int(ucfg.get("credits_per_week", 5))
-            try:
-                u, r = _get_user_credits(uname, cpw)
-            except Exception:
-                u, r = 0, 0
-            rows.append(
-                {"User": uname, "Role": ucfg.get("role", "user"),
-                 "Used": u, "Limit": cpw, "Remaining": r}
-            )
-        st.table(rows)
-
-        with st.expander("Add User"):
-            with st.form("add_user_form"):
-                new_username = st.text_input("Username")
-                new_password = st.text_input("Password", type="password")
-                new_role = st.selectbox("Role", ["user", "admin"], index=0)
-                new_credits = st.number_input("Credits per week", min_value=1, value=5)
-                add_submitted = st.form_submit_button("Add User")
-            if add_submitted:
-                new_username = new_username.strip()
-                if not new_username:
-                    st.error("Username is required.")
-                elif len(new_password) < 6:
-                    st.error("Password must be at least 6 characters.")
-                else:
-                    try:
-                        if _add_user(new_username, new_password, new_role, new_credits):
-                            st.success(f"User '{new_username}' created.")
-                            st.rerun()
-                        else:
-                            st.error(f"User '{new_username}' already exists.")
-                    except Exception as e:
-                        st.error(f"Failed to add user: {e}")
-
-        with st.expander("Edit User"):
-            all_usernames = [r["User"] for r in rows]
-            edit_user = st.selectbox("Select user", all_usernames, index=None,
-                                     placeholder="Select a user...", key="edit_user_select")
-            if edit_user:
-                edit_cfg = users.get(edit_user, {})
-                with st.form("edit_user_form"):
-                    edit_role = st.selectbox("Role", ["user", "admin"],
-                                            index=0 if edit_cfg.get("role", "user") == "user" else 1)
-                    edit_credits = st.number_input("Credits per week", min_value=1,
-                                                   value=int(edit_cfg.get("credits_per_week", 5)))
-                    edit_password = st.text_input("New password (leave blank to keep current)",
-                                                  type="password")
-                    edit_submitted = st.form_submit_button("Save Changes")
-                if edit_submitted:
-                    if edit_password and len(edit_password) < 6:
-                        st.error("Password must be at least 6 characters.")
-                    else:
-                        try:
-                            _update_user(
-                                edit_user,
-                                role=edit_role,
-                                credits_per_week=edit_credits,
-                                new_password=edit_password if edit_password else None,
-                            )
-                            if edit_user == _username and edit_role != _role:
-                                st.session_state["role"] = edit_role
-                            if edit_user == _username:
-                                st.session_state["credits_per_week"] = edit_credits
-                            st.success(f"User '{edit_user}' updated.")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Failed to update user: {e}")
-
-        with st.expander("Delete User"):
-            deletable = [r["User"] for r in rows if r["User"] != _username]
-            if deletable:
-                del_user = st.selectbox("Select user", deletable, index=None,
-                                        placeholder="Select a user...", key="del_user_select")
-                if del_user and st.button(f"Delete {del_user}"):
-                    try:
-                        _delete_user(del_user)
-                        st.success(f"User '{del_user}' deleted.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed to delete user: {e}")
-            else:
-                st.info("No other users to delete.")
-
-        with st.expander("Reset Credits"):
-            reset_user = st.selectbox(
-                "Reset credits for", [r["User"] for r in rows], index=None,
-                placeholder="Select a user...", key="reset_user_select",
-            )
-            if reset_user and st.button(f"Reset {reset_user}"):
-                try:
-                    _reset_user_credits(reset_user)
-                    st.success(f"Credits reset for '{reset_user}'.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Failed to reset credits: {e}")
-
-st.title("\U0001f9d1\u200d\U0001f373 Memo Chef")
-st.caption("From raw ingredients to a Michelin-star memo")
-
-# ============================================================================
-# ANIMATED SHRIMP GIFS — rotates between 5 quirky chef/shrimp GIFs
-# ============================================================================
-_CHEF_GIFS = [
-    # Dancing shrimp (nemomi) — cute bouncy shrimp dance
-    ("https://media.giphy.com/media/H4rDezQiLmkdbAzHcI/giphy.gif",
-     "The shrimp is vibing while your memo cooks..."),
-    # Chef shrimp by Walk-On's — shrimp with chef energy
-    ("https://media.giphy.com/media/37RfRKBoosceYgis5e/giphy.gif",
-     "Chef Shrimp is plating your metrics..."),
-    # Happy dancing shrimp (chopt) — joyful bouncing
-    ("https://media.giphy.com/media/3o7buikVSfLTuXjbC8/giphy.gif",
-     "Shrimp doing the happy dance for your data..."),
-    # Orange shrimp vibing — chill vibes
-    ("https://media.giphy.com/media/kFxSwhFVe3414uK8F5/giphy.gif",
-     "Shrimply vibing while the numbers simmer..."),
-    # Party shrimp — celebration mode
-    ("https://media.giphy.com/media/yGJdHAm1Vu0MlLq6CL/giphy.gif",
-     "Party shrimp is prepping the garnish..."),
-]
+    ensure_users_seeded()
+except Exception:
+    pass
 
 
-def _chef_gif_html() -> str:
-    """Return HTML for a randomly chosen shrimp chef GIF."""
-    import random
-    url, caption = random.choice(_CHEF_GIFS)
-    return f"""
-<div style="text-align:center; margin: 15px 0;">
-  <img src="{url}" alt="Chef Shrimp"
-       style="max-height:220px; border-radius:12px;
-              box-shadow: 0 4px 15px rgba(0,0,0,0.15);" />
-  <p style="margin-top:8px; font-size:14px; color:#c1d100;
-            font-style:italic;">{caption}</p>
-</div>
-"""
-
-
-# ============================================================================
-# API KEY RESOLUTION
-# ============================================================================
 def _get_api_key() -> str | None:
     try:
         return st.secrets["ANTHROPIC_API_KEY"]
@@ -661,424 +55,734 @@ def _get_api_key() -> str | None:
         return None
 
 
-# ============================================================================
-# LOG CAPTURE HANDLER
-# ============================================================================
-class _LogCapture(logging.Handler):
-    def __init__(self):
-        super().__init__()
-        self.lines = []
-
-    def emit(self, record):
-        self.lines.append(self.format(record))
-
-
-# ============================================================================
-# MISE EN PLACE  (ingredient uploaders)
-# ============================================================================
-st.subheader("\U0001f52a Mise en Place")
-col1, col2, col3, col4 = st.columns(4)
-memo_file = col1.file_uploader("The Memo (.pptx)", type=["pptx"])
-proforma_file = col2.file_uploader("The Proforma (.xlsx / .xlsm)", type=["xlsx", "xlsm"])
-schedule_file = col3.file_uploader("The Schedule (.mpp)", type=["mpp"])
-market_data_file = col4.file_uploader("Market Data (.xlsx)", type=["xlsx", "xlsm"])
-
-property_name = st.text_input(
-    "Property Name (as shown in proforma)",
-    placeholder="e.g. EVER at Reston",
-    help="Optional. Helps the Chef match metrics when a property has been rebranded.",
-)
-
-# ============================================================================
-# CHEF'S PREFERENCES
-# ============================================================================
-with st.expander("\U0001f9c2 Chef's Preferences"):
-    dry_run = st.checkbox("Tasting portion only (dry run -- preview without saving)")
-    skip_validation = st.checkbox("Skip the sous-chef QA pass (express ticket)")
-
-# ============================================================================
-# FIRE BUTTON (credit-gated)
-# ============================================================================
-_fire_disabled = should_disable_fire_button(
-    memo_file, proforma_file, _remaining, _credits_error
-)
-_fire_label = (
-    f"\U0001f525  Fire!  ({_remaining} credits left)"
-    if _remaining > 0
-    else "\U0001f6ab  No credits remaining"
-)
-
-if st.button(_fire_label, type="primary", disabled=_fire_disabled):
-    run_id = uuid.uuid4().hex
-    # Clear previous results
-    for key in ["memo_bytes", "log_bytes", "filename", "n_changes",
-                "n_rejected", "n_missed", "log_lines"]:
+def _clear_run_state() -> None:
+    for key in [
+        "memo_bytes",
+        "log_bytes",
+        "manifest_bytes",
+        "filename",
+        "n_changes",
+        "n_rejected",
+        "n_missed",
+        "log_lines",
+        "warnings",
+        "manifest",
+    ]:
         st.session_state.pop(key, None)
 
+
+def _queue_item_from_inputs(
+    *,
+    memo_file,
+    proforma_file,
+    schedule_file,
+    market_data_file,
+    property_name: str,
+    dry_run: bool,
+    skip_validation: bool,
+    profile_name: str | None,
+) -> dict:
+    return {
+        "job_id": uuid.uuid4().hex,
+        "memo_name": memo_file.name,
+        "memo_bytes": memo_file.getvalue(),
+        "proforma_name": proforma_file.name,
+        "proforma_bytes": proforma_file.getvalue(),
+        "schedule_name": schedule_file.name if schedule_file else None,
+        "schedule_bytes": schedule_file.getvalue() if schedule_file else None,
+        "market_data_name": market_data_file.name if market_data_file else None,
+        "market_data_bytes": market_data_file.getvalue() if market_data_file else None,
+        "property_name": property_name or None,
+        "dry_run": dry_run,
+        "skip_validation": skip_validation,
+        "profile_name": profile_name or "",
+    }
+
+
+def _persist_result(result, filename: str) -> None:
+    st.session_state["memo_bytes"] = result.memo_bytes
+    st.session_state["log_bytes"] = result.log_bytes
+    st.session_state["manifest_bytes"] = result.manifest_bytes
+    st.session_state["filename"] = filename
+    st.session_state["n_changes"] = len(result.changes)
+    st.session_state["n_rejected"] = len(result.rejected)
+    st.session_state["n_missed"] = len(result.missed)
+    st.session_state["log_lines"] = result.log_lines
+    st.session_state["warnings"] = [warning.model_dump() for warning in result.manifest.warnings]
+    st.session_state["manifest"] = result.manifest.model_dump()
+
+
+def _execute_job(
+    *,
+    job: dict,
+    username: str,
+    credits_per_week: int,
+    queue_position: int | None = None,
+    queue_total: int | None = None,
+) -> bool:
+    _clear_run_state()
     api_key = _get_api_key()
     if not api_key:
-        st.error(
-            "86'd! ANTHROPIC_API_KEY not found. "
-            "Add it to Streamlit secrets (.streamlit/secrets.toml or Cloud dashboard)."
+        st.error("`ANTHROPIC_API_KEY` is not configured in Streamlit secrets.")
+        return False
+
+    run_id = uuid.uuid4().hex
+    if job.get("job_id"):
+        update_job_status(job["job_id"], "running", run_id=run_id)
+    started = time.time()
+    prefix = ""
+    if queue_position is not None and queue_total is not None:
+        prefix = f"Queue item {queue_position}/{queue_total} · "
+    progress_bar = st.progress(0, text=f"{prefix}Initializing run")
+    status_box = st.empty()
+    stage_log = st.empty()
+    stage_lines: list[str] = []
+
+    def on_stage(update: StageUpdate) -> None:
+        progress_bar.progress(update.percent, text=f"{prefix}{update.label}")
+        message = update.detail or update.label
+        stage_lines.append(f"{update.percent:>3}%  {message}")
+        status_box.caption(f"{prefix}{update.label}")
+        stage_log.code("\n".join(stage_lines[-10:]), language=None)
+
+    run_dir = get_run_storage_dir(run_id)
+    memo_path = str(run_dir / f"input_memo{os.path.splitext(job['memo_name'])[1]}")
+    proforma_path = str(run_dir / f"input_proforma{os.path.splitext(job['proforma_name'])[1]}")
+    with open(memo_path, "wb") as handle:
+        handle.write(job["memo_bytes"])
+    with open(proforma_path, "wb") as handle:
+        handle.write(job["proforma_bytes"])
+
+    schedule_path = None
+    if job.get("schedule_bytes"):
+        schedule_path = str(run_dir / f"input_schedule{os.path.splitext(job['schedule_name'])[1]}")
+        with open(schedule_path, "wb") as handle:
+            handle.write(job["schedule_bytes"])
+
+    market_data_path = None
+    if job.get("market_data_bytes"):
+        market_data_path = str(run_dir / f"input_market_data{os.path.splitext(job['market_data_name'])[1]}")
+        with open(market_data_path, "wb") as handle:
+            handle.write(job["market_data_bytes"])
+
+    request = RunRequest(
+        memo_path=memo_path,
+        proforma_path=proforma_path,
+        schedule_path=schedule_path,
+        market_data_path=market_data_path,
+        output_dir=str(run_dir),
+        api_key=api_key,
+        config_path=os.path.join(os.path.dirname(__file__), "config.yaml"),
+        run_id=run_id,
+        property_name=job.get("property_name"),
+        dry_run=job.get("dry_run", False),
+        skip_validation=job.get("skip_validation", False),
+    )
+
+    try:
+        result = run_memo_pipeline(request, callback=on_stage)
+        duration = round(time.time() - started, 2)
+        progress_bar.progress(100, text=f"{prefix}Run complete")
+        status_box.success(f"{prefix}Draft generated successfully.")
+        _persist_result(result, job["memo_name"])
+        (run_dir / f"memo{os.path.splitext(job['memo_name'])[1]}").write_bytes(result.memo_bytes)
+        (run_dir / "change_log.md").write_bytes(result.log_bytes)
+        (run_dir / "run_manifest.json").write_bytes(result.manifest_bytes)
+        record_run(
+            run_id=run_id,
+            username=username,
+            status=result.manifest.status,
+            memo_name=result.manifest.memo_name,
+            proforma_name=result.manifest.proforma_name,
+            property_name=result.manifest.property_name,
+            dry_run=job.get("dry_run", False),
+            skip_validation=job.get("skip_validation", False),
+            change_count=len(result.changes),
+            rejected_count=len(result.rejected),
+            missed_count=len(result.missed),
+            duration_seconds=duration,
+            warnings=st.session_state["warnings"],
         )
-        st.stop()
-
-    logger = logging.getLogger("memo_automator")
-    log_handler = _LogCapture()
-    log_handler.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-8s  %(message)s"))
-    logger.addHandler(log_handler)
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-      try:
-        # Save uploaded files to tmpdir
-        memo_path = os.path.join(tmpdir, memo_file.name)
-        proforma_path = os.path.join(tmpdir, proforma_file.name)
-        with open(memo_path, "wb") as f:
-            f.write(memo_file.getvalue())
-        with open(proforma_path, "wb") as f:
-            f.write(proforma_file.getvalue())
-
-        # Load config from script directory
-        config_path = os.path.join(os.path.dirname(__file__), "config.yaml")
-        cfg = load_config(config_path)
-
-        # Initialize Anthropic client
-        client = anthropic.Anthropic(
-            api_key=api_key,
-            max_retries=5,
-            timeout=900.0,
-        )
-
-        # Progress bar (outside status so it's always visible)
-        _PROGRESS_SLOGANS = {
-            "fire": [
-                "\U0001f525 Firing up the pass...",
-                "\U0001f525 Preheating the kitchen...",
-                "\U0001f525 Lighting the burners...",
-            ],
-            "sear": [
-                "\U0001f373 Searing the metrics...",
-                "\U0001f373 Heating the yield up above a 6.50%...",
-                "\U0001f373 Getting a nice crust on these numbers...",
-                "\U0001f373 Caramelizing the cap rates...",
-            ],
-            "reduce": [
-                "\U0001f373 Reducing the sauce...",
-                "\U0001f373 Letting the flavors meld...",
-                "\U0001f373 Deglazing the pan...",
-            ],
-            "plate": [
-                "\U0001f37d\ufe0f Plating the dish...",
-                "\U0001f37d\ufe0f Garnishing the entrée...",
-                "\U0001f37d\ufe0f Wiping the rim of the plate...",
-            ],
-            "ticket": [
-                "\U0001f4cb Printing the ticket...",
-                "\U0001f4cb Hanging the ticket on the rail...",
-                "\U0001f4cb Calling the check...",
-            ],
-            "market": [
-                "\U0001f4ca Reading the market data...",
-                "\U0001f4ca Checking the comps...",
-                "\U0001f4ca Scanning the rent rolls...",
-                "\U0001f4ca Pulling the market pulse...",
-            ],
-        }
-
-        def _slogan(key: str) -> str:
-            return random.choice(_PROGRESS_SLOGANS[key])
-
-        progress_bar = st.progress(0, text=_slogan("fire"))
-
-        with st.status("\U0001f525 Firing up the pass...", expanded=True) as status:
-            # Show a random quirky shrimp chef GIF while processing
-            anim_placeholder = st.empty()
-            anim_placeholder.markdown(_chef_gif_html(), unsafe_allow_html=True)
-
-            # Step a: Backup
-            progress_bar.progress(3, text="\U0001f9ca Icing the original...")
-            st.write("\U0001f9ca Icing the original -- backup on the rail...")
-            backup_path = create_backup(memo_path, tmpdir)
-
-            # Step b: Extract proforma
-            progress_bar.progress(8, text="\U0001f52a Breaking down the proforma...")
-            st.write("\U0001f52a Breaking down the proforma...")
-            try:
-                proforma_data = extract_proforma_data(proforma_path, cfg)
-            except Exception as e:
-                st.error(f"Could not read the proforma file. Is it a valid .xlsx/.xlsm? ({e})")
-                st.stop()
-
-            # Step b2: Extract schedule (optional)
-            if schedule_file:
-                progress_bar.progress(12, text="\U0001f4c5 Reading the schedule...")
-                st.write("\U0001f4c5 Reading the schedule...")
-                schedule_path = os.path.join(tmpdir, schedule_file.name)
-                with open(schedule_path, "wb") as f:
-                    f.write(schedule_file.getvalue())
-                try:
-                    schedule_data = extract_schedule_data(schedule_path, cfg)
-                    proforma_data += "\n\n" + schedule_data
-                except Exception as e:
-                    st.error(f"Could not read the schedule. Is it a valid .mpp? ({e})")
-                    st.stop()
-
-            # Step b3: Extract market data (optional)
-            if market_data_file:
-                progress_bar.progress(13, text=_slogan("market"))
-                st.write("\U0001f4ca Reading the market data...")
-                market_data_path = os.path.join(tmpdir, market_data_file.name)
-                with open(market_data_path, "wb") as f:
-                    f.write(market_data_file.getvalue())
-                try:
-                    market_text = extract_market_data(market_data_path, cfg)
-                    if market_text:
-                        proforma_data += "\n\n" + market_text
-                        st.write(f"\U0001f4ca Market data extracted ({len(market_text):,} chars)")
-                    else:
-                        st.warning("No dashboard tabs found in market data file — continuing without it.")
-                except Exception as e:
-                    st.warning(f"Could not read market data: {e}. Continuing without it.")
-
-            # Step c: Extract memo
-            progress_bar.progress(15, text="\U0001f4dc Reading the old ticket...")
-            st.write("\U0001f4dc Reading the old ticket...")
-            try:
-                memo_content = extract_memo_content(memo_path, cfg)
-            except Exception as e:
-                st.error(f"Could not read the memo file. Is it a valid .pptx? ({e})")
-                st.stop()
-
-            # Step d: Map metrics (mirrors main() batching logic exactly)
-            # Progress: 15% -> 70% for mapping
-            SEAR_START, SEAR_END = 15, 70
-            progress_bar.progress(SEAR_START, text=_slogan("sear"))
-            st.write("\U0001f373 Searing the metrics (~1-2 min on high heat)...")
-            BATCH_THRESHOLD = 80_000
-            RATE_LIMIT_INTERVAL = 65
-            prompt_size = len(proforma_data) + len(memo_content)
-
-            if prompt_size > BATCH_THRESHOLD:
-                memo_chunks = chunk_memo_by_pages(memo_content, pages_per_chunk=3)
-                n_chunks = len(memo_chunks)
-                mappings = {"table_updates": [], "text_updates": [], "row_inserts": []}
-                last_api_call = 0
-
-                for i, chunk in enumerate(memo_chunks, 1):
-                    pct = SEAR_START + int((SEAR_END - SEAR_START) * i / n_chunks)
-                    progress_bar.progress(
-                        pct,
-                        text=f"\U0001f373 Searing batch {i}/{n_chunks}...",
-                    )
-
-                    if i > 1 and last_api_call > 0:
-                        elapsed = time.time() - last_api_call
-                        wait = RATE_LIMIT_INTERVAL - elapsed
-                        if wait > 0:
-                            time.sleep(wait)
-
-                    last_api_call = time.time()
-                    try:
-                        batch = get_metric_mappings(client, proforma_data, chunk, cfg,
-                                                   property_name=property_name)
-                    except (anthropic.APIError, anthropic.APIConnectionError, Exception) as e:
-                        st.warning(f"Batch {i}/{n_chunks} failed: {e}")
-                        batch = {"table_updates": [], "text_updates": [],
-                                 "row_inserts": [], "_truncated": True}
-
-                    if batch.pop("_truncated", False):
-                        covered_pages = set()
-                        for e in batch.get("table_updates", []):
-                            covered_pages.add(e.get("page"))
-                        for e in batch.get("text_updates", []):
-                            covered_pages.add(e.get("page"))
-                        for e in batch.get("row_inserts", []):
-                            covered_pages.add(e.get("page"))
-                        mappings["table_updates"].extend(batch.get("table_updates", []))
-                        mappings["text_updates"].extend(batch.get("text_updates", []))
-                        mappings["row_inserts"].extend(batch.get("row_inserts", []))
-
-                        sub_chunks = chunk_memo_by_pages(chunk, pages_per_chunk=1)
-                        for j, sub_chunk in enumerate(sub_chunks, 1):
-                            sub_pages = set(
-                                int(m) for m in re.findall(r"PAGE (\d+)", sub_chunk)
-                            )
-                            if sub_pages and sub_pages.issubset(covered_pages):
-                                continue
-
-                            elapsed = time.time() - last_api_call
-                            wait = RATE_LIMIT_INTERVAL - elapsed
-                            if wait > 0:
-                                time.sleep(wait)
-
-                            last_api_call = time.time()
-                            try:
-                                sub_batch = get_metric_mappings(
-                                    client, proforma_data, sub_chunk, cfg,
-                                    property_name=property_name,
-                                )
-                            except (anthropic.APIError, anthropic.APIConnectionError, Exception) as e:
-                                st.warning(f"Sub-batch {j} retry failed: {e}")
-                                continue
-                            sub_batch.pop("_truncated", False)
-                            mappings["table_updates"].extend(
-                                sub_batch.get("table_updates", [])
-                            )
-                            mappings["text_updates"].extend(
-                                sub_batch.get("text_updates", [])
-                            )
-                            mappings["row_inserts"].extend(
-                                sub_batch.get("row_inserts", [])
-                            )
-                    else:
-                        mappings["table_updates"].extend(batch.get("table_updates", []))
-                        mappings["text_updates"].extend(batch.get("text_updates", []))
-                        mappings["row_inserts"].extend(batch.get("row_inserts", []))
-            else:
-                mappings = get_metric_mappings(client, proforma_data, memo_content, cfg,
-                                               property_name=property_name)
-                mappings.pop("_truncated", None)
-
-            progress_bar.progress(70, text=_slogan("reduce"))
-
-            # Strip no-op entries (old == new)
-            mappings["table_updates"] = [
-                e for e in mappings["table_updates"]
-                if e.get("old_value") != e.get("new_value")
-            ]
-            mappings["text_updates"] = [
-                e for e in mappings["text_updates"]
-                if e.get("old_text") != e.get("new_text")
-            ]
-
-            # Pre-validate (local Python check)
-            mappings = pre_validate_mappings(mappings, memo_content)
-
-            # Step e: Validate (Claude QA pass) — 72% -> 88%
-            if skip_validation:
-                progress_bar.progress(88, text="\U0001f9af Sous-chef on break...")
-                st.write("\U0001f9af Sous-chef on break -- skipping QA...")
-                validated = mappings
-                validated.setdefault("rejected", [])
-                validated.setdefault("missed", [])
-            else:
-                progress_bar.progress(72, text="\U0001f9d1\u200d\U0001f373 Sous-chef tasting...")
-                st.write("\U0001f9d1\u200d\U0001f373 Sous-chef tasting for quality...")
-                validated = validate_mappings(
-                    client, mappings, proforma_data, memo_content, cfg,
-                    property_name=property_name,
-                )
-                progress_bar.progress(88, text="\U0001f9d1\u200d\U0001f373 QA complete...")
-
-            # Step f: Apply updates — 90%
-            progress_bar.progress(90, text=_slogan("plate"))
-            st.write("\U0001f37d\ufe0f Plating the dish...")
-            changes = apply_updates(memo_path, validated, dry_run=dry_run)
-
-            # Step g: Apply Subtext branding — 93%
-            progress_bar.progress(93, text="\U0001f3a8 Applying Subtext branding...")
-            st.write("\U0001f3a8 Applying Subtext branding...")
-            theme_path = cfg.get("branding", {}).get("theme_path", "")
-            if not theme_path:
-                # Default: look for theme beside this script
-                theme_path = os.path.join(os.path.dirname(__file__), "Subtext Brand Theme.thmx")
-            if os.path.exists(theme_path) and not dry_run:
-                n_branded = apply_branding(memo_path, theme_path, cfg)
-                st.write(f"\U0001f3a8 Branded {n_branded} text runs")
-            elif not os.path.exists(theme_path):
-                st.warning("Subtext Brand Theme not found — skipping branding")
-
-            # Step g2: Normalize layout — 95%
-            if not dry_run:
-                progress_bar.progress(95, text="Aligning layout...")
-                st.write("\U0001f4d0 Aligning layout...")
-                layout_summary = normalize_layout(memo_path, cfg)
-                st.write(f"\U0001f4d0 Layout healed: {layout_summary['titles_snapped']} titles, "
-                         f"{layout_summary['page_numbers_snapped']} page numbers snapped")
-
-            # Step h: Write change log — 96%
-            progress_bar.progress(96, text=_slogan("ticket"))
-            st.write("\U0001f4cb Printing the ticket...")
-            log_path = write_change_log(
-                tmpdir, changes, validated, memo_path, proforma_path, backup_path
-            )
-
-            n_changes = len(changes)
-            progress_bar.progress(100, text=f"\U0001f31f Order up! {n_changes} updates plated.")
-            status.update(
-                label=f"\U0001f31f Order up! {n_changes} updates plated.",
-                state="complete",
-            )
-
-        # Read output bytes into memory before tmpdir is cleaned up
-        with open(memo_path, "rb") as f:
-            memo_bytes = f.read()
-        with open(log_path, "rb") as f:
-            log_bytes = f.read()
-
-        n_rejected = len(validated.get("rejected", []))
-        n_missed = len(validated.get("missed", []))
-
-        # Persist results in session state so download buttons survive reruns
-        st.session_state["memo_bytes"] = memo_bytes
-        st.session_state["log_bytes"] = log_bytes
-        st.session_state["filename"] = memo_file.name
-        st.session_state["n_changes"] = n_changes
-        st.session_state["n_rejected"] = n_rejected
-        st.session_state["n_missed"] = n_missed
-        st.session_state["log_lines"] = log_handler.lines[:]
-
-        # Charge one credit only after a successful end-to-end run.
+        if job.get("job_id"):
+            update_job_status(job["job_id"], "completed", run_id=run_id)
         try:
-            charged = _consume_credit(_username, _credits_per_week, run_id=run_id)
+            charged = consume_credit(username, credits_per_week, run_id=run_id)
             if not charged:
-                st.warning("Run completed, but no credits remained to charge this run.")
-        except Exception as credit_err:
-            st.warning(f"Run completed, but credit usage could not be updated: {credit_err}")
-
-      except Exception as e:
-        st.error(f"In the weeds! {e}")
-
-      finally:
-        # Always clear animation and clean up logging handler
+                st.warning("The run completed, but weekly credits were already exhausted.")
+        except Exception as err:
+            st.warning(f"Run completed, but credits could not be updated: {err}")
+        return True
+    except Exception as err:
+        duration = round(time.time() - started, 2)
+        progress_bar.progress(100, text=f"{prefix}Run failed")
+        status_box.error(f"{prefix}Run failed")
+        stage_log.code("\n".join(stage_lines[-10:]), language=None)
         try:
-            anim_placeholder.empty()
+            record_run(
+                run_id=run_id,
+                username=username,
+                status="failed",
+                memo_name=job["memo_name"],
+                proforma_name=job["proforma_name"],
+                property_name=job.get("property_name"),
+                dry_run=job.get("dry_run", False),
+                skip_validation=job.get("skip_validation", False),
+                change_count=0,
+                rejected_count=0,
+                missed_count=0,
+                duration_seconds=duration,
+                warnings=[{"stage": "pipeline", "message": str(err)}],
+            )
         except Exception:
             pass
-        logger.removeHandler(log_handler)
+        if job.get("job_id"):
+            update_job_status(job["job_id"], "failed", run_id=run_id, error_message=str(err))
+        st.error(f"{prefix}Run failed: {err}")
+        return False
 
-# ============================================================================
-# SERVICE WINDOW  (results -- persists from session_state across reruns)
-# ============================================================================
-if "memo_bytes" in st.session_state:
-    n_changes = st.session_state["n_changes"]
-    n_rejected = st.session_state["n_rejected"]
-    n_missed = st.session_state["n_missed"]
-    memo_bytes = st.session_state["memo_bytes"]
-    log_bytes = st.session_state["log_bytes"]
-    filename = st.session_state["filename"]
-    log_lines = st.session_state["log_lines"]
 
-    st.success(f"\U0001f37d\ufe0f Chef's kiss! Your memo is ready for service. {n_changes} updates plated.")
+def check_password() -> bool:
+    if st.session_state.get("authenticated"):
+        return True
 
-    dl_col1, dl_col2 = st.columns(2)
-    dl_col1.download_button(
-        "\u2b07\ufe0f Pick Up -- Updated Memo",
-        memo_bytes,
-        file_name=filename,
-        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    )
-    dl_col2.download_button(
-        "\u2b07\ufe0f Grab the Ticket -- Change Log",
-        log_bytes,
-        file_name="CHANGE_LOG.md",
-        mime="text/markdown",
+    users = get_users()
+    if not users:
+        st.error("No users configured. Add users to Streamlit secrets or the database.")
+        st.stop()
+
+    st.markdown(hero_html(), unsafe_allow_html=True)
+    st.markdown(
+        info_card(
+            "Secure workspace",
+            "Sign in to access governed memo runs, queue execution, approvals, and operational controls.",
+        ),
+        unsafe_allow_html=True,
     )
 
-    stat_col1, stat_col2, stat_col3 = st.columns(3)
-    stat_col1.metric("Plated", n_changes)
-    stat_col2.metric("Sent back", n_rejected)
-    stat_col3.metric("Needs garnish", n_missed)
+    with st.form("login_form"):
+        cols = st.columns([1, 1, 1])
+        username = cols[0].text_input("Username")
+        password = cols[1].text_input("Password", type="password")
+        cols[2].markdown("<div style='height: 1.8rem'></div>", unsafe_allow_html=True)
+        submitted = cols[2].form_submit_button("Sign in", type="primary", use_container_width=True)
 
-    with st.expander("\U0001f4cb Full kitchen ticket"):
-        st.code("\n".join(log_lines), language=None)
+    if submitted:
+        user_cfg = users.get(username)
+        if user_cfg and verify_password(password, user_cfg["password_hash"]):
+            st.session_state["authenticated"] = True
+            st.session_state["username"] = username
+            st.session_state["role"] = user_cfg.get("role", "user")
+            st.session_state["credits_per_week"] = int(user_cfg.get("credits_per_week", 5))
+            st.rerun()
+        st.error("Invalid username or password.")
+    st.stop()
+
+
+if not check_password():
+    st.stop()
+
+username = st.session_state["username"]
+role = st.session_state["role"]
+credits_per_week = st.session_state["credits_per_week"]
+credits_error = None
+
+try:
+    used, remaining = get_user_credits(username, credits_per_week)
+except Exception as err:
+    used, remaining = 0, 0
+    credits_error = str(err)
+
+with st.sidebar:
+    st.markdown(f"### {username}")
+    st.caption(f"Role: `{role}`")
+    if credits_error:
+        st.warning("Credits service unavailable.")
+        if st.button("Reconnect services"):
+            get_db_conn.clear()
+            st.rerun()
+    else:
+        st.caption(f"{remaining} of {credits_per_week} weekly runs remaining")
+        st.progress(
+            min(used / credits_per_week, 1.0) if credits_per_week > 0 else 1.0,
+            text=f"{used} used this week",
+        )
+    try:
+        queue_count = len(
+            [job for job in get_job_queue(None if role == "admin" else username) if job["status"] == "queued"]
+        )
+    except Exception:
+        queue_count = 0
+    st.caption(f"Batch queue: {queue_count} item(s)")
+    st.divider()
+    st.caption("Platform")
+    st.write("Reviewable automation, typed configuration, queueing, and traceable outputs.")
+    if st.button("Sign out", use_container_width=True):
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
+
+st.markdown(hero_html(), unsafe_allow_html=True)
+
+card_cols = st.columns(4)
+card_cols[0].markdown(
+    info_card("Guardrails", "Two-pass mapping and validation with checkpointed artifacts."),
+    unsafe_allow_html=True,
+)
+card_cols[1].markdown(
+    info_card("Operations", "Queue multiple runs and review outcomes from a single console."),
+    unsafe_allow_html=True,
+)
+card_cols[2].markdown(
+    info_card("Governance", "Track approval status, reviewer, and warnings per run."),
+    unsafe_allow_html=True,
+)
+card_cols[3].markdown(
+    info_card("Brand system", "Refreshed dark UI, cleaner actions, and a premium visual hierarchy."),
+    unsafe_allow_html=True,
+)
+
+tab_labels = ["New Run", "Run History", "Operations"] + (["Admin"] if role == "admin" else [])
+tabs = st.tabs(tab_labels)
+
+
+def render_new_run_tab() -> None:
+    st.subheader("New run")
+    st.caption(APP_SUBTITLE)
+
+    profiles = get_profiles(None if role == "admin" else username)
+    profile_lookup = {row["Profile"]: row for row in profiles}
+    selected_profile = st.selectbox(
+        "Saved profile",
+        options=[""] + sorted(profile_lookup.keys()),
+        format_func=lambda value: "None" if value == "" else value,
+        help="Load saved preferences for property naming and QA behavior.",
+    )
+    profile = profile_lookup.get(selected_profile, {})
+
+    upload_cols = st.columns(4)
+    memo_file = upload_cols[0].file_uploader("Memo deck", type=["pptx"], key="memo_upload")
+    proforma_file = upload_cols[1].file_uploader("Proforma", type=["xlsx", "xlsm"], key="proforma_upload")
+    schedule_file = upload_cols[2].file_uploader("Schedule", type=["mpp"], key="schedule_upload")
+    market_data_file = upload_cols[3].file_uploader("Market data", type=["xlsx", "xlsm"], key="market_upload")
+
+    property_name = st.text_input(
+        "Property name override",
+        value=profile.get("Property", ""),
+        placeholder="Optional alias used inside the proforma or memo",
+        help="Use this when the property has been renamed or appears differently across sources.",
+    )
+
+    pref_cols = st.columns(2)
+    with pref_cols[0]:
+        dry_run = st.checkbox(
+            "Preview only",
+            value=bool(profile.get("Preview Only", False)),
+            help="Runs the pipeline without saving final deck changes.",
+        )
+    with pref_cols[1]:
+        skip_validation = st.checkbox(
+            "Skip AI validation",
+            value=bool(profile.get("Skip QA", False)),
+            help="Faster, but less safe. Recommended only for trusted dry runs.",
+        )
+
+    review_cols = st.columns(4)
+    review_cols[0].info("Required inputs: memo + proforma")
+    review_cols[1].info("Optional enrichments: schedule + market data")
+    review_cols[2].info("Artifacts include a machine-readable run manifest")
+    review_cols[3].info("Queue jobs to run sequentially with shared settings")
+
+    save_profile_name = st.text_input(
+        "Save current preferences as profile",
+        placeholder="e.g. Standard IC review",
+    )
+    profile_notes = st.text_area(
+        "Profile notes",
+        placeholder="Optional guidance for this profile",
+        height=80,
+    )
+    profile_cols = st.columns([1, 3])
+    if profile_cols[0].button("Save profile", use_container_width=True):
+        if not save_profile_name.strip():
+            st.error("Enter a profile name before saving.")
+        else:
+            save_profile(
+                save_profile_name.strip(),
+                username,
+                property_name or None,
+                dry_run,
+                skip_validation,
+                profile_notes or None,
+            )
+            st.success(f"Saved profile `{save_profile_name.strip()}`.")
+            st.rerun()
+
+    action_disabled = should_disable_fire_button(memo_file, proforma_file, remaining, credits_error)
+    action_cols = st.columns(2)
+    if action_cols[0].button(
+        f"Generate draft ({remaining} credits left)" if remaining > 0 else "No credits remaining",
+        type="primary",
+        disabled=action_disabled,
+        use_container_width=True,
+    ):
+        job = _queue_item_from_inputs(
+            memo_file=memo_file,
+            proforma_file=proforma_file,
+            schedule_file=schedule_file,
+            market_data_file=market_data_file,
+            property_name=property_name,
+            dry_run=dry_run,
+            skip_validation=skip_validation,
+            profile_name=selected_profile or save_profile_name.strip() or None,
+        )
+        _execute_job(job=job, username=username, credits_per_week=credits_per_week)
+
+    if action_cols[1].button(
+        "Add to queue",
+        disabled=action_disabled,
+        use_container_width=True,
+    ):
+        job = _queue_item_from_inputs(
+            memo_file=memo_file,
+            proforma_file=proforma_file,
+            schedule_file=schedule_file,
+            market_data_file=market_data_file,
+            property_name=property_name,
+            dry_run=dry_run,
+            skip_validation=skip_validation,
+            profile_name=selected_profile or save_profile_name.strip() or None,
+        )
+        enqueue_job(username, job)
+        st.success(f"Queued `{job['memo_name']}`.")
+
+    if "memo_bytes" in st.session_state:
+        st.divider()
+        st.success("Artifacts are ready for review and download.")
+        metric_cols = st.columns(4)
+        metric_cols[0].metric("Applied changes", st.session_state["n_changes"])
+        metric_cols[1].metric("Rejected", st.session_state["n_rejected"])
+        metric_cols[2].metric("Needs review", st.session_state["n_missed"])
+        metric_cols[3].metric("Warnings", len(st.session_state.get("warnings", [])))
+
+        download_cols = st.columns(3)
+        download_cols[0].download_button(
+            "Download updated memo",
+            st.session_state["memo_bytes"],
+            file_name=st.session_state["filename"],
+            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            use_container_width=True,
+        )
+        download_cols[1].download_button(
+            "Download change log",
+            st.session_state["log_bytes"],
+            file_name="CHANGE_LOG.md",
+            mime="text/markdown",
+            use_container_width=True,
+        )
+        download_cols[2].download_button(
+            "Download run manifest",
+            st.session_state["manifest_bytes"],
+            file_name="run_manifest.json",
+            mime="application/json",
+            use_container_width=True,
+        )
+
+        warnings = st.session_state.get("warnings", [])
+        if warnings:
+            with st.expander("Warnings"):
+                for warning in warnings:
+                    st.warning(f"{warning['stage']}: {warning['message']}")
+
+        with st.expander("Execution log"):
+            st.code("\n".join(st.session_state["log_lines"]), language=None)
+
+        with st.expander("Run manifest"):
+            st.json(st.session_state["manifest"])
+
+
+def render_history_tab() -> None:
+    st.subheader("Run history")
+    st.caption("Recent runs, outcomes, approvals, and warning counts for auditing and reruns.")
+    try:
+        rows = get_recent_runs(None if role == "admin" else username, limit=30)
+    except Exception as err:
+        st.warning(f"Run history is unavailable: {err}")
+        return
+    if not rows:
+        st.info("No completed or recorded runs yet.")
+        return
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.markdown("#### Approval workflow")
+    run_options = [row["Run ID"] for row in rows]
+    selected_run = st.selectbox("Select run", run_options, index=0)
+    details = get_run_details(selected_run)
+    if details:
+        detail_cols = st.columns(4)
+        detail_cols[0].metric("Status", details["status"])
+        detail_cols[1].metric("Approval", details["approval_status"])
+        detail_cols[2].metric("Changes", details["change_count"])
+        detail_cols[3].metric("Warnings", len(details["warnings"]))
+        if details["warnings"]:
+            with st.expander("Run warnings"):
+                for warning in details["warnings"]:
+                    st.warning(f"{warning['stage']}: {warning['message']}")
+        with st.form("approval_form"):
+            approval_status = st.selectbox(
+                "Approval decision",
+                ["pending", "approved", "needs_revision", "rejected"],
+                index=["pending", "approved", "needs_revision", "rejected"].index(
+                    details["approval_status"] if details["approval_status"] in {"pending", "approved", "needs_revision", "rejected"} else "pending"
+                ),
+            )
+            approval_notes = st.text_area("Reviewer notes", value=details["approval_notes"], height=100)
+            submitted = st.form_submit_button("Save approval", type="primary")
+        if submitted:
+            update_run_approval(selected_run, approval_status, username, approval_notes or None)
+            st.success(f"Updated approval for `{selected_run}`.")
+            st.rerun()
+        artifact_paths = get_run_artifact_paths(selected_run)
+        if artifact_paths:
+            action_cols = st.columns(4)
+            memo_path = artifact_paths.get("memo")
+            log_path = artifact_paths.get("change_log")
+            manifest_path = artifact_paths.get("run_manifest")
+            if memo_path and os.path.exists(memo_path):
+                action_cols[0].download_button(
+                    "Download memo",
+                    open(memo_path, "rb").read(),
+                    file_name=os.path.basename(memo_path),
+                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    use_container_width=True,
+                )
+            if log_path and os.path.exists(log_path):
+                action_cols[1].download_button(
+                    "Download log",
+                    open(log_path, "rb").read(),
+                    file_name=os.path.basename(log_path),
+                    mime="text/markdown",
+                    use_container_width=True,
+                )
+            if manifest_path and os.path.exists(manifest_path):
+                action_cols[2].download_button(
+                    "Download manifest",
+                    open(manifest_path, "rb").read(),
+                    file_name=os.path.basename(manifest_path),
+                    mime="application/json",
+                    use_container_width=True,
+                )
+            if action_cols[3].button("Requeue from history", use_container_width=True):
+                input_memo_path = artifact_paths.get("input_memo")
+                input_proforma_path = artifact_paths.get("input_proforma")
+                if input_memo_path and input_proforma_path and os.path.exists(input_memo_path) and os.path.exists(input_proforma_path):
+                    payload = {
+                        "job_id": uuid.uuid4().hex,
+                        "memo_name": details["memo_name"],
+                        "memo_bytes": open(input_memo_path, "rb").read(),
+                        "proforma_name": details["proforma_name"],
+                        "proforma_bytes": open(input_proforma_path, "rb").read(),
+                        "schedule_name": os.path.basename(artifact_paths["input_schedule"]) if artifact_paths.get("input_schedule") else None,
+                        "schedule_bytes": open(artifact_paths["input_schedule"], "rb").read() if artifact_paths.get("input_schedule") and os.path.exists(artifact_paths["input_schedule"]) else None,
+                        "market_data_name": os.path.basename(artifact_paths["input_market_data"]) if artifact_paths.get("input_market_data") else None,
+                        "market_data_bytes": open(artifact_paths["input_market_data"], "rb").read() if artifact_paths.get("input_market_data") and os.path.exists(artifact_paths["input_market_data"]) else None,
+                        "property_name": details["property_name"] or None,
+                        "dry_run": details["dry_run"],
+                        "skip_validation": details["skip_validation"],
+                        "profile_name": "",
+                    }
+                    enqueue_job(username, payload)
+                    st.success(f"Requeued `{details['memo_name']}`.")
+                    st.rerun()
+                else:
+                    st.error("Stored input artifacts were not found for this run.")
+
+
+def render_operations_tab() -> None:
+    st.subheader("Operations")
+    st.caption("Batch execution, platform health, and profile inventory.")
+    ops_tabs = st.tabs(["Queue", "Health", "Profiles"])
+
+    with ops_tabs[0]:
+        queue = [job for job in get_job_queue(None if role == "admin" else username) if job["status"] in {"queued", "running", "failed"}]
+        if queue:
+            queue_rows = [
+                {
+                    "Job ID": item["job_id"],
+                    "Status": item["status"],
+                    "Memo": item["payload"]["memo_name"],
+                    "Proforma": item["payload"]["proforma_name"],
+                    "Property": item["payload"].get("property_name") or "",
+                    "Preview": "Yes" if item["payload"].get("dry_run") else "No",
+                    "Skip QA": "Yes" if item["payload"].get("skip_validation") else "No",
+                    "Profile": item["payload"].get("profile_name", ""),
+                    "Run ID": item["run_id"],
+                    "Error": item["error_message"],
+                }
+                for item in queue
+            ]
+            st.dataframe(queue_rows, use_container_width=True, hide_index=True)
+            queue_cols = st.columns(4)
+            if queue_cols[0].button("Run queued jobs", type="primary", use_container_width=True):
+                queued_items = [item for item in queue if item["status"] == "queued"]
+                for index, item in enumerate(queued_items, start=1):
+                    ok = _execute_job(
+                        job={**item["payload"], "job_id": item["job_id"]},
+                        username=username,
+                        credits_per_week=credits_per_week,
+                        queue_position=index,
+                        queue_total=len(queued_items),
+                    )
+                    if not ok:
+                        break
+                st.success("Queue execution finished.")
+                st.rerun()
+            selected_job_id = queue_cols[1].selectbox(
+                "Job",
+                [item["job_id"] for item in queue],
+                key="ops_job_select",
+                label_visibility="collapsed",
+            )
+            if queue_cols[2].button("Delete selected job", use_container_width=True):
+                delete_job(selected_job_id)
+                st.info(f"Deleted job `{selected_job_id}`.")
+                st.rerun()
+            if queue_cols[3].button("Retry failed job", use_container_width=True):
+                failed_job = get_job(selected_job_id)
+                if failed_job and failed_job["status"] == "failed":
+                    update_job_status(selected_job_id, "queued", error_message=None)
+                    st.success(f"Job `{selected_job_id}` moved back to queued.")
+                    st.rerun()
+                st.warning("Select a failed job to retry.")
+        else:
+            st.info("No queued jobs yet.")
+
+    with ops_tabs[1]:
+        health_rows = get_platform_health()
+        st.dataframe(health_rows, use_container_width=True, hide_index=True)
+
+    with ops_tabs[2]:
+        profiles = get_profiles(None if role == "admin" else username)
+        if profiles:
+            st.dataframe(profiles, use_container_width=True, hide_index=True)
+        else:
+            st.info("No saved profiles yet.")
+
+
+def render_admin_tab() -> None:
+    st.subheader("Admin")
+    st.caption("Manage users, credits, and review system activity.")
+    users = get_users()
+    rows = []
+    for user_name, user_cfg in users.items():
+        credit_limit = int(user_cfg.get("credits_per_week", 5))
+        try:
+            used_count, remaining_count = get_user_credits(user_name, credit_limit)
+        except Exception:
+            used_count, remaining_count = 0, 0
+        rows.append(
+            {
+                "User": user_name,
+                "Role": user_cfg.get("role", "user"),
+                "Used": used_count,
+                "Limit": credit_limit,
+                "Remaining": remaining_count,
+            }
+        )
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+
+    admin_tabs = st.tabs(["Add user", "Edit user", "Delete user", "Reset credits", "Recent activity"])
+
+    with admin_tabs[0]:
+        with st.form("add_user_form"):
+            new_username = st.text_input("Username")
+            new_password = st.text_input("Password", type="password")
+            new_role = st.selectbox("Role", ["user", "admin"], index=0)
+            new_credits = st.number_input("Credits per week", min_value=1, value=5)
+            submitted = st.form_submit_button("Create user", type="primary")
+        if submitted:
+            if not new_username.strip():
+                st.error("Username is required.")
+            elif len(new_password) < 6:
+                st.error("Password must be at least 6 characters.")
+            else:
+                if add_user(new_username.strip(), new_password, new_role, int(new_credits)):
+                    st.success(f"User `{new_username}` created.")
+                    st.rerun()
+                st.error(f"User `{new_username}` already exists.")
+
+    with admin_tabs[1]:
+        usernames = [row["User"] for row in rows]
+        selected = st.selectbox("User", usernames, index=None, placeholder="Select a user")
+        if selected:
+            current_cfg = users[selected]
+            with st.form("edit_user_form"):
+                edit_role = st.selectbox(
+                    "Role",
+                    ["user", "admin"],
+                    index=0 if current_cfg.get("role", "user") == "user" else 1,
+                )
+                edit_credits = st.number_input(
+                    "Credits per week",
+                    min_value=1,
+                    value=int(current_cfg.get("credits_per_week", 5)),
+                )
+                edit_password = st.text_input("New password", type="password")
+                submitted = st.form_submit_button("Save changes", type="primary")
+            if submitted:
+                if edit_password and len(edit_password) < 6:
+                    st.error("Password must be at least 6 characters.")
+                else:
+                    update_user(
+                        selected,
+                        role=edit_role,
+                        credits_per_week=int(edit_credits),
+                        new_password=edit_password or None,
+                    )
+                    if selected == username:
+                        st.session_state["role"] = edit_role
+                        st.session_state["credits_per_week"] = int(edit_credits)
+                    st.success(f"Updated `{selected}`.")
+                    st.rerun()
+
+    with admin_tabs[2]:
+        deletable = [row["User"] for row in rows if row["User"] != username]
+        selected = st.selectbox("User to delete", deletable, index=None, placeholder="Select a user")
+        if selected and st.button(f"Delete {selected}"):
+            delete_user(selected)
+            st.success(f"Deleted `{selected}`.")
+            st.rerun()
+
+    with admin_tabs[3]:
+        selected = st.selectbox(
+            "User to reset",
+            [row["User"] for row in rows],
+            index=None,
+            placeholder="Select a user",
+        )
+        if selected and st.button(f"Reset credits for {selected}"):
+            reset_user_credits(selected)
+            st.success(f"Credits reset for `{selected}`.")
+            st.rerun()
+
+    with admin_tabs[4]:
+        try:
+            runs = get_recent_runs(None, limit=30)
+        except Exception as err:
+            st.warning(f"Recent activity is unavailable: {err}")
+        else:
+            st.dataframe(runs, use_container_width=True, hide_index=True)
+
+
+with tabs[0]:
+    render_new_run_tab()
+
+with tabs[1]:
+    render_history_tab()
+
+with tabs[2]:
+    render_operations_tab()
+
+if role == "admin":
+    with tabs[3]:
+        render_admin_tab()

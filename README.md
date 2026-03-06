@@ -22,6 +22,7 @@ It preserves deck formatting, creates a backup, and produces a full audit trail.
 - `mappings_raw.json`
 - `mappings_validated.json`
 - `CHANGE_LOG.md` (includes run telemetry)
+- `run_manifest.json` (stage timings, warnings, counts, output paths)
 
 ## Prerequisites
 
@@ -78,6 +79,15 @@ Common options:
 ```bash
 streamlit run app.py
 ```
+
+The Streamlit app now includes:
+- a modernized `New Run` workflow
+- `Run History` for recent executions
+- an `Operations` console for queueing and health checks
+- downloadable `run_manifest.json` artifacts
+- saved run profiles and approval tracking
+- persistent job records and stored run artifacts for reruns
+- admin controls for users, credits, and recent activity
 
 ## Testing and Quality
 

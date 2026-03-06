@@ -1,6 +1,6 @@
 # Memo Automator - Execution Checklist
 
-> **Last updated:** 2026-03-03
+> **Last updated:** 2026-03-05
 > **Tracking:** Check boxes as tasks complete. Add dates and notes in the rightmost column.
 
 ---
@@ -91,6 +91,11 @@
   - [ ] `cli.py`
   - [ ] `config.py`
   - [ ] `pipeline.py`
+- [x] Create `memo_chef/` package (pipeline wrapper + pydantic models + theme) - @developer - Done 2026-03-05
+  - [x] `memo_chef/models.py` - RunRequest, RunManifest, RunResult, StageUpdate pydantic models
+  - [x] `memo_chef/pipeline.py` - full pipeline orchestration with retry + checkpoint
+  - [x] `memo_chef/theme.py` - Subtext brand CSS + UI helpers
+- [x] Extract service layer to `app_services.py` (DB, credits, runs, jobs, profiles) - @developer - Done 2026-03-05
 - [x] Extract prompt templates to `prompts/` directory - @developer - 2d - _Depends: package structure_ - Done 2026-03-03
 - [ ] Add type hints to all public functions - @developer - 3d - _Depends: package structure_
 - [ ] Ensure all tests pass post-refactor - @developer - 2d - _Depends: refactor_
@@ -105,8 +110,8 @@
 
 ### Reliability
 
-- [ ] API retry logic with exponential backoff - @developer - 2d - _Depends: ai/client.py_
-- [ ] Checkpoint/resume for interrupted runs - @developer - 3d - _Depends: retry logic_
+- [x] API retry logic with exponential backoff - @developer - Done 2026-03-05 (`memo_chef/pipeline.py` `_retry()`)
+- [x] Checkpoint/resume for interrupted runs - @developer - Done 2026-03-05 (`memo_chef/pipeline.py` `CheckpointManager`)
 - [x] Config validation with pydantic models - @developer - 2d - _Depends: config.py_ - Done 2026-03-03
 - [ ] Per-project config profiles (`configs/projectA.yaml`) - @developer - 1d - _Depends: config validation_
 
