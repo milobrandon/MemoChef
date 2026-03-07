@@ -443,8 +443,8 @@ def render_new_run_tab() -> None:
     upload_cols = st.columns(4)
     memo_file = upload_cols[0].file_uploader("Memo deck", type=["pptx"], key="memo_upload")
     proforma_file = upload_cols[1].file_uploader("Proforma", type=["xlsx", "xlsm"], key="proforma_upload")
-    schedule_file = upload_cols[2].file_uploader("Schedule", type=["mpp"], key="schedule_upload")
-    market_data_file = upload_cols[3].file_uploader("Market data", type=["xlsx", "xlsm"], key="market_upload")
+    schedule_file = upload_cols[2].file_uploader("Schedule (Beta)", type=["mpp"], key="schedule_upload")
+    market_data_file = upload_cols[3].file_uploader("Market data (Beta)", type=["xlsx", "xlsm"], key="market_upload")
 
     rename_cols = st.columns(2)
     property_name = rename_cols[0].text_input(

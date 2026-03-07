@@ -2245,6 +2245,13 @@ def apply_updates(memo_path: str, mappings: dict, dry_run: bool = False) -> list
 
     # --- Table updates ---
     for upd in mappings.get("table_updates", []):
+        # Skip misclassified row_inserts (have 'cells' but no 'old_value')
+        if "old_value" not in upd:
+            if "cells" in upd:
+                log.warning("Skipping misclassified row_insert in table_updates: %s", upd)
+            else:
+                log.warning("Skipping table_update missing 'old_value': %s", upd)
+            continue
         page = upd["page"]
         tbl_name = upd.get("table_name", "")
         col_idx = upd.get("column_index", 1)
