@@ -1116,6 +1116,42 @@ def _create_message(client: anthropic.Anthropic, **api_kwargs):
         return stream.get_final_message()
 
 
+def _property_name_section(property_name: str, purpose: str = "mapping") -> str:
+    """Build the property-name targeting section shared by mapping & validation."""
+    if not property_name:
+        return ""
+    if purpose == "validation":
+        return (
+            f"\n## Property Name - CRITICAL TARGETING CHECK\n"
+            f"The proforma data corresponds to **\"{property_name}\"** in the memo. "
+            f"The proforma's own internal name may differ (old/rebranded name).\n\n"
+            f"Verify that:\n"
+            f"- All updates target the \"{property_name}\" column/row, NOT other "
+            f"  properties' columns/rows.\n"
+            f"- The name \"{property_name}\" is NOT renamed to the proforma's "
+            f"  internal name. Flag any mapping that renames it as REJECT.\n"
+            f"- If any mapping targets a different property's column/row, REJECT it.\n"
+        )
+    return (
+        f"\n## Property Name - CRITICAL TARGETING OVERRIDE\n"
+        f"The proforma data corresponds to the property named **\"{property_name}\"** "
+        f"in the memo. The proforma's own internal name may differ (e.g. an old or "
+        f"rebranded name) - IGNORE the proforma's internal project name for targeting "
+        f"purposes.\n\n"
+        f"Apply all proforma data to the column, row, or section labeled "
+        f"\"{property_name}\" in the memo:\n"
+        f"- In **side-by-side comparison tables** (column-oriented), update the "
+        f"  \"{property_name}\" column, NOT any other property's column.\n"
+        f"- In **row-oriented tables** (comp summary, pipeline), update the row "
+        f"  for \"{property_name}\".\n"
+        f"- In **narrative text**, update metrics that describe \"{property_name}\".\n"
+        f"- Do NOT rename \"{property_name}\" to the proforma's internal name. "
+        f"  Keep the memo's name as-is.\n"
+        f"- Do NOT update columns/rows for other properties (those belong to "
+        f"  different proformas).\n"
+    )
+
+
 def get_metric_mappings(
     client: anthropic.Anthropic,
     proforma_data: str,
@@ -1128,50 +1164,40 @@ def get_metric_mappings(
     Send proforma data + memo content to Claude and receive structured
     JSON describing every metric update.
 
-    This is the core reasoning step - Claude analyzes which memo values
-    correspond to which proforma cells and determines the correct
-    replacements, preserving formatting conventions.
+    Uses prompt caching: the instructions + proforma data go in a cached
+    system message (identical across batches), while only the memo chunk
+    varies in the user message.
     """
     model = cfg["claude"]["model"]
     max_tokens = cfg["claude"]["max_tokens"]
     temperature = cfg["claude"]["temperature"]
     use_thinking = "opus" in model.lower()
 
-    if property_name:
-        pn_section = (
-            f"\n## Property Name - CRITICAL TARGETING OVERRIDE\n"
-            f"The proforma data corresponds to the property named **\"{property_name}\"** "
-            f"in the memo. The proforma's own internal name may differ (e.g. an old or "
-            f"rebranded name) - IGNORE the proforma's internal project name for targeting "
-            f"purposes.\n\n"
-            f"Apply all proforma data to the column, row, or section labeled "
-            f"\"{property_name}\" in the memo:\n"
-            f"- In **side-by-side comparison tables** (column-oriented), update the "
-            f"  \"{property_name}\" column, NOT any other property's column.\n"
-            f"- In **row-oriented tables** (comp summary, pipeline), update the row "
-            f"  for \"{property_name}\".\n"
-            f"- In **narrative text**, update metrics that describe \"{property_name}\".\n"
-            f"- Do NOT rename \"{property_name}\" to the proforma's internal name. "
-            f"  Keep the memo's name as-is.\n"
-            f"- Do NOT update columns/rows for other properties (those belong to "
-            f"  different proformas).\n"
-        )
-    else:
-        pn_section = ""
+    pn_section = _property_name_section(property_name, "mapping")
 
-    prompt = MAPPING_PROMPT.format(
+    # Split prompt into cached system prefix (instructions + proforma)
+    # and varying user message (memo chunk only).
+    system_text = MAPPING_PROMPT.format(
         proforma_data=proforma_data,
-        memo_content=memo_content,
+        memo_content="(see user message below)",
         property_name_section=pn_section,
     )
+    user_text = f"## Memo Content (from PowerPoint)\n{memo_content}"
 
-    log.info("Calling Claude API (model=%s, thinking=%s, prompt=%d chars)...",
-             model, use_thinking, len(prompt))
+    total_chars = len(system_text) + len(user_text)
+    log.info("Calling Claude API (model=%s, thinking=%s, prompt=%d chars, "
+             "cached_prefix=%d chars)...",
+             model, use_thinking, total_chars, len(system_text))
 
     api_kwargs = dict(
         model=model,
         max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}],
+        system=[{
+            "type": "text",
+            "text": system_text,
+            "cache_control": {"type": "ephemeral"},
+        }],
+        messages=[{"role": "user", "content": user_text}],
     )
     if use_thinking:
         api_kwargs["thinking"] = {"type": "adaptive"}
@@ -1181,6 +1207,16 @@ def get_metric_mappings(
     if telemetry is not None:
         telemetry["mapping_api_calls"] = telemetry.get("mapping_api_calls", 0) + 1
     message = _create_message(client, **api_kwargs)
+
+    # Log cache performance
+    usage = message.usage
+    cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    log.info("Token usage: input=%d, cache_read=%d, cache_write=%d, output=%d",
+             usage.input_tokens, cache_read, cache_write, usage.output_tokens)
+    if telemetry is not None:
+        telemetry["cache_read_tokens"] = telemetry.get("cache_read_tokens", 0) + cache_read
+        telemetry["cache_write_tokens"] = telemetry.get("cache_write_tokens", 0) + cache_write
 
     # Extract text from response (skip thinking blocks)
     raw = ""
@@ -1214,13 +1250,12 @@ def get_metric_mappings(
     if mappings is None:
         # Retry once - Claude sometimes returns analysis text instead of JSON
         log.warning("Claude returned non-JSON response - retrying with stricter prompt...")
-        retry_prompt = (
-            prompt
-            + "\n\nIMPORTANT: You MUST respond with ONLY the JSON object. "
+        retry_suffix = (
+            "\n\nIMPORTANT: You MUST respond with ONLY the JSON object. "
             "Do NOT include any analysis, explanation, or reasoning. "
             "Start your response with { and end with }."
         )
-        api_kwargs["messages"] = [{"role": "user", "content": retry_prompt}]
+        api_kwargs["messages"] = [{"role": "user", "content": user_text + retry_suffix}]
         if telemetry is not None:
             telemetry["mapping_api_calls"] = telemetry.get("mapping_api_calls", 0) + 1
         retry_msg = _create_message(client, **api_kwargs)
@@ -1355,41 +1390,44 @@ def _call_validation_api(
     Single validation API call. Returns the parsed JSON result from Claude.
     Extracted as a helper so validate_mappings can batch multiple calls.
     Uses validation_model (defaults to same as mapping model if not set).
+
+    Uses prompt caching: memo content + proforma + instructions go in a
+    cached system message, while only the mappings JSON varies per batch.
     """
     model = cfg["claude"].get("validation_model", cfg["claude"]["model"])
     max_tokens = cfg["claude"]["max_tokens"]
     temperature = cfg["claude"]["temperature"]
     use_thinking = "opus" in model.lower()
 
-    if property_name:
-        pn_section = (
-            f"\n## Property Name - CRITICAL TARGETING CHECK\n"
-            f"The proforma data corresponds to **\"{property_name}\"** in the memo. "
-            f"The proforma's own internal name may differ (old/rebranded name).\n\n"
-            f"Verify that:\n"
-            f"- All updates target the \"{property_name}\" column/row, NOT other "
-            f"  properties' columns/rows.\n"
-            f"- The name \"{property_name}\" is NOT renamed to the proforma's "
-            f"  internal name. Flag any mapping that renames it as REJECT.\n"
-            f"- If any mapping targets a different property's column/row, REJECT it.\n"
-        )
-    else:
-        pn_section = ""
+    pn_section = _property_name_section(property_name, "validation")
 
-    prompt = VALIDATION_PROMPT.format(
-        mappings_json=json.dumps(indexed_mappings, indent=2),
+    # Split: static context (instructions + memo + proforma) cached,
+    # varying part (mappings JSON) in user message.
+    system_text = VALIDATION_PROMPT.format(
+        mappings_json="(see user message below)",
         memo_content=memo_content,
         proforma_data=proforma_data,
         property_name_section=pn_section,
     )
+    user_text = (
+        "## Proposed Changes (JSON, each entry has an \"idx\" field)\n"
+        + json.dumps(indexed_mappings, indent=2)
+    )
 
+    total_chars = len(system_text) + len(user_text)
     log.info("Calling Claude API for validation (model=%s, thinking=%s, "
-             "prompt=%d chars)...", model, use_thinking, len(prompt))
+             "prompt=%d chars, cached_prefix=%d chars)...",
+             model, use_thinking, total_chars, len(system_text))
 
     api_kwargs = dict(
         model=model,
         max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}],
+        system=[{
+            "type": "text",
+            "text": system_text,
+            "cache_control": {"type": "ephemeral"},
+        }],
+        messages=[{"role": "user", "content": user_text}],
     )
     if use_thinking:
         api_kwargs["thinking"] = {"type": "adaptive"}
@@ -1399,6 +1437,16 @@ def _call_validation_api(
     if telemetry is not None:
         telemetry["validation_api_calls"] = telemetry.get("validation_api_calls", 0) + 1
     message = _create_message(client, **api_kwargs)
+
+    # Log cache performance
+    usage = message.usage
+    cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    log.info("Token usage: input=%d, cache_read=%d, cache_write=%d, output=%d",
+             usage.input_tokens, cache_read, cache_write, usage.output_tokens)
+    if telemetry is not None:
+        telemetry["cache_read_tokens"] = telemetry.get("cache_read_tokens", 0) + cache_read
+        telemetry["cache_write_tokens"] = telemetry.get("cache_write_tokens", 0) + cache_write
 
     # Extract text from response (skip thinking blocks)
     raw = ""
@@ -2895,6 +2943,10 @@ def write_change_log(output_dir: str, all_changes: list, mappings: dict,
             f.write(f"- Duration (sec): {run_metadata.get('run_duration_sec', 0):.2f}\n")
             f.write(f"- Mapping API calls: {run_metadata.get('mapping_api_calls', 0)}\n")
             f.write(f"- Validation API calls: {run_metadata.get('validation_api_calls', 0)}\n")
+            cache_read = run_metadata.get("cache_read_tokens", 0)
+            cache_write = run_metadata.get("cache_write_tokens", 0)
+            if cache_read or cache_write:
+                f.write(f"- Prompt cache: {cache_read:,} tokens read, {cache_write:,} tokens written\n")
             if steps:
                 f.write("- Step timings (sec):\n")
                 for k, v in steps.items():
