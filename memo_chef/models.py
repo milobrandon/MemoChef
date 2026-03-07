@@ -21,6 +21,7 @@ class RunRequest(BaseModel):
     config_path: str
     run_id: str
     property_name: str | None = None
+    property_rename_to: str | None = None
     schedule_path: str | None = None
     market_data_path: str | None = None
     dry_run: bool = False
@@ -58,6 +59,7 @@ class RunManifest(BaseModel):
     memo_name: str
     proforma_name: str
     property_name: str | None = None
+    property_rename_to: str | None = None
     dry_run: bool = False
     skip_validation: bool = False
     config_profile: str | None = None

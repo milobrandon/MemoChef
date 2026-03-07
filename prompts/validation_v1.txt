@@ -76,9 +76,12 @@ Additional domain rules to enforce:
 - **Dev budget "% of Total"** must be recalculated when dollar amounts
   change. Flag as missed if a dollar amount changed but the corresponding
   percentage was not updated.
-- For **row_inserts** in side-by-side comp tables, verify ONLY the subject
-  property column is populated - all other columns must be empty strings.
-  Reject any row_insert that fills comparable property columns.
+- **Reject ALL row_inserts targeting side-by-side comp tables.** Inserting
+  rows into a multi-property comparison table corrupts the alignment of all
+  other property columns. Only row_inserts for standalone unit mix tables
+  (single-property tables) are acceptable.
+- For row_inserts in unit mix tables, verify ONLY the subject property
+  column is populated - all other columns must be empty strings.
 - **Schedule dates** must match the schedule data exactly. If a date was updated
   from the schedule, verify the correct task was referenced. Date formatting must
   match the memo's existing style (Q2 2027 vs April 2027 vs 4/5/2027). Flag as

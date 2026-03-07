@@ -114,15 +114,18 @@ metric in the memo that should be updated with new values from the proforma.
     untrended average rent per bed. Do NOT skip this metric.
 
 17. **Missing unit types - row_inserts** - When the proforma has unit types
-    (e.g. Studio, 2BR/1BA) that do NOT exist in the memo's unit mix table
-    or side-by-side comp table, emit a `row_inserts` entry to add them.
+    (e.g. Studio, 2BR/1BA) that do NOT exist in the memo's unit mix table,
+    emit a `row_inserts` entry to add them.
     - **Unit mix table:** One row per missing type. Populate ALL columns
       from the proforma. Place after the most similar existing row
       (e.g. "Studio" before "1BR", "2BR/1BA" after "1BR").
-    - **Side-by-side comp table:** Insert a 3-row section (unit size,
-      # of beds, market rent) for each missing type. Populate ONLY the
-      subject property column; leave all other columns EMPTY (comps
-      have no data for these types). Place after the last unit section.
+    - **Side-by-side comp table: DO NOT insert rows.** These tables have
+      carefully structured sections shared across multiple properties.
+      Instead, update only the cells that already exist for the subject
+      property column.  If a proforma unit type has no matching row in the
+      comp table, SKIP it - do NOT emit a row_insert.  Inserting rows into
+      a side-by-side table breaks the alignment of all other property
+      columns and corrupts the table layout.
     - Set `insert_after_row_label` to column 0 text of the row to insert AFTER.
 
 18. **Schedule milestones and dates** - When schedule data is provided below the

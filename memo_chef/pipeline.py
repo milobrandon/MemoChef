@@ -25,6 +25,7 @@ from memo_automator import (
     extract_proforma_data,
     extract_schedule_data,
     get_metric_mappings,
+    global_property_rename,
     load_config,
     normalize_layout,
     pre_validate_mappings,
@@ -296,7 +297,58 @@ def _mapping_with_batching(
         mappings["table_updates"].extend(batch.get("table_updates", []))
         mappings["text_updates"].extend(batch.get("text_updates", []))
         mappings["row_inserts"].extend(batch.get("row_inserts", []))
+
+    # Deduplicate entries that appear in multiple chunks
+    mappings = _dedup_mappings(mappings)
     return mappings
+
+
+def _dedup_mappings(mappings: dict) -> dict:
+    """Remove duplicate mapping entries produced by overlapping chunks."""
+    seen_table: set[tuple] = set()
+    deduped_table = []
+    for upd in mappings.get("table_updates", []):
+        key = (upd.get("page"), upd.get("table_name", ""),
+               upd.get("row_label", ""), upd.get("column_index"),
+               upd.get("old_value", ""))
+        if key not in seen_table:
+            seen_table.add(key)
+            deduped_table.append(upd)
+
+    seen_text: set[tuple] = set()
+    deduped_text = []
+    for upd in mappings.get("text_updates", []):
+        key = (upd.get("page"), upd.get("old_text", ""))
+        if key not in seen_text:
+            seen_text.add(key)
+            deduped_text.append(upd)
+
+    seen_row: set[tuple] = set()
+    deduped_row = []
+    for ins in mappings.get("row_inserts", []):
+        key = (ins.get("page"), ins.get("table_name", ""),
+               ins.get("insert_after_row_label", ""),
+               tuple(ins.get("cells", [])))
+        if key not in seen_row:
+            seen_row.add(key)
+            deduped_row.append(ins)
+
+    n_removed = (
+        len(mappings.get("table_updates", [])) - len(deduped_table)
+        + len(mappings.get("text_updates", [])) - len(deduped_text)
+        + len(mappings.get("row_inserts", [])) - len(deduped_row)
+    )
+    if n_removed > 0:
+        logging.getLogger("memo_automator").info(
+            "Deduplication removed %d duplicate mapping entries", n_removed
+        )
+
+    return {
+        **mappings,
+        "table_updates": deduped_table,
+        "text_updates": deduped_text,
+        "row_inserts": deduped_row,
+    }
 
 
 def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> RunResult:
@@ -327,6 +379,24 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
         with checkpoint.stage("backup", "Creating backup copy"):
             backup_path = create_backup(request.memo_path, request.output_dir)
             checkpoint.set_output("backup_path", backup_path)
+
+        # --- Property rename (before extraction so AI sees corrected name) ---
+        effective_property_name = request.property_name
+        if (
+            request.property_name
+            and request.property_rename_to
+            and request.property_name.strip() != request.property_rename_to.strip()
+        ):
+            _emit(callback, "property_rename", "Rename property", 8)
+            with checkpoint.stage("property_rename", "Renaming property across memo"):
+                rename_count = global_property_rename(
+                    request.memo_path,
+                    request.property_name.strip(),
+                    request.property_rename_to.strip(),
+                )
+                checkpoint.set_count("property_renames", rename_count)
+            effective_property_name = request.property_rename_to.strip()
+            checkpoint.manifest.property_rename_to = effective_property_name
 
         _emit(callback, "extract_sources", "Extract source data", 12)
         with checkpoint.stage("extract_sources", "Extracting proforma, market, and schedule data"):
@@ -370,7 +440,7 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                 proforma_data,
                 memo_content,
                 cfg,
-                request.property_name,
+                effective_property_name,
                 callback,
                 checkpoint,
             )
@@ -401,7 +471,7 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                     proforma_data,
                     memo_content,
                     cfg,
-                    property_name=request.property_name,
+                    property_name=effective_property_name,
                     checkpoint=checkpoint,
                     stage="validation",
                 )

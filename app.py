@@ -99,6 +99,7 @@ def _queue_item_from_inputs(
     schedule_file,
     market_data_file,
     property_name: str,
+    property_rename_to: str = "",
     dry_run: bool,
     skip_validation: bool,
     profile_name: str | None,
@@ -115,6 +116,7 @@ def _queue_item_from_inputs(
         "market_data_name": market_data_file.name if market_data_file else None,
         "market_data_bytes": market_data_file.getvalue() if market_data_file else None,
         "property_name": property_name or None,
+        "property_rename_to": property_rename_to or None,
         "dry_run": dry_run,
         "skip_validation": skip_validation,
         "profile_name": profile_name or "",
@@ -199,6 +201,7 @@ def _execute_job(
         config_override_path=_config_override_path(job.get("config_profile_name")),
         run_id=run_id,
         property_name=job.get("property_name"),
+        property_rename_to=job.get("property_rename_to"),
         dry_run=job.get("dry_run", False),
         skip_validation=job.get("skip_validation", False),
     )
@@ -393,11 +396,19 @@ def render_new_run_tab() -> None:
     schedule_file = upload_cols[2].file_uploader("Schedule", type=["mpp"], key="schedule_upload")
     market_data_file = upload_cols[3].file_uploader("Market data", type=["xlsx", "xlsm"], key="market_upload")
 
-    property_name = st.text_input(
-        "Property name override",
+    rename_cols = st.columns(2)
+    property_name = rename_cols[0].text_input(
+        "Property name (as it appears in memo)",
         value=profile.get("Property", ""),
-        placeholder="Optional alias used inside the proforma or memo",
-        help="Use this when the property has been renamed or appears differently across sources.",
+        placeholder="e.g. VERVE Lexington",
+        help="The property name currently used in the memo deck. Used for targeting updates.",
+    )
+    property_rename_to = rename_cols[1].text_input(
+        "Rename to (if different in proforma)",
+        value=profile.get("Rename To", ""),
+        placeholder="e.g. VERVE Pittsburgh",
+        help="If the proforma uses a different property name, enter it here. "
+             "All occurrences will be renamed before the AI pass.",
     )
 
     config_profiles = _list_config_profiles()
@@ -453,6 +464,7 @@ def render_new_run_tab() -> None:
                 skip_validation,
                 profile_notes or None,
                 config_profile=config_profile_name or None,
+                property_rename_to=property_rename_to or None,
             )
             st.success(f"Saved profile `{save_profile_name.strip()}`.")
             st.rerun()
@@ -471,6 +483,7 @@ def render_new_run_tab() -> None:
             schedule_file=schedule_file,
             market_data_file=market_data_file,
             property_name=property_name,
+            property_rename_to=property_rename_to,
             dry_run=dry_run,
             skip_validation=skip_validation,
             profile_name=selected_profile or save_profile_name.strip() or None,
@@ -489,6 +502,7 @@ def render_new_run_tab() -> None:
             schedule_file=schedule_file,
             market_data_file=market_data_file,
             property_name=property_name,
+            property_rename_to=property_rename_to,
             dry_run=dry_run,
             skip_validation=skip_validation,
             profile_name=selected_profile or save_profile_name.strip() or None,

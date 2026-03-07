@@ -1108,6 +1108,14 @@ def _parse_json_response(raw: str) -> dict | None:
     return None
 
 
+def _create_message(client: anthropic.Anthropic, **api_kwargs):
+    """Call the Claude API using streaming to avoid the SDK timeout for large
+    max_tokens values.  Returns a full Message object identical to what
+    ``client.messages.create()`` would return."""
+    with client.messages.stream(**api_kwargs) as stream:
+        return stream.get_final_message()
+
+
 def get_metric_mappings(
     client: anthropic.Anthropic,
     proforma_data: str,
@@ -1172,7 +1180,7 @@ def get_metric_mappings(
 
     if telemetry is not None:
         telemetry["mapping_api_calls"] = telemetry.get("mapping_api_calls", 0) + 1
-    message = client.messages.create(**api_kwargs)
+    message = _create_message(client, **api_kwargs)
 
     # Extract text from response (skip thinking blocks)
     raw = ""
@@ -1215,7 +1223,7 @@ def get_metric_mappings(
         api_kwargs["messages"] = [{"role": "user", "content": retry_prompt}]
         if telemetry is not None:
             telemetry["mapping_api_calls"] = telemetry.get("mapping_api_calls", 0) + 1
-        retry_msg = client.messages.create(**api_kwargs)
+        retry_msg = _create_message(client, **api_kwargs)
         retry_raw = ""
         for block in retry_msg.content:
             if block.type == "text":
@@ -1390,7 +1398,7 @@ def _call_validation_api(
 
     if telemetry is not None:
         telemetry["validation_api_calls"] = telemetry.get("validation_api_calls", 0) + 1
-    message = client.messages.create(**api_kwargs)
+    message = _create_message(client, **api_kwargs)
 
     # Extract text from response (skip thinking blocks)
     raw = ""
@@ -1779,9 +1787,22 @@ def _replace_in_para(para, old_text: str, new_text: str) -> bool:
 
 
 def _replace_in_cell(cell, old_text: str, new_text: str) -> bool:
-    """Replace old_text with new_text inside a table cell, preserving runs."""
+    """Replace old_text with new_text inside a table cell, preserving runs.
+    Falls back to Unicode-normalized matching if exact match fails."""
+    # Pass 1: exact match
     for para in cell.text_frame.paragraphs:
         if _replace_in_para(para, old_text, new_text):
+            return True
+    # Pass 2: Unicode-normalized match (non-breaking spaces, smart quotes, etc.)
+    norm_old = _normalize_unicode(old_text)
+    for para in cell.text_frame.paragraphs:
+        para_text = para.text
+        norm_para = _normalize_unicode(para_text)
+        if norm_old not in norm_para:
+            continue
+        idx = norm_para.find(norm_old)
+        actual_old = para_text[idx:idx + len(norm_old)]
+        if _replace_in_para(para, actual_old, new_text):
             return True
     return False
 
@@ -1847,8 +1868,12 @@ def _strip_to_core(text: str) -> str:
 def _loose_match(expected: str, actual: str) -> bool:
     """
     True when expected roughly matches actual (exact or containment after
-    whitespace/case normalization), or when both start with the same
-    bedroom count (e.g. '1BR/1BA' matches '1 BR').
+    whitespace/case normalization), or when both have the same full bedroom
+    label (e.g. '1BR/1BA' matches '1 BR / 1 BA').
+
+    The previous implementation matched on leading digit only ('1br' == '1br'),
+    which caused '1BR/1BA' to match '1BR/2BA'.  Now requires the full
+    alphanumeric core to match.
     """
     e = _normalize_for_match(expected)
     a = _normalize_for_match(actual)
@@ -1858,12 +1883,11 @@ def _loose_match(expected: str, actual: str) -> bool:
         return False
     if e == a or e in a or a in e:
         return True
-    # Bedroom-label fallback: match on leading digit + "br"
+    # Bedroom-label fallback: require FULL alphanumeric core to match
+    # e.g. '1br1ba' == '1br1ba', NOT '1br1ba' == '1br2ba'
     ec = _strip_to_core(expected)
     ac = _strip_to_core(actual)
-    br_pat = re.match(r"^(\d+)br", ec)
-    br_pat2 = re.match(r"^(\d+)br", ac)
-    if br_pat and br_pat2 and br_pat.group(1) == br_pat2.group(1):
+    if ec and ac and ec == ac:
         return True
     return False
 
@@ -1874,17 +1898,21 @@ def _find_table_target(slide, table_name: str, row_label: str,
     Find the best target cell for a table update.
     Preference order:
     1) Tables matching table_name + rows matching row_label + cell has old_value
-    2) Any table + rows matching row_label + cell has old_value
-    3) Any table + ANY row where cell at col_idx has old_value (fallback)
-    4) Any table + ANY row + ANY column has old_value (last resort)
+    1b) Same as 1 but with Unicode-normalized old_value
+    2) Any table + row_label match + old_value at col_idx (ignore table_name)
+    3) Any table + old_value at col_idx in any row (ignore row_label) — WARNING logged
+
+    Pass 3 (any cell, any column) has been **removed** because it silently
+    matches the wrong table/row when common values (e.g. "$1,200") appear in
+    multiple places.
 
     Returns:
-      (shape, row_label_actual, cell) on success, or
-      (None, row_label_actual, cell_text) for diagnostics.
+      (shape, row_label_actual, cell, match_pass) on success, or
+      (None, row_label_actual, cell_text, 0) for diagnostics.
     """
     tables = [s for s in slide.shapes if s.has_table]
     if not tables:
-        return None, None, None
+        return None, None, None, 0
 
     if table_name:
         preferred = [s for s in tables if _loose_match(table_name, s.name)]
@@ -1896,7 +1924,9 @@ def _find_table_target(slide, table_name: str, row_label: str,
     diagnostic_row = None
     diagnostic_cell = None
 
-    # Pass 1: row_label match + old_value at col_idx
+    norm_old = _normalize_unicode(old_value)
+
+    # Pass 1: row_label match + old_value at col_idx (exact, then Unicode-normalized)
     for group in ordered_groups:
         for shape in group:
             for row in shape.table.rows:
@@ -1909,7 +1939,11 @@ def _find_table_target(slide, table_name: str, row_label: str,
                 cell = row.cells[col_idx]
                 cell_text = cell.text or ""
                 if old_value in cell_text:
-                    return shape, row_head, cell
+                    return shape, row_head, cell, 1
+
+                # Unicode-normalized fallback within Pass 1
+                if norm_old != old_value and norm_old in _normalize_unicode(cell_text):
+                    return shape, row_head, cell, 1
 
                 if diagnostic_row is None:
                     diagnostic_row = row_head
@@ -1923,27 +1957,22 @@ def _find_table_target(slide, table_name: str, row_label: str,
                     continue
                 cell = row.cells[col_idx]
                 cell_text = cell.text or ""
-                if old_value in cell_text:
+                matched = old_value in cell_text
+                if not matched and norm_old != old_value:
+                    matched = norm_old in _normalize_unicode(cell_text)
+                if matched:
                     row_head = row.cells[0].text.strip() if row.cells else ""
-                    log.debug("Fallback match (ignoring row_label '%s'): "
-                              "found '%s' at row '%s' col %d",
-                              row_label, old_value, row_head, col_idx)
-                    return shape, row_head, cell
+                    log.warning(
+                        "Table match degraded to Pass 2 (row_label mismatch): "
+                        "expected row '%s', matched row '%s' col %d for '%s'",
+                        row_label, row_head, col_idx, old_value,
+                    )
+                    return shape, row_head, cell, 2
 
-    # Pass 3: ignore row_label AND col_idx, find old_value in any cell
-    for group in ordered_groups:
-        for shape in group:
-            for row in shape.table.rows:
-                for ci, cell in enumerate(row.cells):
-                    cell_text = cell.text or ""
-                    if old_value in cell_text:
-                        row_head = row.cells[0].text.strip() if row.cells else ""
-                        log.debug("Last-resort match: found '%s' at row '%s' "
-                                  "col %d (requested col %d)",
-                                  old_value, row_head, ci, col_idx)
-                        return shape, row_head, cell
+    # Pass 3 REMOVED — too dangerous. Previously matched any cell in any
+    # column, causing silent wrong-cell updates for common values.
 
-    return None, diagnostic_row, diagnostic_cell
+    return None, diagnostic_row, diagnostic_cell, 0
 
 
 def _find_row_by_label(table, row_label: str) -> int | None:
@@ -2001,6 +2030,61 @@ def _add_table_row(table, reference_row_idx: int, cell_values: list):
     ref_tr.addnext(new_tr)
 
 
+def global_property_rename(memo_path: str, old_name: str, new_name: str) -> int:
+    """
+    Replace ALL occurrences of *old_name* with *new_name* across every slide
+    in the PPTX (text frames **and** table cells).  This is a mechanical
+    find-replace that runs **before** the AI mapping/validation passes so
+    that Claude sees the already-corrected property name.
+
+    Returns the number of replacements made.
+    """
+    prs = _load_presentation(memo_path)
+    count = 0
+
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            # --- Text frames (titles, narrative, text boxes) ---
+            if shape.has_text_frame:
+                for para in shape.text_frame.paragraphs:
+                    if _replace_in_para(para, old_name, new_name):
+                        count += 1
+                    else:
+                        # Try Unicode-normalized match
+                        norm_old = _normalize_unicode(old_name)
+                        norm_para = _normalize_unicode(para.text)
+                        if norm_old in norm_para:
+                            idx = norm_para.find(norm_old)
+                            actual_old = para.text[idx:idx + len(norm_old)]
+                            if _replace_in_para(para, actual_old, new_name):
+                                count += 1
+
+            # --- Table cells ---
+            if shape.has_table:
+                for row in shape.table.rows:
+                    for cell in row.cells:
+                        for para in cell.text_frame.paragraphs:
+                            if _replace_in_para(para, old_name, new_name):
+                                count += 1
+                            else:
+                                norm_old = _normalize_unicode(old_name)
+                                norm_para = _normalize_unicode(para.text)
+                                if norm_old in norm_para:
+                                    idx = norm_para.find(norm_old)
+                                    actual_old = para.text[idx:idx + len(norm_old)]
+                                    if _replace_in_para(para, actual_old, new_name):
+                                        count += 1
+
+    if count > 0:
+        prs.save(memo_path)
+        log.info("Global property rename: '%s' -> '%s' (%d replacements)",
+                 old_name, new_name, count)
+    else:
+        log.warning("Global property rename: '%s' not found in memo", old_name)
+
+    return count
+
+
 def apply_updates(memo_path: str, mappings: dict, dry_run: bool = False) -> list:
     """
     Open the memo, apply every table_update and text_update from the
@@ -2024,7 +2108,7 @@ def apply_updates(memo_path: str, mappings: dict, dry_run: bool = False) -> list
         except IndexError:
             log.warning("Table update SKIPPED: page %d does not exist", page)
             continue
-        shape, matched_row_label, cell_or_text = _find_table_target(
+        shape, matched_row_label, cell_or_text, match_pass = _find_table_target(
             slide, tbl_name, row_label, col_idx, old_val
         )
         if shape is not None:
@@ -2032,11 +2116,16 @@ def apply_updates(memo_path: str, mappings: dict, dry_run: bool = False) -> list
                 _replace_in_cell(cell_or_text, old_val, new_val)
             location_table = shape.name or tbl_name or "<unnamed table>"
             location_row = matched_row_label or row_label or "<unknown row>"
-            changes.append({
+            change_record = {
                 "page": page, "type": "table",
                 "location": f"{location_table} / {location_row} / col {col_idx}",
                 "old": old_val, "new": new_val, "source": source,
-            })
+            }
+            if match_pass >= 2:
+                change_record["match_quality"] = f"degraded_pass_{match_pass}"
+                change_record["attempted_row"] = row_label
+                change_record["actual_row"] = matched_row_label
+            changes.append(change_record)
             continue
 
         if matched_row_label is not None:
@@ -2094,13 +2183,27 @@ def apply_updates(memo_path: str, mappings: dict, dry_run: bool = False) -> list
             log.warning("Text update NOT FOUND: page %d, '%s' -> '%s'",
                         page, old_txt, new_txt)
 
-    # --- Row inserts ---
+    # --- Row inserts (capped per table to prevent catastrophic insertions) ---
+    _MAX_ROW_INSERTS_PER_TABLE = 6
+    _row_insert_counts: dict[tuple[int, str], int] = {}  # (page, table_name) -> count
+
     for ins in mappings.get("row_inserts", []):
         page = ins["page"]
         tbl_name = ins.get("table_name", "")
         ref_label = ins.get("insert_after_row_label", "")
         cell_values = ins.get("cells", [])
         source = ins.get("source", "")
+
+        # Guard: cap row_inserts per table to prevent table structure corruption
+        table_key = (page, tbl_name)
+        prior = _row_insert_counts.get(table_key, 0)
+        if prior >= _MAX_ROW_INSERTS_PER_TABLE:
+            log.warning(
+                "Row insert SKIPPED (cap %d reached): page %d, table '%s', ref '%s'",
+                _MAX_ROW_INSERTS_PER_TABLE, page, tbl_name, ref_label,
+            )
+            continue
+        _row_insert_counts[table_key] = prior + 1
 
         try:
             slide = prs.slides[page - 1]
@@ -2399,17 +2502,24 @@ def apply_branding(memo_path: str, theme_path: str, cfg: dict) -> int:
                                       heading_font, body_font, color_threshold)
                         runs_reformatted += 1
 
-            # Process table cells
+            # Process table cells (conservative: font only, preserve alignment & color)
             if shape.has_table:
                 table = shape.table
                 for row_idx, row in enumerate(table.rows):
                     for cell in row.cells:
-                        is_header = (row_idx == 0)
                         for para in cell.text_frame.paragraphs:
                             for run in para.runs:
-                                _reformat_run(run, is_header, heading_threshold,
-                                              heading_font, body_font,
-                                              color_threshold)
+                                # Determine heading from existing bold state or row 0
+                                is_cell_heading = (
+                                    row_idx == 0
+                                    or run.font.bold is True
+                                )
+                                _reformat_run(
+                                    run, is_cell_heading, heading_threshold,
+                                    heading_font, body_font,
+                                    color_threshold,
+                                    skip_color=True,  # tables use deliberate colors
+                                )
                                 runs_reformatted += 1
 
     prs.save(memo_path)
@@ -2418,7 +2528,8 @@ def apply_branding(memo_path: str, theme_path: str, cfg: dict) -> int:
 
 
 def _reformat_run(run, is_heading_context: bool, size_threshold: int,
-                  heading_font: str, body_font: str, color_threshold: float):
+                  heading_font: str, body_font: str, color_threshold: float,
+                  skip_color: bool = False):
     """Reformat a single text run's font and color, preserving bold/italic."""
     # Snapshot existing formatting BEFORE changes
     was_bold = run.font.bold
@@ -2443,7 +2554,10 @@ def _reformat_run(run, is_heading_context: bool, size_threshold: int,
     if was_italic is not None:
         run.font.italic = was_italic
 
-    # Remap color if it's a hard-coded RGB
+    # Remap color if it's a hard-coded RGB (skip for table cells to
+    # preserve deliberate color coding in comp set / data tables)
+    if skip_color:
+        return
     try:
         color = run.font.color
         if color.type is not None and color.rgb is not None:
