@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+import uuid
 
 import psycopg2
 import streamlit as st
@@ -148,6 +149,22 @@ def get_db_conn():
             "  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
             "  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()"
             ")"
+        )
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS memo_chef_invitations ("
+            "  id TEXT PRIMARY KEY,"
+            "  email TEXT NOT NULL,"
+            "  role TEXT NOT NULL DEFAULT 'user',"
+            "  credits_per_week INTEGER NOT NULL DEFAULT 5,"
+            "  status TEXT NOT NULL DEFAULT 'pending',"
+            "  invited_by TEXT NOT NULL,"
+            "  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
+            "  accepted_at TIMESTAMPTZ,"
+            "  expires_at TIMESTAMPTZ NOT NULL"
+            ")"
+        )
+        cur.execute(
+            "ALTER TABLE memo_chef_users ADD COLUMN IF NOT EXISTS email TEXT"
         )
     return conn
 
@@ -695,3 +712,158 @@ def get_run_artifact_paths(run_id: str) -> dict[str, str]:
         if candidates:
             paths[name] = str(candidates[0])
     return paths
+
+
+# ---------------------------------------------------------------------------
+# Invitations
+# ---------------------------------------------------------------------------
+
+def create_invitation(
+    email: str,
+    role: str,
+    credits_per_week: int,
+    invited_by: str,
+    expiry_hours: int = 48,
+) -> str:
+    """Create an invitation and return the token (UUID4)."""
+    token = str(uuid.uuid4())
+    expires_at = datetime.now() + timedelta(hours=expiry_hours)
+    with db_cursor() as cur:
+        cur.execute(
+            "INSERT INTO memo_chef_invitations "
+            "(id, email, role, credits_per_week, invited_by, expires_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (token, email.strip().lower(), role, credits_per_week, invited_by, expires_at),
+        )
+    return token
+
+
+def get_invitation(token: str) -> dict | None:
+    """Return invitation dict or None if not found."""
+    with db_cursor() as cur:
+        cur.execute(
+            "SELECT id, email, role, credits_per_week, status, invited_by, "
+            "created_at, accepted_at, expires_at "
+            "FROM memo_chef_invitations WHERE id = %s",
+            (token,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return {
+        "id": row[0],
+        "email": row[1],
+        "role": row[2],
+        "credits_per_week": row[3],
+        "status": row[4],
+        "invited_by": row[5],
+        "created_at": row[6],
+        "accepted_at": row[7],
+        "expires_at": row[8],
+    }
+
+
+def accept_invitation(token: str, username: str, password: str) -> bool:
+    """Accept an invitation: create user account and mark token as used.
+
+    Returns True on success, False if token is invalid/expired/already used
+    or username is taken.
+    """
+    invite = get_invitation(token)
+    if invite is None or invite["status"] != "pending":
+        return False
+    if invite["expires_at"] < datetime.now(invite["expires_at"].tzinfo):
+        with db_cursor() as cur:
+            cur.execute(
+                "UPDATE memo_chef_invitations SET status = 'expired' WHERE id = %s",
+                (token,),
+            )
+        return False
+
+    password_hash = hash_password(password)
+    with db_cursor() as cur:
+        cur.execute(
+            "INSERT INTO memo_chef_users (username, password_hash, role, credits_per_week, email) "
+            "VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING RETURNING username",
+            (username, password_hash, invite["role"], invite["credits_per_week"], invite["email"]),
+        )
+        if cur.fetchone() is None:
+            return False
+        cur.execute(
+            "UPDATE memo_chef_invitations SET status = 'accepted', accepted_at = now() "
+            "WHERE id = %s",
+            (token,),
+        )
+    return True
+
+
+def get_invitations() -> list[dict]:
+    """Return all invitations, most recent first."""
+    with db_cursor() as cur:
+        cur.execute(
+            "SELECT id, email, role, credits_per_week, status, invited_by, "
+            "created_at, accepted_at, expires_at "
+            "FROM memo_chef_invitations ORDER BY created_at DESC"
+        )
+        rows = cur.fetchall()
+    return [
+        {
+            "id": row[0],
+            "email": row[1],
+            "role": row[2],
+            "credits_per_week": row[3],
+            "status": row[4],
+            "invited_by": row[5],
+            "created_at": row[6],
+            "accepted_at": row[7],
+            "expires_at": row[8],
+        }
+        for row in rows
+    ]
+
+
+def send_invitation_email(email: str, token: str, app_url: str | None = None) -> bool:
+    """Send an invitation email via Resend. Returns True on success."""
+    import resend
+
+    try:
+        api_key = st.secrets["RESEND_API_KEY"]
+    except (KeyError, FileNotFoundError):
+        st.error("RESEND_API_KEY not configured in secrets.")
+        return False
+
+    resend.api_key = api_key
+
+    if not app_url:
+        app_url = st.secrets.get("APP_URL", "http://localhost:8501")
+    invite_url = f"{app_url}?invite={token}"
+
+    try:
+        from_addr = st.secrets.get("RESEND_FROM", "Memo Chef <onboarding@resend.dev>")
+    except (KeyError, FileNotFoundError):
+        from_addr = "Memo Chef <onboarding@resend.dev>"
+
+    html_body = f"""\
+<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 520px; margin: 0 auto; padding: 32px;">
+  <h2 style="color: #1a1a2e; margin-bottom: 8px;">You're invited to Memo Chef</h2>
+  <p style="color: #555; line-height: 1.6;">
+    You've been invited to join <strong>Memo Chef</strong> by Subtext.
+    Click the button below to create your account.
+  </p>
+  <a href="{invite_url}"
+     style="display: inline-block; background: #6c63ff; color: #fff; text-decoration: none;
+            padding: 12px 28px; border-radius: 6px; font-weight: 600; margin: 24px 0;">
+    Create Your Account
+  </a>
+  <p style="color: #999; font-size: 13px; margin-top: 24px;">
+    This link expires in 48 hours. If you didn't expect this email, you can safely ignore it.
+  </p>
+</div>"""
+
+    resend.Emails.send({
+        "from": from_addr,
+        "to": [email],
+        "subject": "You're invited to Memo Chef",
+        "html": html_body,
+    })
+    return True

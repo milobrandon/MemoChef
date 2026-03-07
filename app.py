@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import glob
 import os
 import time
@@ -12,13 +13,17 @@ import streamlit as st
 
 from app_helpers import should_disable_fire_button, verify_password
 from app_services import (
+    accept_invitation,
     add_user,
     consume_credit,
+    create_invitation,
     delete_job,
     delete_user,
     enqueue_job,
     ensure_users_seeded,
     get_db_conn,
+    get_invitation,
+    get_invitations,
     get_job,
     get_job_queue,
     get_platform_health,
@@ -32,6 +37,7 @@ from app_services import (
     record_run,
     reset_user_credits,
     save_profile,
+    send_invitation_email,
     update_job_status,
     update_run_approval,
     update_user,
@@ -47,6 +53,47 @@ try:
     ensure_users_seeded()
 except Exception:
     pass
+
+# --- Invitation sign-up page (no auth required) ---
+invite_token = st.query_params.get("invite")
+if invite_token:
+    render_hero()
+    invite = get_invitation(invite_token)
+    if invite is None:
+        st.error("Invalid invitation link.")
+        st.stop()
+    if invite["status"] == "accepted":
+        st.info("This invitation has already been used. Please sign in.")
+        st.stop()
+    if invite["status"] == "expired" or invite["expires_at"] < datetime.now(invite["expires_at"].tzinfo):
+        st.warning("This invitation has expired. Please contact your administrator for a new one.")
+        st.stop()
+
+    st.markdown(
+        info_card("Create your account", f"You've been invited as a **{invite['role']}** with **{invite['credits_per_week']}** weekly runs."),
+        unsafe_allow_html=True,
+    )
+    with st.form("invite_signup_form"):
+        signup_username = st.text_input("Choose a username")
+        signup_password = st.text_input("Password", type="password")
+        signup_confirm = st.text_input("Confirm password", type="password")
+        signup_submitted = st.form_submit_button("Create account", type="primary")
+    if signup_submitted:
+        if not signup_username.strip():
+            st.error("Username is required.")
+        elif len(signup_password) < 6:
+            st.error("Password must be at least 6 characters.")
+        elif signup_password != signup_confirm:
+            st.error("Passwords do not match.")
+        else:
+            if accept_invitation(invite_token, signup_username.strip(), signup_password):
+                st.success("Account created! You can now sign in.")
+                st.query_params.clear()
+                time.sleep(2)
+                st.rerun()
+            else:
+                st.error("Could not create account. The username may already be taken or the invitation has expired.")
+    st.stop()
 
 
 _CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
@@ -760,9 +807,37 @@ def render_admin_tab() -> None:
         )
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
-    admin_tabs = st.tabs(["Add user", "Edit user", "Delete user", "Reset credits", "Recent activity"])
+    admin_tabs = st.tabs(["Invite user", "Add user", "Edit user", "Delete user", "Reset credits", "Invitations", "Recent activity"])
 
     with admin_tabs[0]:
+        st.caption("Send an invitation email so a new user can create their own account.")
+        with st.form("invite_user_form"):
+            invite_email = st.text_input("Email address")
+            invite_role = st.selectbox("Role", ["user", "admin"], index=0)
+            invite_credits = st.number_input("Credits per week", min_value=1, value=5)
+            invite_submitted = st.form_submit_button("Send invitation", type="primary")
+        if invite_submitted:
+            if not invite_email.strip() or "@" not in invite_email:
+                st.error("Please enter a valid email address.")
+            else:
+                token = create_invitation(
+                    email=invite_email.strip(),
+                    role=invite_role,
+                    credits_per_week=int(invite_credits),
+                    invited_by=username,
+                )
+                if send_invitation_email(invite_email.strip(), token):
+                    st.success(f"Invitation sent to **{invite_email.strip()}**.")
+                else:
+                    try:
+                        app_url = st.secrets.get("APP_URL", "http://localhost:8501")
+                    except (KeyError, FileNotFoundError):
+                        app_url = "http://localhost:8501"
+                    st.warning(
+                        f"Email could not be sent. Share this link manually:\n\n`{app_url}?invite={token}`"
+                    )
+
+    with admin_tabs[1]:
         with st.form("add_user_form"):
             new_username = st.text_input("Username")
             new_password = st.text_input("Password", type="password")
@@ -780,7 +855,7 @@ def render_admin_tab() -> None:
                     st.rerun()
                 st.error(f"User `{new_username}` already exists.")
 
-    with admin_tabs[1]:
+    with admin_tabs[2]:
         usernames = [row["User"] for row in rows]
         selected = st.selectbox("User", usernames, index=None, placeholder="Select a user")
         if selected:
@@ -814,7 +889,7 @@ def render_admin_tab() -> None:
                     st.success(f"Updated `{selected}`.")
                     st.rerun()
 
-    with admin_tabs[2]:
+    with admin_tabs[3]:
         deletable = [row["User"] for row in rows if row["User"] != username]
         selected = st.selectbox("User to delete", deletable, index=None, placeholder="Select a user")
         if selected and st.button(f"Delete {selected}"):
@@ -822,7 +897,7 @@ def render_admin_tab() -> None:
             st.success(f"Deleted `{selected}`.")
             st.rerun()
 
-    with admin_tabs[3]:
+    with admin_tabs[4]:
         selected = st.selectbox(
             "User to reset",
             [row["User"] for row in rows],
@@ -834,7 +909,27 @@ def render_admin_tab() -> None:
             st.success(f"Credits reset for `{selected}`.")
             st.rerun()
 
-    with admin_tabs[4]:
+    with admin_tabs[5]:
+        invitations = get_invitations()
+        if not invitations:
+            st.info("No invitations sent yet.")
+        else:
+            inv_rows = []
+            for inv in invitations:
+                status = inv["status"]
+                if status == "pending" and inv["expires_at"] < datetime.now(inv["expires_at"].tzinfo):
+                    status = "expired"
+                inv_rows.append({
+                    "Email": inv["email"],
+                    "Role": inv["role"],
+                    "Credits": inv["credits_per_week"],
+                    "Status": status,
+                    "Invited by": inv["invited_by"],
+                    "Sent": inv["created_at"].strftime("%Y-%m-%d %H:%M") if inv["created_at"] else "",
+                })
+            st.dataframe(inv_rows, use_container_width=True, hide_index=True)
+
+    with admin_tabs[6]:
         try:
             runs = get_recent_runs(None, limit=30)
         except Exception as err:
