@@ -1116,6 +1116,108 @@ def _create_message(client: anthropic.Anthropic, **api_kwargs):
         return stream.get_final_message()
 
 
+def build_mapping_batch_requests(
+    proforma_data: str,
+    memo_chunks: list[str],
+    cfg: dict,
+    property_name: str = "",
+) -> list[dict]:
+    """Build a list of batch API request dicts for the Message Batches API.
+
+    Each request contains a system message (cached instructions + proforma)
+    and a user message (one memo chunk).  Returns dicts compatible with
+    ``anthropic.types.messages.batch_create_params.Request``.
+    """
+    from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
+    from anthropic.types.messages.batch_create_params import Request
+
+    model = cfg["claude"]["model"]
+    max_tokens = cfg["claude"]["max_tokens"]
+    temperature = cfg["claude"]["temperature"]
+
+    pn_section = _property_name_section(property_name, "mapping")
+    system_text = MAPPING_PROMPT.format(
+        proforma_data=proforma_data,
+        memo_content="(see user message below)",
+        property_name_section=pn_section,
+    )
+
+    requests = []
+    for i, chunk in enumerate(memo_chunks):
+        user_text = f"## Memo Content (from PowerPoint)\n{chunk}"
+        requests.append(
+            Request(
+                custom_id=f"mapping-chunk-{i}",
+                params=MessageCreateParamsNonStreaming(
+                    model=model,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    system=[{
+                        "type": "text",
+                        "text": system_text,
+                        "cache_control": {"type": "ephemeral", "ttl": "1h"},
+                    }],
+                    messages=[{"role": "user", "content": user_text}],
+                ),
+            )
+        )
+    log.info("Built %d batch requests (system_prefix=%d chars)", len(requests), len(system_text))
+    return requests
+
+
+def submit_and_poll_batch(
+    client: anthropic.Anthropic,
+    requests: list,
+    poll_interval: int = 30,
+    timeout: int = 3600,
+) -> dict[str, dict]:
+    """Submit a Message Batch, poll until done, return results keyed by custom_id.
+
+    Returns a dict mapping custom_id -> parsed JSON mappings dict.
+    Raises RuntimeError if the batch fails or times out.
+    """
+    batch = client.messages.batches.create(requests=requests)
+    batch_id = batch.id
+    log.info("Batch submitted: %s (%d requests)", batch_id, len(requests))
+
+    start = time.time()
+    while True:
+        batch = client.messages.batches.retrieve(batch_id)
+        status = batch.processing_status
+        counts = batch.request_counts
+        log.info("Batch %s: status=%s, succeeded=%d, errored=%d, expired=%d",
+                 batch_id, status, counts.succeeded, counts.errored, counts.expired)
+
+        if status == "ended":
+            break
+        if time.time() - start > timeout:
+            raise RuntimeError(f"Batch {batch_id} timed out after {timeout}s")
+        time.sleep(poll_interval)
+
+    # Collect results
+    results = {}
+    for result in client.messages.batches.results(batch_id):
+        cid = result.custom_id
+        if result.result.type == "succeeded":
+            message = result.result.message
+            raw = ""
+            for block in message.content:
+                if block.type == "text":
+                    raw = block.text
+                    break
+            mappings = _parse_json_response(raw)
+            if mappings is None:
+                log.warning("Batch result %s: unparseable response", cid)
+                mappings = {"table_updates": [], "text_updates": [], "row_inserts": []}
+            results[cid] = mappings
+        else:
+            log.warning("Batch result %s: %s", cid, result.result.type)
+            results[cid] = {"table_updates": [], "text_updates": [], "row_inserts": []}
+
+    log.info("Batch %s complete: %d results collected", batch_id, len(results))
+    return results
+
+
 def _property_name_section(property_name: str, purpose: str = "mapping") -> str:
     """Build the property-name targeting section shared by mapping & validation."""
     if not property_name:

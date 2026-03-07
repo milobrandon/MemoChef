@@ -18,6 +18,7 @@ from memo_automator import (
     _is_api_error,
     apply_branding,
     apply_updates,
+    build_mapping_batch_requests,
     chunk_memo_by_pages,
     create_backup,
     extract_market_data,
@@ -29,6 +30,7 @@ from memo_automator import (
     load_config,
     normalize_layout,
     pre_validate_mappings,
+    submit_and_poll_batch,
     validate_mappings,
     write_change_log,
 )
@@ -351,6 +353,44 @@ def _dedup_mappings(mappings: dict) -> dict:
     }
 
 
+def _mapping_with_batch_api(
+    client,
+    proforma_data: str,
+    memo_content: str,
+    cfg: dict,
+    property_name: str | None,
+    callback: StageCallback,
+    checkpoint: CheckpointManager,
+) -> dict:
+    """Submit all mapping chunks as a single Message Batch (50% cost).
+
+    All chunks are processed in parallel by Anthropic's batch infrastructure.
+    Typically completes within minutes, but may take up to 1 hour.
+    """
+    memo_chunks = chunk_memo_by_pages(memo_content, pages_per_chunk=3)
+    _emit(callback, "mapping", f"Building batch ({len(memo_chunks)} chunks)", 46)
+
+    requests = build_mapping_batch_requests(
+        proforma_data, memo_chunks, cfg, property_name=property_name or "",
+    )
+
+    _emit(callback, "mapping", "Batch submitted — waiting for results", 50)
+    results = submit_and_poll_batch(client, requests, poll_interval=15)
+
+    # Merge results in order
+    mappings: dict = {"table_updates": [], "text_updates": [], "row_inserts": []}
+    for i in range(len(memo_chunks)):
+        cid = f"mapping-chunk-{i}"
+        batch_result = results.get(cid, {"table_updates": [], "text_updates": [], "row_inserts": []})
+        mappings["table_updates"].extend(batch_result.get("table_updates", []))
+        mappings["text_updates"].extend(batch_result.get("text_updates", []))
+        mappings["row_inserts"].extend(batch_result.get("row_inserts", []))
+
+    mappings = _dedup_mappings(mappings)
+    checkpoint.set_count("batch_api_chunks", len(memo_chunks))
+    return mappings
+
+
 def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> RunResult:
     os.makedirs(request.output_dir, exist_ok=True)
     checkpoint = CheckpointManager(request)
@@ -435,7 +475,11 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
 
         _emit(callback, "mapping", "Generate mappings", 45)
         with checkpoint.stage("mapping", "Generating candidate updates"):
-            mappings = _mapping_with_batching(
+            mapping_fn = (
+                _mapping_with_batch_api if request.use_batch_api
+                else _mapping_with_batching
+            )
+            mappings = mapping_fn(
                 client,
                 proforma_data,
                 memo_content,

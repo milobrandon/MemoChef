@@ -26,6 +26,7 @@ class RunRequest(BaseModel):
     market_data_path: str | None = None
     dry_run: bool = False
     skip_validation: bool = False
+    use_batch_api: bool = False
     resume_from_checkpoint: bool = True
     config_override_path: str | None = None
 

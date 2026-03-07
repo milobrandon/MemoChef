@@ -104,6 +104,7 @@ def _queue_item_from_inputs(
     skip_validation: bool,
     profile_name: str | None,
     config_profile_name: str | None = None,
+    use_batch_api: bool = False,
 ) -> dict:
     return {
         "job_id": uuid.uuid4().hex,
@@ -119,6 +120,7 @@ def _queue_item_from_inputs(
         "property_rename_to": property_rename_to or None,
         "dry_run": dry_run,
         "skip_validation": skip_validation,
+        "use_batch_api": use_batch_api,
         "profile_name": profile_name or "",
         "config_profile_name": config_profile_name or "",
     }
@@ -204,6 +206,7 @@ def _execute_job(
         property_rename_to=job.get("property_rename_to"),
         dry_run=job.get("dry_run", False),
         skip_validation=job.get("skip_validation", False),
+        use_batch_api=job.get("use_batch_api", False),
     )
 
     try:
@@ -422,7 +425,7 @@ def render_new_run_tab() -> None:
         help="Override proforma tabs, model, or other settings for this property type.",
     )
 
-    pref_cols = st.columns(2)
+    pref_cols = st.columns(3)
     with pref_cols[0]:
         dry_run = st.checkbox(
             "Preview only",
@@ -434,6 +437,13 @@ def render_new_run_tab() -> None:
             "Skip AI validation",
             value=bool(profile.get("Skip QA", False)),
             help="Faster, but less safe. Recommended only for trusted dry runs.",
+        )
+    with pref_cols[2]:
+        use_batch_api = st.checkbox(
+            "Batch mode (50% off)",
+            value=False,
+            help="Submits all mapping chunks to the Anthropic Batch API at 50% cost. "
+                 "Results typically return within minutes but may take up to 1 hour.",
         )
 
     review_cols = st.columns(4)
@@ -488,6 +498,7 @@ def render_new_run_tab() -> None:
             skip_validation=skip_validation,
             profile_name=selected_profile or save_profile_name.strip() or None,
             config_profile_name=config_profile_name or None,
+            use_batch_api=use_batch_api,
         )
         _execute_job(job=job, username=username, credits_per_week=credits_per_week)
 
@@ -507,6 +518,7 @@ def render_new_run_tab() -> None:
             skip_validation=skip_validation,
             profile_name=selected_profile or save_profile_name.strip() or None,
             config_profile_name=config_profile_name or None,
+            use_batch_api=use_batch_api,
         )
         enqueue_job(username, job)
         st.success(f"Queued `{job['memo_name']}`.")
