@@ -9,6 +9,10 @@
 ## 0. Recent Progress
 
 ### 2026-03-07
+- **Phase 3: Slide insertion** — supplemental data extraction (PDF/URL/Excel/CSV), AI-driven slide content analysis, template cloning or from-scratch generation, automatic insertion at contextually appropriate position.
+- **Phase 3: Accuracy metrics** — weighted composite confidence score (0-100) from coverage, acceptance, correction quality, match quality, miss rate. Persisted to DB and displayed in run history.
+- **Phase 3: Enhanced run history** — confidence score, slides inserted, accuracy breakdown expander in detail view. New DB columns for metrics storage.
+- **Phase 3: Supplemental data UI** — file uploader (PDF/Excel/CSV) + URL input + optional brief in Streamlit "New Run" tab.
 - Added Anthropic Message Batches API for 50% cost reduction on mapping + validation passes.
 - Added prompt caching (`cache_control: ephemeral`) — batch 1 writes ~26K tokens, batches 2+ read from cache.
 - Added tenant invitation system with Resend email + magic links (admin-initiated onboarding).
@@ -152,7 +156,10 @@ app_services.py (~810 lines â€” service layer)
 memo_chef/ (emerging package)
 â”œâ”€â”€ pipeline.py              â€” orchestrator (step sequencing)
 â”œâ”€â”€ models.py                â€” pydantic models
-â””â”€â”€ theme.py                 â€” Subtext brand theme
+â”œâ”€â”€ theme.py                 â€” Subtext brand theme
+â”œâ”€â”€ extraction.py            â€” supplemental data extraction (PDF/URL/Excel/CSV)
+â”œâ”€â”€ slide_insertion.py       â€” AI-driven slide content analysis + insertion engine
+â””â”€â”€ accuracy.py              â€” confidence scoring + accuracy metrics
 ```
 
 ### Tech Debt Register
@@ -263,7 +270,7 @@ memo_automator/
 | Deployment guide (Streamlit Cloud or internal) | â—» Pending | |
 | Team training documentation | â—» Pending | |
 
-### Phase 3: v1.5 â€” Market Data & Intelligence â—» IN PROGRESS
+### Phase 3: v1.5 â€” Market Data & Intelligence â—¼ ~80% COMPLETE
 
 **Goal:** Enrich memos with external market data; new content generation; batch processing.
 
@@ -271,10 +278,11 @@ memo_automator/
 |------|--------|-------|
 | Market data ingestion from Excel (RealPage) | â œ In progress | Reads 6 RealPage dashboard tabs; updates existing memo content |
 | Extend mapping prompt for market context | â œ In progress | Market data appended to proforma text for AI mapping |
-| Slide insertion (new content generation) | â—» Pending | Clone existing slide, replace visual, AI-generated narrative |
-| Batch processing mode (multi-memo) | â—» Pending | v1.0 stable prerequisite |
-| Run history + comparison dashboard | â—» Pending | |
-| Accuracy metrics + confidence scoring | â—» Pending | Randomized test harness is a starting point |
+| Slide insertion (new content generation) | âœ… | `memo_chef/extraction.py` + `slide_insertion.py` â€” PDF/URL/Excel/CSV extraction, AI analysis, template clone or from-scratch, auto-insert |
+| Supplemental data UI | âœ… | File uploader + URL input + optional brief in Streamlit |
+| Run history + comparison dashboard | âœ… | Confidence score, slides inserted, accuracy breakdown in detail view |
+| Accuracy metrics + confidence scoring | âœ… | `memo_chef/accuracy.py` â€” weighted composite score (0-100), persisted to DB |
+| Batch processing mode (multi-memo) | â—» Deferred | |
 | API cost optimization (caching, smart batching) | âœ… | Prompt caching + Batch API = ~75% cost reduction |
 
 ---

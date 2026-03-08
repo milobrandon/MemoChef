@@ -166,6 +166,25 @@ def get_db_conn():
         cur.execute(
             "ALTER TABLE memo_chef_users ADD COLUMN IF NOT EXISTS email TEXT"
         )
+        # Phase 3: accuracy metrics + slide insertion + manifest storage
+        cur.execute(
+            "ALTER TABLE memo_chef_runs ADD COLUMN IF NOT EXISTS slides_inserted INTEGER DEFAULT 0"
+        )
+        cur.execute(
+            "ALTER TABLE memo_chef_runs ADD COLUMN IF NOT EXISTS confidence_score REAL"
+        )
+        cur.execute(
+            "ALTER TABLE memo_chef_runs ADD COLUMN IF NOT EXISTS coverage_pct REAL"
+        )
+        cur.execute(
+            "ALTER TABLE memo_chef_runs ADD COLUMN IF NOT EXISTS correction_rate_pct REAL"
+        )
+        cur.execute(
+            "ALTER TABLE memo_chef_runs ADD COLUMN IF NOT EXISTS run_manifest_json TEXT"
+        )
+        cur.execute(
+            "ALTER TABLE memo_chef_runs ADD COLUMN IF NOT EXISTS change_log_html TEXT"
+        )
     return conn
 
 
@@ -374,14 +393,22 @@ def record_run(
     input_tokens: int = 0,
     output_tokens: int = 0,
     estimated_cost_microdollars: int = 0,
+    slides_inserted: int = 0,
+    confidence_score: float | None = None,
+    coverage_pct: float | None = None,
+    correction_rate_pct: float | None = None,
+    run_manifest_json: str | None = None,
+    change_log_html: str | None = None,
 ) -> None:
     with db_cursor() as cur:
         cur.execute(
             "INSERT INTO memo_chef_runs ("
             " run_id, username, status, memo_name, proforma_name, property_name,"
             " dry_run, skip_validation, change_count, rejected_count, missed_count,"
-            " duration_seconds, warnings_json, input_tokens, output_tokens, estimated_cost_microdollars"
-            ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            " duration_seconds, warnings_json, input_tokens, output_tokens,"
+            " estimated_cost_microdollars, slides_inserted, confidence_score,"
+            " coverage_pct, correction_rate_pct, run_manifest_json, change_log_html"
+            ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
             "ON CONFLICT (run_id) DO UPDATE SET "
             " status = EXCLUDED.status,"
             " change_count = EXCLUDED.change_count,"
@@ -391,7 +418,13 @@ def record_run(
             " warnings_json = EXCLUDED.warnings_json,"
             " input_tokens = EXCLUDED.input_tokens,"
             " output_tokens = EXCLUDED.output_tokens,"
-            " estimated_cost_microdollars = EXCLUDED.estimated_cost_microdollars",
+            " estimated_cost_microdollars = EXCLUDED.estimated_cost_microdollars,"
+            " slides_inserted = EXCLUDED.slides_inserted,"
+            " confidence_score = EXCLUDED.confidence_score,"
+            " coverage_pct = EXCLUDED.coverage_pct,"
+            " correction_rate_pct = EXCLUDED.correction_rate_pct,"
+            " run_manifest_json = EXCLUDED.run_manifest_json,"
+            " change_log_html = EXCLUDED.change_log_html",
             (
                 run_id,
                 username,
@@ -409,6 +442,12 @@ def record_run(
                 input_tokens,
                 output_tokens,
                 estimated_cost_microdollars,
+                slides_inserted,
+                confidence_score,
+                coverage_pct,
+                correction_rate_pct,
+                run_manifest_json,
+                change_log_html,
             ),
         )
 
@@ -434,7 +473,7 @@ def get_recent_runs(username: str | None = None, limit: int = 20) -> list[dict]:
                 "SELECT run_id, username, status, memo_name, proforma_name, property_name, "
                 "dry_run, skip_validation, change_count, rejected_count, missed_count, "
                 "duration_seconds, created_at, warnings_json, approval_status, approved_by, "
-                "input_tokens, output_tokens, estimated_cost_microdollars "
+                "input_tokens, output_tokens, estimated_cost_microdollars, confidence_score, slides_inserted "
                 "FROM memo_chef_runs WHERE username = %s "
                 "ORDER BY created_at DESC LIMIT %s",
                 (username, limit),
@@ -444,7 +483,7 @@ def get_recent_runs(username: str | None = None, limit: int = 20) -> list[dict]:
                 "SELECT run_id, username, status, memo_name, proforma_name, property_name, "
                 "dry_run, skip_validation, change_count, rejected_count, missed_count, "
                 "duration_seconds, created_at, warnings_json, approval_status, approved_by, "
-                "input_tokens, output_tokens, estimated_cost_microdollars "
+                "input_tokens, output_tokens, estimated_cost_microdollars, confidence_score, slides_inserted "
                 "FROM memo_chef_runs ORDER BY created_at DESC LIMIT %s",
                 (limit,),
             )
@@ -473,6 +512,8 @@ def get_recent_runs(username: str | None = None, limit: int = 20) -> list[dict]:
                 "Tokens In": row[16] or 0,
                 "Tokens Out": row[17] or 0,
                 "Est. Cost ($)": round(cost_usd, 4) if cost_usd else None,
+                "Confidence": row[19],
+                "Slides Inserted": row[20] or 0,
             }
         )
     return results
@@ -484,7 +525,8 @@ def get_run_details(run_id: str) -> dict | None:
             "SELECT run_id, username, status, memo_name, proforma_name, property_name, "
             "dry_run, skip_validation, change_count, rejected_count, missed_count, "
             "duration_seconds, created_at, warnings_json, approval_status, approval_notes, "
-            "approved_by, approved_at "
+            "approved_by, approved_at, slides_inserted, confidence_score, coverage_pct, "
+            "correction_rate_pct, run_manifest_json, change_log_html "
             "FROM memo_chef_runs WHERE run_id = %s",
             (run_id,),
         )
@@ -510,6 +552,12 @@ def get_run_details(run_id: str) -> dict | None:
         "approval_notes": row[15] or "",
         "approved_by": row[16] or "",
         "approved_at": row[17].strftime("%Y-%m-%d %H:%M") if row[17] else "",
+        "slides_inserted": row[18] or 0,
+        "confidence_score": row[19],
+        "coverage_pct": row[20],
+        "correction_rate_pct": row[21],
+        "run_manifest_json": row[22],
+        "change_log_html": row[23],
     }
 
 

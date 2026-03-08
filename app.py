@@ -6,6 +6,7 @@ from __future__ import annotations
 from datetime import datetime
 import glob
 import os
+from pathlib import Path
 import time
 import uuid
 
@@ -145,6 +146,9 @@ def _queue_item_from_inputs(
     proforma_file,
     schedule_file,
     market_data_file,
+    supplemental_file=None,
+    supplemental_url: str = "",
+    supplemental_brief: str = "",
     property_name: str,
     property_rename_to: str = "",
     dry_run: bool,
@@ -153,6 +157,19 @@ def _queue_item_from_inputs(
     config_profile_name: str | None = None,
     use_batch_api: bool = False,
 ) -> dict:
+    # Determine supplemental source type
+    supp_name = None
+    supp_bytes = None
+    supp_type = None
+    if supplemental_file:
+        supp_name = supplemental_file.name
+        supp_bytes = supplemental_file.getvalue()
+        ext = Path(supp_name).suffix.lower()
+        supp_type = {".pdf": "pdf", ".xlsx": "excel", ".xlsm": "excel", ".csv": "csv"}.get(ext, "excel")
+    elif supplemental_url:
+        supp_name = supplemental_url
+        supp_type = "url"
+
     return {
         "job_id": uuid.uuid4().hex,
         "memo_name": memo_file.name,
@@ -163,6 +180,10 @@ def _queue_item_from_inputs(
         "schedule_bytes": schedule_file.getvalue() if schedule_file else None,
         "market_data_name": market_data_file.name if market_data_file else None,
         "market_data_bytes": market_data_file.getvalue() if market_data_file else None,
+        "supplemental_name": supp_name,
+        "supplemental_bytes": supp_bytes,
+        "supplemental_type": supp_type,
+        "supplemental_brief": supplemental_brief or None,
         "property_name": property_name or None,
         "property_rename_to": property_rename_to or None,
         "dry_run": dry_run,
@@ -239,11 +260,24 @@ def _execute_job(
         with open(market_data_path, "wb") as handle:
             handle.write(job["market_data_bytes"])
 
+    supplemental_path = None
+    supplemental_type = job.get("supplemental_type")
+    if supplemental_type == "url":
+        supplemental_path = job.get("supplemental_name")  # URL string
+    elif job.get("supplemental_bytes"):
+        ext = os.path.splitext(job["supplemental_name"])[1] if job.get("supplemental_name") else ".pdf"
+        supplemental_path = str(run_dir / f"input_supplemental{ext}")
+        with open(supplemental_path, "wb") as handle:
+            handle.write(job["supplemental_bytes"])
+
     request = RunRequest(
         memo_path=memo_path,
         proforma_path=proforma_path,
         schedule_path=schedule_path,
         market_data_path=market_data_path,
+        supplemental_path=supplemental_path,
+        supplemental_type=supplemental_type,
+        supplemental_brief=job.get("supplemental_brief"),
         output_dir=str(run_dir),
         api_key=api_key,
         config_path=os.path.join(os.path.dirname(__file__), "config.yaml"),
@@ -266,6 +300,7 @@ def _execute_job(
         (run_dir / "change_log.md").write_bytes(result.log_bytes)
         (run_dir / "run_manifest.json").write_bytes(result.manifest_bytes)
         counts = result.manifest.counts
+        accuracy = result.manifest.accuracy or {}
         record_run(
             run_id=run_id,
             username=username,
@@ -283,6 +318,12 @@ def _execute_job(
             input_tokens=counts.get("input_tokens", 0),
             output_tokens=counts.get("output_tokens", 0),
             estimated_cost_microdollars=counts.get("estimated_cost_microdollars", 0),
+            slides_inserted=counts.get("slides_inserted", 0),
+            confidence_score=accuracy.get("confidence_score"),
+            coverage_pct=accuracy.get("coverage_pct"),
+            correction_rate_pct=accuracy.get("correction_rate_pct"),
+            run_manifest_json=result.manifest_bytes.decode("utf-8") if result.manifest_bytes else None,
+            change_log_html=result.log_bytes.decode("utf-8") if result.log_bytes else None,
         )
         if job.get("job_id"):
             update_job_status(job["job_id"], "completed", run_id=run_id)
@@ -446,6 +487,26 @@ def render_new_run_tab() -> None:
     schedule_file = upload_cols[2].file_uploader("Schedule (Beta)", type=["mpp"], key="schedule_upload")
     market_data_file = upload_cols[3].file_uploader("Market data (Beta)", type=["xlsx", "xlsm"], key="market_upload")
 
+    # Supplemental data for slide insertion
+    supp_cols = st.columns([2, 2, 3])
+    supplemental_file = supp_cols[0].file_uploader(
+        "Supplemental data",
+        type=["pdf", "xlsx", "xlsm", "csv"],
+        key="supplemental_upload",
+        help="Upload additional data to generate a new slide (PDF, Excel, or CSV)",
+    )
+    supplemental_url = supp_cols[1].text_input(
+        "Or paste a URL",
+        key="supplemental_url",
+        placeholder="https://...",
+    )
+    supplemental_brief = supp_cols[2].text_area(
+        "Brief (optional)",
+        key="supplemental_brief",
+        placeholder="e.g., Show student affluence trends for this market",
+        height=80,
+    )
+
     rename_cols = st.columns(2)
     property_name = rename_cols[0].text_input(
         "Property name (as it appears in memo)",
@@ -539,6 +600,9 @@ def render_new_run_tab() -> None:
             proforma_file=proforma_file,
             schedule_file=schedule_file,
             market_data_file=market_data_file,
+            supplemental_file=supplemental_file,
+            supplemental_url=supplemental_url,
+            supplemental_brief=supplemental_brief,
             property_name=property_name,
             property_rename_to=property_rename_to,
             dry_run=dry_run,
@@ -559,6 +623,9 @@ def render_new_run_tab() -> None:
             proforma_file=proforma_file,
             schedule_file=schedule_file,
             market_data_file=market_data_file,
+            supplemental_file=supplemental_file,
+            supplemental_url=supplemental_url,
+            supplemental_brief=supplemental_brief,
             property_name=property_name,
             property_rename_to=property_rename_to,
             dry_run=dry_run,
@@ -635,15 +702,27 @@ def render_history_tab() -> None:
     selected_run = st.selectbox("Select run", run_options, index=0)
     details = get_run_details(selected_run)
     if details:
-        detail_cols = st.columns(4)
+        detail_cols = st.columns(6)
         detail_cols[0].metric("Status", details["status"])
         detail_cols[1].metric("Approval", details["approval_status"])
         detail_cols[2].metric("Changes", details["change_count"])
         detail_cols[3].metric("Warnings", len(details["warnings"]))
+        conf = details.get("confidence_score")
+        detail_cols[4].metric("Confidence", f"{conf:.0f}/100" if conf is not None else "—")
+        detail_cols[5].metric("Slides inserted", details.get("slides_inserted", 0))
         if details["warnings"]:
             with st.expander("Run warnings"):
                 for warning in details["warnings"]:
                     st.warning(f"{warning['stage']}: {warning['message']}")
+        if conf is not None:
+            with st.expander("Accuracy breakdown"):
+                acc_cols = st.columns(4)
+                acc_cols[0].metric("Confidence", f"{conf:.1f}/100")
+                cov = details.get("coverage_pct")
+                acc_cols[1].metric("Coverage", f"{cov:.1f}%" if cov is not None else "—")
+                corr = details.get("correction_rate_pct")
+                acc_cols[2].metric("Correction rate", f"{corr:.1f}%" if corr is not None else "—")
+                acc_cols[3].metric("Slides inserted", details.get("slides_inserted", 0))
         with st.form("approval_form"):
             approval_status = st.selectbox(
                 "Approval decision",
