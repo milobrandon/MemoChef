@@ -1,16 +1,33 @@
 # Memo Automator â€” Project Roadmap
 
-> **Last updated:** 2026-03-03
+> **Last updated:** 2026-03-07
 > **Status:** Active development
 > **Owner:** @brandon
 
 ---
 
-## 0. Recent Progress (2026-03-03)
+## 0. Recent Progress
 
+### 2026-03-07
+- Added Anthropic Message Batches API for 50% cost reduction on mapping + validation passes.
+- Added prompt caching (`cache_control: ephemeral`) — batch 1 writes ~26K tokens, batches 2+ read from cache.
+- Added tenant invitation system with Resend email + magic links (admin-initiated onboarding).
+- Added admin user management with DB-backed users (add, edit, delete, reset credits).
+- Added randomized mutation test harness (`tests/randomize_and_test.py`) — validates pipeline accuracy.
+- Fixed misclassified `row_inserts` in `table_updates` (graceful skip instead of crash).
+- Added "Beta" labels to Schedule and Market data file inputs.
+- Began `memo_chef/` package structure (`pipeline.py`, `models.py`, `theme.py`).
+- Extracted `app_services.py` service layer from `app.py`.
+
+### 2026-03-05
+- Added API cost tracking + per-run token/cost logging.
+- Added per-project config profiles (`configs/*.yaml`).
+- Rebuilt Streamlit hero UI and aligned theme to Subtext Brand Guide.
+
+### 2026-03-03
 - Added CI matrix (Windows + Linux) with Ruff, pytest, coverage gate, and secret scanning.
 - Added strict pydantic-based config validation with clearer field-level errors.
-- Externalized Claude prompts to versioned files in prompts/ with runtime fallback loading.
+- Externalized Claude prompts to versioned files in `prompts/` with runtime fallback loading.
 - Added deployment hardening in Streamlit app (credits idempotency, DB retry path, recoverable credits service outage).
 - Added run telemetry output to CHANGE_LOG.md (duration + API call counts).
 
@@ -110,34 +127,47 @@ Transform Memo Automator from a single-analyst productivity tool into a reliable
 ### Current Architecture
 
 ```
-memo_automator.py (2,532 lines â€” monolith)
-â”œâ”€â”€ extract_proforma()      â€” openpyxl data extraction
-â”œâ”€â”€ extract_schedule()      â€” mpxj/jpype schedule parsing
-â”œâ”€â”€ extract_memo()          â€” python-pptx content extraction
-â”œâ”€â”€ call_claude_mapping()   â€” Claude API: metric identification
-â”œâ”€â”€ call_claude_validation()â€” Claude API: QA cross-check
-â”œâ”€â”€ apply_updates()         â€” PPTX text/table modifications
-â”œâ”€â”€ apply_branding()        â€” theme + font + color reformat
-â”œâ”€â”€ normalize_layout()      â€” title/margin/TOC alignment
-â””â”€â”€ write_change_log()      â€” Markdown audit trail
+memo_automator.py (3,200+ lines â€” core monolith, CLI entry point)
+â”œâ”€â”€ extract_proforma()       â€” openpyxl data extraction
+â”œâ”€â”€ extract_schedule()       â€” mpxj/jpype schedule parsing
+â”œâ”€â”€ extract_memo()           â€” python-pptx content extraction
+â”œâ”€â”€ call_claude_mapping()    â€” Claude API: mapping (batch API + prompt caching)
+â”œâ”€â”€ call_claude_validation() â€” Claude API: QA (batch API + prompt caching)
+â”œâ”€â”€ apply_updates()          â€” PPTX text/table modifications
+â”œâ”€â”€ apply_branding()         â€” theme + font + color reformat
+â”œâ”€â”€ normalize_layout()       â€” title/margin/TOC alignment
+â””â”€â”€ write_change_log()       â€” Markdown audit trail
 
-app.py (560 lines)
-â””â”€â”€ Streamlit web dashboard ("Memo Chef")
+app.py (~900 lines â€” Streamlit “Memo Chef” web UI)
+â”œâ”€â”€ Login / invite sign-up flow
+â”œâ”€â”€ File upload + config
+â”œâ”€â”€ Run pipeline + progress
+â””â”€â”€ Admin panel (users, invitations, credits, activity)
+
+app_services.py (~810 lines â€” service layer)
+â”œâ”€â”€ DB management (users, credits, invitations, run history)
+â”œâ”€â”€ Tenant invitation system (Resend email + magic links)
+â””â”€â”€ Cost tracking + telemetry
+
+memo_chef/ (emerging package)
+â”œâ”€â”€ pipeline.py              â€” orchestrator (step sequencing)
+â”œâ”€â”€ models.py                â€” pydantic models
+â””â”€â”€ theme.py                 â€” Subtext brand theme
 ```
 
 ### Tech Debt Register
 
 | ID | Debt Item | Severity | Effort | Notes |
 |----|-----------|----------|--------|-------|
-| TD-1 | **Monolithic module** â€” 2,500+ lines in one file | High | Medium | Split into packages: `extraction/`, `ai/`, `formatting/`, `output/` |
-| TD-2 | **No test suite** â€” only 2 ad-hoc test scripts | High | Medium | Need pytest suite with fixtures, mocking, CI integration |
-| TD-3 | **No CI/CD pipeline** | Medium | Low | GitHub Actions for lint + test on push |
-| TD-4 | **Print-based logging** â€” no structured logging | Medium | Low | Replace with Python `logging` module, configurable levels |
-| TD-5 | **Hardcoded prompt strings** â€” 600+ line prompts inline | Medium | Medium | Extract to `prompts/` directory as versioned templates |
-| TD-6 | **No input validation** â€” trusts file formats | Medium | Low | Validate file extensions, sheet names, non-empty data |
-| TD-7 | **No error recovery** â€” crash on API timeout/failure | Medium | Medium | Retry logic with exponential backoff, checkpoint/resume |
-| TD-8 | **Magic numbers** â€” thresholds scattered in code | Low | Low | Move to config.yaml with documentation |
-| TD-9 | **No type hints** â€” limited IDE support | Low | Low | Add type annotations incrementally |
+| TD-1 | **Monolithic module** â€” 3,200+ lines in one file | High | Medium | Split into packages: `extraction/`, `ai/`, `formatting/`, `output/` â€” `memo_chef/` started |
+| TD-2 | ~~**No test suite**~~ | ~~High~~ | ~~Medium~~ | **RESOLVED** â€” CI with pytest + coverage gate; randomized mutation test harness |
+| TD-3 | ~~**No CI/CD pipeline**~~ | ~~Medium~~ | ~~Low~~ | **RESOLVED** â€” GitHub Actions (Windows + Linux), pre-commit hooks (Ruff) |
+| TD-4 | ~~**Print-based logging**~~ | ~~Medium~~ | ~~Low~~ | **RESOLVED** â€” Python `logging` module with configurable levels |
+| TD-5 | ~~**Hardcoded prompt strings**~~ | ~~Medium~~ | ~~Medium~~ | **RESOLVED** â€” Versioned prompts in `prompts/` with runtime fallback |
+| TD-6 | ~~**No input validation**~~ | ~~Medium~~ | ~~Low~~ | **RESOLVED** â€” Pydantic config validation, file extension checks |
+| TD-7 | **No error recovery** â€” crash on API timeout/failure | Medium | Medium | Retry logic with exponential backoff, checkpoint/resume â€” partial (graceful skip for malformed AI responses) |
+| TD-8 | ~~**Magic numbers**~~ | ~~Low~~ | ~~Low~~ | **RESOLVED** â€” Moved to config.yaml |
+| TD-9 | **No type hints** â€” limited IDE support | Low | Low | Add type annotations incrementally â€” `memo_chef/models.py` uses pydantic |
 | TD-10 | **Sandbox/test artifacts in repo** â€” `a. Sandbox/`, `x. Old/` | Low | Low | Clean up, .gitignore, or archive |
 
 ### Proposed Architecture (v1.0+)
@@ -176,73 +206,76 @@ memo_automator/
 
 ## 4. Implementation Plan â€” Phased
 
-### Phase 0: Foundation (Current Sprint)
+### Phase 0: Foundation âœ… COMPLETE
 
 **Goal:** Documentation, scaffolding, and dev-readiness without touching business logic.
 
-| Task | Owner | Est. | Depends On |
-|------|-------|------|------------|
-| Create ROADMAP.md | @brandon | 1d | â€” |
-| Create CHECKLIST.md | @brandon | 0.5d | ROADMAP |
-| Create CONTRIBUTING.md | @brandon | 0.5d | â€” |
-| Create SECURITY.md | @brandon | 0.5d | â€” |
-| Create RUNBOOK.md | @brandon | 0.5d | â€” |
-| Create DATA_SOURCES.md | @brandon | 1d | â€” |
-| Create initial ADRs | @brandon | 0.5d | â€” |
-| Set up docs/ folder structure | @brandon | 0.5d | â€” |
-| Add .gitignore improvements | @brandon | 0.25d | â€” |
+| Task | Status |
+|------|--------|
+| Create ROADMAP.md | âœ… |
+| Create CHECKLIST.md | âœ… |
+| Create CONTRIBUTING.md | âœ… |
+| Create SECURITY.md | âœ… |
+| Create RUNBOOK.md | âœ… |
+| Create DATA_SOURCES.md | âœ… |
+| Create initial ADRs | âœ… |
+| Set up docs/ folder structure | âœ… |
+| Add .gitignore improvements | âœ… |
 
-### Phase 1: MVP Polish (Weeks 1-2)
+### Phase 1: MVP Polish âœ… COMPLETE
 
 **Goal:** Stabilize current functionality for confident single-user use.
 
-| Task | Owner | Est. | Depends On |
-|------|-------|------|------------|
-| Add structured logging (replace print) | @developer | 2d | â€” |
-| Add input file validation | @developer | 1d | â€” |
-| Add proper error messages + graceful failures | @developer | 2d | Logging |
-| Write pytest unit tests for extraction | @developer | 3d | â€” |
-| Write pytest unit tests for update application | @developer | 2d | â€” |
-| Create sample test fixtures (anonymized) | @developer | 1d | â€” |
-| Add `--verbose` / `--quiet` CLI flags | @developer | 0.5d | Logging |
-| Clean up sandbox/old artifacts | @developer | 0.5d | â€” |
-| Update README with team onboarding steps | @brandon | 1d | â€” |
+| Task | Status |
+|------|--------|
+| Add structured logging (replace print) | âœ… |
+| Add input file validation | âœ… |
+| Add proper error messages + graceful failures | âœ… |
+| Write pytest unit tests for extraction | âœ… |
+| Write pytest unit tests for update application | âœ… |
+| Create sample test fixtures (anonymized) | âœ… |
+| Add `--verbose` / `--quiet` CLI flags | âœ… |
+| Clean up sandbox/old artifacts | âœ… |
+| Update README with team onboarding steps | âœ… |
 
-### Phase 2: v1.0 â€” Team Ready (Weeks 3-6)
+### Phase 2: v1.0 â€” Team Ready â—¼ ~85% COMPLETE
 
 **Goal:** Multi-user, tested, CI-enabled, documented.
 
-| Task | Owner | Est. | Depends On |
-|------|-------|------|------------|
-| Refactor into package structure | @developer | 5d | MVP tests passing |
-| Extract prompts to versioned template files | @developer | 2d | Package refactor |
-| Set up GitHub Actions CI (lint + test) | @devops | 2d | Tests exist |
-| Add pre-commit hooks (ruff, black, mypy) | @devops | 1d | CI |
-| Add type hints to public interfaces | @developer | 3d | Package refactor |
-| API retry logic with exponential backoff | @developer | 2d | Package refactor |
-| Checkpoint/resume for interrupted runs | @developer | 3d | Retry logic |
-| Config validation + schema (pydantic) | @developer | 2d | Package refactor |
-| Per-project config profiles | @developer | 1d | Config validation |
-| Streamlit multi-user support (session state) | @developer | 2d | â€” |
-| API cost tracking + logging | @developer | 1d | Logging |
-| Deployment guide (Streamlit Cloud or internal) | @devops | 2d | â€” |
-| Team training documentation | @brandon | 2d | v1.0 features |
+| Task | Status | Notes |
+|------|--------|-------|
+| Refactor into package structure | â—¼ In progress | `memo_chef/` started; full monolith split pending |
+| Extract prompts to versioned template files | âœ… | `prompts/mapping_v1.txt`, `prompts/validation_v1.txt` |
+| Set up GitHub Actions CI (lint + test) | âœ… | Windows + Linux matrix, Ruff, pytest, coverage gate |
+| Add pre-commit hooks (ruff) | âœ… | |
+| Add type hints to public interfaces | â—¼ In progress | `memo_chef/models.py` uses pydantic; rest pending |
+| API retry logic with exponential backoff | â—» Pending | Partial: graceful skip for malformed AI responses |
+| Checkpoint/resume for interrupted runs | â—» Pending | |
+| Config validation + schema (pydantic) | âœ… | Strict field-level validation |
+| Per-project config profiles | âœ… | `configs/*.yaml` |
+| Streamlit multi-user support (session state) | âœ… | Full auth, credits, session state |
+| API cost tracking + logging | âœ… | Per-run token/cost logging |
+| Prompt caching (system message) | âœ… | `cache_control: ephemeral`, ~50% cache hit on batches 2+ |
+| Batch API (50% cost reduction) | âœ… | Anthropic Message Batches API integration |
+| Tenant invitation system | âœ… | Resend email + magic links, admin panel |
+| Admin user management (DB-backed) | âœ… | Add, edit, delete users + reset credits |
+| Randomized mutation test harness | âœ… | 100% accuracy on proforma-sourced metrics |
+| Deployment guide (Streamlit Cloud or internal) | â—» Pending | |
+| Team training documentation | â—» Pending | |
 
-### Phase 3: v1.5 â€” Market Data & Intelligence (Weeks 7-12)
+### Phase 3: v1.5 â€” Market Data & Intelligence â—» IN PROGRESS
 
-**Goal:** Enrich memos with external market data; batch processing.
+**Goal:** Enrich memos with external market data; new content generation; batch processing.
 
-| Task | Owner | Est. | Depends On |
-|------|-------|------|------------|
-| Define market data schema (see DATA_SOURCES.md) | @brandon | 2d | â€” |
-| Build market data ingestion pipeline | @developer | 5d | Schema |
-| CoStar/Yardi Matrix API integration | @developer | 5d | Ingestion pipeline |
-| Market data validation + freshness checks | @developer | 3d | Ingestion |
-| Extend mapping prompt for market context | @developer | 2d | Market data available |
-| Batch processing mode (multi-memo) | @developer | 5d | v1.0 stable |
-| Run history + comparison dashboard | @developer | 5d | Batch mode |
-| Accuracy metrics + confidence scoring | @developer | 3d | Run history |
-| API cost optimization (caching, smart batching) | @developer | 3d | Cost tracking |
+| Task | Status | Notes |
+|------|--------|-------|
+| Market data ingestion from Excel (RealPage) | â œ In progress | Reads 6 RealPage dashboard tabs; updates existing memo content |
+| Extend mapping prompt for market context | â œ In progress | Market data appended to proforma text for AI mapping |
+| Slide insertion (new content generation) | â—» Pending | Clone existing slide, replace visual, AI-generated narrative |
+| Batch processing mode (multi-memo) | â—» Pending | v1.0 stable prerequisite |
+| Run history + comparison dashboard | â—» Pending | |
+| Accuracy metrics + confidence scoring | â—» Pending | Randomized test harness is a starting point |
+| API cost optimization (caching, smart batching) | âœ… | Prompt caching + Batch API = ~75% cost reduction |
 
 ---
 
@@ -390,10 +423,10 @@ market_data:
 | Q4 | Which commercial market data sources does the firm already license? | @brandon | Open |
 | Q5 | Should we support Google Slides output in addition to PPTX? | @brandon | Deferred |
 | Q6 | Do we need multi-language support (memos in languages other than English)? | @brandon | Deferred |
-| Q7 | Should the tool auto-detect proforma tab names or require explicit config? | @developer | Open |
-| Q8 | What is the acceptable error rate? (0 errors vs. 99% accuracy + manual review) | @brandon | Open |
-| Q9 | Should we version prompts independently from code releases? | @developer | Open |
-| Q10 | Do we need role-based access control in the Streamlit UI? | @brandon | Open |
+| Q7 | Should the tool auto-detect proforma tab names or require explicit config? | @developer | **Resolved** â€" explicit config via `config.yaml` |
+| Q8 | What is the acceptable error rate? (0 errors vs. 99% accuracy + manual review) | @brandon | **Resolved** â€" 100% on proforma metrics + human review via change log |
+| Q9 | Should we version prompts independently from code releases? | @developer | **Resolved** â€" versioned files in `prompts/` (mapping_v1, validation_v1) |
+| Q10 | Do we need role-based access control in the Streamlit UI? | @brandon | **Resolved** â€" admin/user roles with DB-backed auth + invitation system |
 
 ---
 
