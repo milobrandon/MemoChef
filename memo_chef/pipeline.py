@@ -528,6 +528,72 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
             changes = apply_updates(request.memo_path, validated, dry_run=request.dry_run)
             checkpoint.set_count("changes", len(changes))
 
+        # --- Accuracy metrics ---
+        from memo_chef.accuracy import compute_accuracy_metrics
+
+        accuracy = compute_accuracy_metrics(
+            raw=mappings,
+            validated=validated,
+            results=changes,
+        )
+        checkpoint.manifest.accuracy = accuracy
+        checkpoint.set_count("confidence_score", int(accuracy["confidence_score"]))
+        checkpoint.save()
+
+        # --- Slide insertion (supplemental data) ---
+        if request.supplemental_path and not request.dry_run:
+            _emit(callback, "slide_insertion", "Insert supplemental slide", 82)
+            with checkpoint.stage("slide_insertion", "Generating and inserting new slide"):
+                try:
+                    from memo_chef.extraction import extract_supplemental
+                    from memo_chef.slide_insertion import (
+                        analyze_supplemental_content,
+                        build_slide_from_scratch,
+                        clone_slide,
+                        detect_memo_sections,
+                        find_template_slide,
+                        insert_slide_at_position,
+                    )
+                    from pptx import Presentation as PptxPresentation
+
+                    supp_type = request.supplemental_type or "excel"
+                    supplemental_text = extract_supplemental(request.supplemental_path, supp_type)
+                    supp_path = os.path.join(request.output_dir, "supplemental_extract.txt")
+                    Path(supp_path).write_text(supplemental_text, encoding="utf-8")
+                    checkpoint.set_output("supplemental_extract", supp_path)
+
+                    sections = detect_memo_sections(memo_content)
+                    content = analyze_supplemental_content(
+                        supplemental_text=supplemental_text,
+                        memo_structure=sections,
+                        api_key=request.api_key,
+                        model=cfg.get("claude", {}).get("model", "claude-sonnet-4-6"),
+                        user_brief=request.supplemental_brief,
+                    )
+
+                    prs = PptxPresentation(request.memo_path)
+                    template_idx = find_template_slide(
+                        prs, content["target_section"], content["visual_type"], sections
+                    )
+
+                    if template_idx is not None:
+                        new_slide = clone_slide(prs, template_idx)
+                    else:
+                        new_slide = build_slide_from_scratch(prs, content)
+
+                    target_after = content.get("target_after_slide", len(prs.slides)) - 1
+                    insert_slide_at_position(prs, new_slide, target_after)
+                    prs.save(request.memo_path)
+                    checkpoint.set_count("slides_inserted", 1)
+                    log.info(
+                        "Inserted slide '%s' after slide %d",
+                        content.get("slide_title", "Untitled"),
+                        target_after + 1,
+                    )
+                except Exception as e:
+                    log.error("Slide insertion failed: %s", e)
+                    checkpoint.add_warning("slide_insertion", str(e))
+
         if not request.dry_run:
             _emit(callback, "branding", "Apply branding", 90)
             with checkpoint.stage("branding", "Applying visual refresh"):
@@ -558,6 +624,7 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                 request.memo_path,
                 request.proforma_path,
                 checkpoint.manifest.outputs["backup_path"],
+                run_metadata={"accuracy": accuracy} if accuracy else None,
             )
             checkpoint.set_output("change_log", log_path)
             checkpoint.set_count("rejected", len(validated.get("rejected", [])))

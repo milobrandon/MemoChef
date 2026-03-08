@@ -3062,6 +3062,17 @@ def write_change_log(output_dir: str, all_changes: list, mappings: dict,
                     f.write(f"  - {k}: {v:.2f}\n")
             f.write("\n")
 
+        if run_metadata and run_metadata.get("accuracy"):
+            acc = run_metadata["accuracy"]
+            score = acc["confidence_score"]
+            f.write("## Confidence Score\n\n")
+            f.write(f"**Score: {score}/100**\n\n")
+            f.write(f"- Coverage: {acc['coverage_pct']}%\n")
+            f.write(f"- Rejection rate: {acc['rejection_rate_pct']}%\n")
+            f.write(f"- Correction rate: {acc['correction_rate_pct']}%\n")
+            f.write(f"- Match quality: {acc['match_quality_pct']}%\n")
+            f.write(f"- Miss rate: {acc['miss_rate_pct']}%\n\n")
+
         f.write("## Applied Changes\n\n")
         f.write("| # | Page | Type | Location | Old | New | Source |\n")
         f.write("|---|------|------|----------|-----|-----|--------|\n")

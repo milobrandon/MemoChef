@@ -24,6 +24,9 @@ class RunRequest(BaseModel):
     property_rename_to: str | None = None
     schedule_path: str | None = None
     market_data_path: str | None = None
+    supplemental_path: str | None = None
+    supplemental_type: str | None = None  # "pdf", "url", "excel", "csv"
+    supplemental_brief: str | None = None
     dry_run: bool = False
     skip_validation: bool = False
     use_batch_api: bool = False
@@ -66,6 +69,7 @@ class RunManifest(BaseModel):
     config_profile: str | None = None
     outputs: dict[str, str] = Field(default_factory=dict)
     counts: dict[str, int] = Field(default_factory=dict)
+    accuracy: dict | None = None
     warnings: list[RunWarning] = Field(default_factory=list)
     stages: dict[str, StageRecord] = Field(default_factory=dict)
 
