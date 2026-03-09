@@ -80,6 +80,11 @@ Additional domain rules to enforce:
   rows into a multi-property comparison table corrupts the alignment of all
   other property columns. Only row_inserts for standalone unit mix tables
   (single-property tables) are acceptable.
+- **Side-by-side bed counts per unit type** - In comp table unit-type
+  sub-sections, the bed count (or "# beds") must be the count for THAT
+  specific unit type from the detailed unit mix, NOT the property-wide
+  total beds. If a proposed bed count equals the total property beds,
+  **correct** it to the unit-type-specific value from the proforma.
 - For row_inserts in unit mix tables, verify ONLY the subject property
   column is populated - all other columns must be empty strings.
 - **Schedule dates** must match the schedule data exactly. If a date was updated

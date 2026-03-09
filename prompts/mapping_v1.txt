@@ -41,6 +41,13 @@ metric in the memo that should be updated with new values from the proforma.
    (unit size, bed count, market rent).
    - **Unit mix source:** Use the unit mix near the TOP of the Assumptions
      tab (the detailed breakdown), NOT the unit mix summary.
+   - **Bed count per unit type:** The "bed count" (or "# of beds" / "#
+     beds") row within each unit-type sub-section is the number of beds
+     for THAT specific unit type from the detailed unit mix, NOT the
+     total property bed count.  Pull this value directly from the
+     proforma's detailed unit mix breakdown (units × beds-per-unit for
+     that type, or the explicit bed count column if present).  Never use
+     the property-wide total beds here.
    - **Row matching:** Place each proforma unit type in the row whose
      bedroom label matches (e.g. a "1BR" proforma unit goes in the "1BR"
      row).  If the table has multiple rows for one bedroom type (e.g. two
