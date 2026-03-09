@@ -43,7 +43,7 @@ from app_services import (
     update_run_approval,
     update_user,
 )
-from memo_chef.models import RunRequest, StageUpdate
+from memo_chef.models import CompUrl, RunRequest, StageUpdate
 from memo_chef.pipeline import run_memo_pipeline
 from memo_chef.theme import APP_SUBTITLE, APP_TITLE, app_css, info_card, render_hero
 
@@ -149,6 +149,7 @@ def _queue_item_from_inputs(
     supplemental_file=None,
     supplemental_url: str = "",
     supplemental_brief: str = "",
+    comp_urls: list[dict] | None = None,
     property_name: str,
     property_rename_to: str = "",
     dry_run: bool,
@@ -186,6 +187,7 @@ def _queue_item_from_inputs(
         "supplemental_brief": supplemental_brief or None,
         "property_name": property_name or None,
         "property_rename_to": property_rename_to or None,
+        "comp_urls": comp_urls or [],
         "dry_run": dry_run,
         "skip_validation": skip_validation,
         "use_batch_api": use_batch_api,
@@ -270,6 +272,8 @@ def _execute_job(
         with open(supplemental_path, "wb") as handle:
             handle.write(job["supplemental_bytes"])
 
+    comp_url_objects = [CompUrl(**cu) for cu in job.get("comp_urls", [])]
+
     request = RunRequest(
         memo_path=memo_path,
         proforma_path=proforma_path,
@@ -278,6 +282,7 @@ def _execute_job(
         supplemental_path=supplemental_path,
         supplemental_type=supplemental_type,
         supplemental_brief=job.get("supplemental_brief"),
+        comp_urls=comp_url_objects,
         output_dir=str(run_dir),
         api_key=api_key,
         config_path=os.path.join(os.path.dirname(__file__), "config.yaml"),
@@ -463,7 +468,7 @@ card_cols[3].markdown(
     unsafe_allow_html=True,
 )
 
-tab_labels = ["New Run", "Run History", "Operations"] + (["Admin"] if role == "admin" else [])
+tab_labels = ["New Run", "Run History", "Operations", "How To"] + (["Admin"] if role == "admin" else [])
 tabs = st.tabs(tab_labels)
 
 
@@ -506,6 +511,22 @@ def render_new_run_tab() -> None:
         placeholder="e.g., Show student affluence trends for this market",
         height=80,
     )
+
+    # Comp property URLs for rent scraping
+    with st.expander("Comp property URLs (rent scraping)"):
+        comp_url_count = st.number_input(
+            "Number of comp URLs", min_value=0, max_value=10, value=0, key="comp_url_count",
+        )
+        comp_url_inputs: list[dict] = []
+        for i in range(int(comp_url_count)):
+            cols = st.columns([3, 2, 3])
+            cu_url = cols[0].text_input(f"URL #{i + 1}", key=f"comp_url_{i}", placeholder="https://...")
+            cu_label = cols[1].text_input(f"Label #{i + 1}", key=f"comp_label_{i}", placeholder="e.g. Hub Lexington")
+            cu_guidance = cols[2].text_input(
+                f"Guidance #{i + 1}", key=f"comp_guidance_{i}", placeholder="e.g. Grab 1BR and 4BR rates",
+            )
+            if cu_url.strip():
+                comp_url_inputs.append({"url": cu_url.strip(), "label": cu_label.strip(), "guidance": cu_guidance.strip()})
 
     rename_cols = st.columns(2)
     property_name = rename_cols[0].text_input(
@@ -603,6 +624,7 @@ def render_new_run_tab() -> None:
             supplemental_file=supplemental_file,
             supplemental_url=supplemental_url,
             supplemental_brief=supplemental_brief,
+            comp_urls=comp_url_inputs,
             property_name=property_name,
             property_rename_to=property_rename_to,
             dry_run=dry_run,
@@ -626,6 +648,7 @@ def render_new_run_tab() -> None:
             supplemental_file=supplemental_file,
             supplemental_url=supplemental_url,
             supplemental_brief=supplemental_brief,
+            comp_urls=comp_url_inputs,
             property_name=property_name,
             property_rename_to=property_rename_to,
             dry_run=dry_run,
@@ -1017,6 +1040,17 @@ def render_admin_tab() -> None:
             st.dataframe(runs, use_container_width=True, hide_index=True)
 
 
+def render_how_to_tab() -> None:
+    st.subheader("How To")
+    st.caption("Quick-start guide and tips for your team.")
+    with st.expander("Getting Started", expanded=True):
+        st.info("Content coming soon")
+    with st.expander("Input Requirements"):
+        st.info("Content coming soon")
+    with st.expander("Understanding Results"):
+        st.info("Content coming soon")
+
+
 with tabs[0]:
     render_new_run_tab()
 
@@ -1026,6 +1060,9 @@ with tabs[1]:
 with tabs[2]:
     render_operations_tab()
 
+with tabs[3]:
+    render_how_to_tab()
+
 if role == "admin":
-    with tabs[3]:
+    with tabs[4]:
         render_admin_tab()

@@ -98,3 +98,33 @@ def _extract_csv(path: str) -> str:
         for row in reader:
             parts.append("\t".join(row))
     return "\n".join(parts)
+
+
+def extract_comp_urls(comp_urls: list[dict]) -> str:
+    """Scrape competitive property websites and return formatted text.
+
+    Args:
+        comp_urls: List of dicts with keys ``url``, ``label``, ``guidance``.
+
+    Returns:
+        Combined scraped text with headers per property.
+    """
+    sections: list[str] = []
+    for entry in comp_urls:
+        url = entry.get("url", "").strip()
+        label = entry.get("label", "").strip() or url
+        guidance = entry.get("guidance", "").strip()
+        if not url:
+            continue
+        header = f"=== COMP PROPERTY: {label} ==="
+        parts = [header, f"Source URL: {url}"]
+        if guidance:
+            parts.append(f"User guidance: {guidance}")
+        try:
+            text = _extract_url(url)
+            parts.append(text)
+        except Exception as exc:
+            log.warning("Failed to scrape comp URL %s: %s", url, exc)
+            parts.append(f"[Scraping failed: {exc}]")
+        sections.append("\n".join(parts))
+    return "\n\n".join(sections)

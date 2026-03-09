@@ -87,6 +87,15 @@ Additional domain rules to enforce:
   **correct** it to the unit-type-specific value from the proforma.
 - For row_inserts in unit mix tables, verify ONLY the subject property
   column is populated - all other columns must be empty strings.
+- **Empty / blank rows** - Reject any update targeting a row where ALL cells in
+  the memo are blank, empty, or contain only whitespace / dashes. These are
+  placeholder or spacing rows — inserting data into them corrupts the layout.
+- **Comp column updates from scraped data** - When COMP PROPERTY DATA sections
+  are present, verify that comp column updates trace back to the scraped website
+  data for that property. Reject any update that targets the SUBJECT property
+  column using comp URL data — the subject column must only be updated from the
+  proforma. Also reject comp updates where the scraped source is ambiguous or
+  the value cannot be confidently matched.
 - **Schedule dates** must match the schedule data exactly. If a date was updated
   from the schedule, verify the correct task was referenced. Date formatting must
   match the memo's existing style (Q2 2027 vs April 2027 vs 4/5/2027). Flag as

@@ -168,6 +168,27 @@ metric in the memo that should be updated with new values from the proforma.
     f. If a match is uncertain, include it but add "(uncertain match)" to
        the source field so the validator can flag it.
 
+20. **Skip empty / blank rows** - If a row in a cash flow, financial summary,
+    or other data table has NO numeric values (all cells are blank, empty, or
+    contain only whitespace / dashes), do NOT emit any updates for that row.
+    Empty rows are placeholders or spacing — updating them would insert
+    spurious data into the memo.
+
+21. **Comp property column updates** - When COMP PROPERTY DATA sections are
+    present (scraped from competitive property websites), update the NON-subject
+    columns in side-by-side comparison tables:
+    - Match each comp property label to the corresponding column header in the
+      table.
+    - Use scraped rent, unit size, and bed count data to update cells in that
+      column.
+    - Honor user guidance notes (e.g. "Grab 1BR and 4BR rates") — only update
+      the unit types or metrics mentioned if guidance is specific.
+    - Skip ambiguous or uncertain values. When the scraped page shows multiple
+      possible values for the same metric, skip that cell rather than guess.
+    - Do NOT insert rows into side-by-side tables (same restriction as rule 17).
+    - Do NOT modify the subject property column using comp data — the subject
+      column is updated only from the proforma.
+
 CRITICAL: Return ONLY the raw JSON object below. Do NOT include any analysis,
 reasoning, explanation, or commentary before or after the JSON. Your entire
 response must be parseable as JSON. Start with {{ and end with }}.

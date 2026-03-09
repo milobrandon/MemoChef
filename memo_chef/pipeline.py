@@ -466,6 +466,20 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                         "Market data file loaded but no dashboard tabs were extracted.",
                     )
 
+        if request.comp_urls:
+            _emit(callback, "extract_comps", "Scrape comp URLs", 20)
+            with checkpoint.stage("extract_comps", "Scraping competitive property websites"):
+                from .extraction import extract_comp_urls
+
+                comp_text = extract_comp_urls(
+                    [cu.model_dump() for cu in request.comp_urls]
+                )
+                if comp_text.strip():
+                    proforma_data += "\n\n## COMP PROPERTY DATA (scraped from websites)\n" + comp_text
+                    comp_extract_path = os.path.join(request.output_dir, "comp_extract.txt")
+                    Path(comp_extract_path).write_text(comp_text, encoding="utf-8")
+                    checkpoint.set_output("comp_extract", comp_extract_path)
+
         _emit(callback, "extract_memo", "Extract memo", 24)
         with checkpoint.stage("extract_memo", "Extracting memo deck contents"):
             memo_content = extract_memo_content(request.memo_path, cfg)

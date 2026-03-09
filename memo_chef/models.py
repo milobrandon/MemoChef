@@ -6,6 +6,12 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 
+class CompUrl(BaseModel):
+    url: str
+    label: str = ""
+    guidance: str = ""
+
+
 class StageUpdate(BaseModel):
     key: str
     label: str
@@ -27,6 +33,7 @@ class RunRequest(BaseModel):
     supplemental_path: str | None = None
     supplemental_type: str | None = None  # "pdf", "url", "excel", "csv"
     supplemental_brief: str | None = None
+    comp_urls: list[CompUrl] = Field(default_factory=list)
     dry_run: bool = False
     skip_validation: bool = False
     use_batch_api: bool = False
