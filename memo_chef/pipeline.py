@@ -37,6 +37,8 @@ from memo_automator import (
 
 from .models import RunManifest, RunRequest, RunResult, RunWarning, StageRecord, StageUpdate
 
+log = logging.getLogger(__name__)
+
 StageCallback = Callable[[StageUpdate], None] | None
 
 LOG_FORMAT = "%(asctime)s  %(levelname)-8s  %(message)s"

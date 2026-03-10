@@ -1,6 +1,5 @@
 """Tests for slide content analysis and insertion."""
 import json
-import pytest
 from unittest.mock import patch, MagicMock
 
 from memo_chef.slide_insertion import (

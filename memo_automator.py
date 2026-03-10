@@ -2448,7 +2448,7 @@ def _apply_chart_updates(memo_path: str, chart_updates: list, dry_run: bool = Fa
         series_name = upd.get("series_name", "")
         new_values = upd.get("new_values", [])
         old_values = upd.get("old_values", [])
-        new_categories = upd.get("categories", None)
+        new_categories = upd.get("categories", None)  # noqa: F841 – reserved for future use
         source = upd.get("source", "")
 
         try:

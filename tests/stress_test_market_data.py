@@ -13,7 +13,7 @@ import traceback
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-from memo_automator import (
+from memo_automator import (  # noqa: E402
     extract_market_data,
     extract_memo_content,
     extract_proforma_data,
@@ -144,7 +144,6 @@ def test_3():
     try:
         from pptx import Presentation
         from pptx.util import Inches, Pt
-        from copy import deepcopy
 
         # Create a presentation with a text box containing 3 runs
         prs = Presentation()
@@ -186,10 +185,10 @@ def test_3():
         # Check run1 formatting preserved
         run1_after = p.runs[1]
         run2_after = p.runs[2]
-        report("Pass 1 replacement succeeded", result1 == True, f"returned {result1}")
+        report("Pass 1 replacement succeeded", result1, f"returned {result1}")
         report("Pass 1 run1 text correct", "earth" in run1_after.text,
                f"run1.text = '{run1_after.text}'")
-        report("Pass 1 run2 untouched (italic)", run2_after.font.italic == True,
+        report("Pass 1 run2 untouched (italic)", run2_after.font.italic,
                f"run2 italic={run2_after.font.italic}, text='{run2_after.text}'")
         report("Pass 1 run2 text untouched", run2_after.text == "today",
                f"run2.text = '{run2_after.text}'")
@@ -206,7 +205,7 @@ def test_3():
         full_after = "".join(r.text for r in p.runs)
         print(f"    Full text after: '{full_after}'")
 
-        report("Pass 2 replacement succeeded", result2 == True, f"returned {result2}")
+        report("Pass 2 replacement succeeded", result2, f"returned {result2}")
         report("Pass 2 result text correct", "Hi globe" in full_after,
                f"full text = '{full_after}'")
 
@@ -216,7 +215,7 @@ def test_3():
         if last_run:
             report("Pass 2 last run is 'today'", "today" in last_run.text,
                    f"last run text='{last_run.text}'")
-            report("Pass 2 last run still italic", last_run.font.italic == True,
+            report("Pass 2 last run still italic", last_run.font.italic,
                    f"last run italic={last_run.font.italic}")
         else:
             report("Pass 2 runs exist", False, "No runs remain")
@@ -279,17 +278,17 @@ def test_4():
         for label, run in [("A", runA), ("B", runB), ("C", runC)]:
             print(f"    Run {label}: text='{run.text}', bold={run.font.bold}, italic={run.font.italic}, font='{run.font.name}'")
 
-        report("Run A bold preserved", runA.font.bold == True,
+        report("Run A bold preserved", runA.font.bold,
                f"bold={runA.font.bold}")
-        report("Run A italic preserved (False)", runA.font.italic == False,
+        report("Run A italic preserved (False)", not runA.font.italic,
                f"italic={runA.font.italic}")
-        report("Run B bold preserved (False)", runB.font.bold == False,
+        report("Run B bold preserved (False)", not runB.font.bold,
                f"bold={runB.font.bold}")
-        report("Run B italic preserved", runB.font.italic == True,
+        report("Run B italic preserved", runB.font.italic,
                f"italic={runB.font.italic}")
-        report("Run C bold preserved", runC.font.bold == True,
+        report("Run C bold preserved", runC.font.bold,
                f"bold={runC.font.bold}")
-        report("Run C italic preserved", runC.font.italic == True,
+        report("Run C italic preserved", runC.font.italic,
                f"italic={runC.font.italic}")
         report("Font changed to Pragmatica", runA.font.name == "Pragmatica",
                f"font='{runA.font.name}'")
@@ -583,7 +582,7 @@ def test_8():
         result = extract_market_data(PROFORMA_FILE, CFG)
         print(f"    Result length: {len(result)} chars")
         if result:
-            print(f"    Unexpected: got data from proforma as market data")
+            print("    Unexpected: got data from proforma as market data")
         report("xlsm as market data handled gracefully", True,
                f"returned {'empty string' if not result else f'{len(result)} chars'}")
     except Exception as e:
@@ -631,7 +630,6 @@ def test_8():
     print("  8d: _apply_chart_updates with nonexistent page...")
     try:
         from pptx import Presentation
-        from pptx.util import Inches
         tmp_dir = tempfile.mkdtemp()
         tmp_path = os.path.join(tmp_dir, "one_slide.pptx")
         prs = Presentation()
