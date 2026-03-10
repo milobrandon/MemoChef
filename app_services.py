@@ -907,7 +907,7 @@ def send_invitation_email(email: str, token: str, app_url: str | None = None) ->
     resend.api_key = api_key
 
     if not app_url:
-        app_url = st.secrets.get("APP_URL", "http://localhost:8501")
+        app_url = st.secrets.get("APP_URL", "https://memochef.streamlit.app")
     invite_url = f"{app_url}?invite={token}"
 
     try:
@@ -916,26 +916,37 @@ def send_invitation_email(email: str, token: str, app_url: str | None = None) ->
         from_addr = "Memo Chef <onboarding@resend.dev>"
 
     html_body = f"""\
-<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 520px; margin: 0 auto; padding: 32px;">
-  <h2 style="color: #1a1a2e; margin-bottom: 8px;">You're invited to Memo Chef</h2>
+<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 560px; margin: 0 auto; padding: 32px;">
+  <h2 style="color: #1a1a2e; margin-bottom: 8px;">
+    Step into Memo City's Hottest Kitchen
+  </h2>
   <p style="color: #555; line-height: 1.6;">
-    You've been invited to join <strong>Memo Chef</strong> by Subtext.
-    Click the button below to create your account.
+    Welcome to <strong>Memo Chef</strong> &mdash; Subtext's in-house tool that
+    takes your Excel proforma and PowerPoint IC memo, then updates every metric
+    automatically so you never have to copy-paste numbers again.
+  </p>
+  <p style="color: #555; line-height: 1.6;">
+    Upload your files, let the Chef cook, and get back a polished memo with a
+    full change log in minutes. Your account is ready &mdash; click below to
+    set your password and start your first run.
   </p>
   <a href="{invite_url}"
-     style="display: inline-block; background: #6c63ff; color: #fff; text-decoration: none;
-            padding: 12px 28px; border-radius: 6px; font-weight: 600; margin: 24px 0;">
-    Create Your Account
+     style="display: inline-block; background: #6c63ff; color: #fff;
+            text-decoration: none; padding: 12px 28px; border-radius: 6px;
+            font-weight: 600; margin: 24px 0;">
+    Get Started
   </a>
   <p style="color: #999; font-size: 13px; margin-top: 24px;">
-    This link expires in 48 hours. If you didn't expect this email, you can safely ignore it.
+    This link expires in 48 hours. If you didn't expect this email,
+    you can safely ignore it.
   </p>
 </div>"""
 
     resend.Emails.send({
         "from": from_addr,
         "to": [email],
-        "subject": "You're invited to Memo Chef",
+        "subject": "Step into Memo City's Hottest Kitchen",
         "html": html_body,
     })
     return True
