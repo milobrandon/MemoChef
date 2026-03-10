@@ -85,6 +85,15 @@ Additional domain rules to enforce:
   specific unit type from the detailed unit mix, NOT the property-wide
   total beds. If a proposed bed count equals the total property beds,
   **correct** it to the unit-type-specific value from the proforma.
+- **Split bedroom blocks — no cross-block data mixing** - When a table has
+  multiple row blocks for the same bedroom type (e.g. two "4 BR/4 BA"
+  sections covering different proforma unit types), each block's SF range,
+  bed count, rent, and other metrics must reflect ONLY the unit types
+  assigned to that block.  **Reject** any update that introduces an SF
+  value, bed count, or rent from a unit type that belongs to a different
+  block of the same bedroom type — this causes duplicate values on the
+  slide.  Check by verifying the proposed new value does not duplicate a
+  value already present in another row block for the same bedroom type.
 - For row_inserts in unit mix tables, verify ONLY the subject property
   column is populated - all other columns must be empty strings.
 - **Empty / blank rows** - Reject any update targeting a row where ALL cells in
