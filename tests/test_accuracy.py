@@ -1,5 +1,4 @@
 """Tests for accuracy metrics and confidence scoring."""
-import pytest
 from memo_chef.accuracy import compute_accuracy_metrics
 
 

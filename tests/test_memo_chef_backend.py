@@ -1,7 +1,6 @@
 from contextlib import contextmanager
 from datetime import datetime
 import json
-from pathlib import Path
 
 import app_services
 from memo_chef.models import RunManifest, RunRequest, StageUpdate

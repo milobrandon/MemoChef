@@ -184,8 +184,6 @@ def clone_slide(prs: Presentation, template_idx: int):
 
 def build_slide_from_scratch(prs: Presentation, content: dict):
     """Build a new slide with chart/table and narrative from scratch."""
-    from pptx.chart.data import CategoryChartData
-    from pptx.enum.chart import XL_CHART_TYPE
 
     layout = prs.slide_layouts[6] if len(prs.slide_layouts) > 6 else prs.slide_layouts[0]
     slide = prs.slides.add_slide(layout)

@@ -7,7 +7,6 @@ in dry-run mode to see if the pipeline correctly identifies and fixes them.
 
 from __future__ import annotations
 
-import copy
 import json
 import os
 import random
@@ -289,7 +288,7 @@ def main():
             missed += 1
             print(f"  MISSED: {field} ({original} -> {mutated})")
 
-    print(f"\n--- Summary ---")
+    print("\n--- Summary ---")
     print(f"Mutations applied: {len(changes)}")
     print(f"Caught by pipeline: {caught}")
     print(f"Missed: {missed}")

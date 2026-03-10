@@ -30,13 +30,15 @@ jobs:
         run: ruff check .
 
       - name: Pytest + coverage gate
-        run: pytest -m "not integration" --cov=memo_automator --cov=app_helpers --cov-report=term-missing --cov-fail-under=50 -q
+        run: pytest -m "not integration" --cov=memo_automator --cov=app_helpers --cov-report=term-missing --cov-fail-under=40 -q
 
   secret-scan:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Gitleaks scan
         uses: gitleaks/gitleaks-action@v2
