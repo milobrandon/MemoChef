@@ -197,3 +197,84 @@ class TestPreValidatePassesRowInserts:
         assert "row_inserts" in result
         assert len(result["row_inserts"]) == 1
         assert result["row_inserts"][0]["cells"] == ["2BR", "80"]
+
+
+class TestPreValidateMappingsPageSplit:
+    """Tests for pre_validate_mappings page-splitting rejection logic."""
+
+    MEMO_CONTENT = (
+        "=" * 60 + "\nPAGE 1\n" + "=" * 60 + "\n"
+        "Table: UnitMixTable\n"
+        "1BR | 120 | $1,825\n"
+        "3BR | 200 | $1,345\n"
+        "\n"
+        + "=" * 60 + "\nPAGE 2\n" + "=" * 60 + "\n"
+        "IRR is 5.0% and units are 120.\n"
+    )
+
+    def test_matching_old_value_passes(self):
+        """Entry whose old_value exists on the specified page passes."""
+        mappings = {
+            "table_updates": [
+                {"page": 1, "old_value": "120", "new_value": "130", "source": "S1"},
+            ],
+            "text_updates": [],
+            "row_inserts": [],
+        }
+        result = pre_validate_mappings(mappings, self.MEMO_CONTENT)
+        assert len(result["table_updates"]) == 1
+        assert len(result["rejected"]) == 0
+
+    def test_missing_old_value_rejected(self):
+        """Entry whose old_value doesn't exist on the specified page is rejected."""
+        mappings = {
+            "table_updates": [
+                {"page": 1, "old_value": "NONEXISTENT", "new_value": "X", "source": "S1"},
+            ],
+            "text_updates": [],
+            "row_inserts": [],
+        }
+        result = pre_validate_mappings(mappings, self.MEMO_CONTENT)
+        assert len(result["table_updates"]) == 0
+        assert len(result["rejected"]) == 1
+        assert "not found" in result["rejected"][0]["reason"]
+
+    def test_wrong_page_rejected(self):
+        """Entry targeting wrong page (value exists on page 2, not page 1) is rejected."""
+        mappings = {
+            "table_updates": [],
+            "text_updates": [
+                {"page": 1, "old_text": "IRR is 5.0%", "new_text": "IRR is 6.5%",
+                 "source": "S1"},
+            ],
+            "row_inserts": [],
+        }
+        result = pre_validate_mappings(mappings, self.MEMO_CONTENT)
+        assert len(result["text_updates"]) == 0
+        assert len(result["rejected"]) == 1
+
+    def test_unknown_page_falls_back_to_full_memo(self):
+        """Entry with page not in memo falls back to searching entire content."""
+        mappings = {
+            "table_updates": [
+                {"page": 99, "old_value": "120", "new_value": "130", "source": "S1"},
+            ],
+            "text_updates": [],
+            "row_inserts": [],
+        }
+        result = pre_validate_mappings(mappings, self.MEMO_CONTENT)
+        # Page 99 not found, falls back to full memo search where "120" exists
+        assert len(result["table_updates"]) == 1
+
+    def test_row_inserts_pass_through(self):
+        """row_inserts are not validated by pre_validate and pass through."""
+        mappings = {
+            "table_updates": [],
+            "text_updates": [],
+            "row_inserts": [
+                {"page": 1, "table_name": "T", "insert_after_row_label": "1BR",
+                 "cells": ["2BR", "80"], "source": "test"},
+            ],
+        }
+        result = pre_validate_mappings(mappings, self.MEMO_CONTENT)
+        assert len(result["row_inserts"]) == 1

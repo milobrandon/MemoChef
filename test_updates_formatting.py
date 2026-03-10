@@ -5,7 +5,7 @@ import pytest
 from pptx import Presentation
 from pptx.util import Inches
 
-from memo_automator import apply_branding, apply_updates, normalize_layout
+from memo_automator import _replace_in_para, apply_branding, apply_updates, normalize_layout
 
 
 def _find_table(slide):
@@ -89,3 +89,54 @@ def test_normalize_layout(layout_test_pptx):
     off_margin = next(s for s in slide.shapes if s.name == "OffMargin")
     assert off_margin.left >= Inches(0.50)
     assert off_margin.top >= Inches(0.25)
+
+
+class TestReplaceInParaCrossRun:
+    """Tests for _replace_in_para cross-run replacement (Pass 2)."""
+
+    @staticmethod
+    def _make_para_with_runs(texts: list[str]):
+        """Create a paragraph with multiple runs containing the given texts."""
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[5])
+        txbox = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(4), Inches(1))
+        tf = txbox.text_frame
+        para = tf.paragraphs[0]
+        # Clear default run and add our runs
+        para.clear()
+        for t in texts:
+            run = para.add_run()
+            run.text = t
+        return para
+
+    def test_cross_run_replacement_succeeds(self):
+        """Value split across two runs is replaced correctly."""
+        para = self._make_para_with_runs(["$1,8", "25"])
+        result = _replace_in_para(para, "$1,825", "$2,100")
+        assert result is True
+        full_text = "".join(r.text for r in para.runs)
+        assert "$2,100" in full_text
+
+    def test_cross_run_preserves_surrounding_text(self):
+        """Text before and after the replaced value is preserved."""
+        para = self._make_para_with_runs(["Rent: $1,8", "25 per month"])
+        result = _replace_in_para(para, "$1,825", "$2,100")
+        assert result is True
+        full_text = "".join(r.text for r in para.runs)
+        assert full_text == "Rent: $2,100 per month"
+
+    def test_cross_run_returns_false_on_no_match(self):
+        """Returns False when old_text is not found across any runs."""
+        para = self._make_para_with_runs(["Rent: $1,8", "25 per month"])
+        result = _replace_in_para(para, "$9,999", "$0")
+        assert result is False
+        full_text = "".join(r.text for r in para.runs)
+        assert full_text == "Rent: $1,825 per month"
+
+    def test_single_run_replacement_preferred(self):
+        """When value fits in one run, Pass 1 handles it (no cross-run needed)."""
+        para = self._make_para_with_runs(["$1,825", " per month"])
+        result = _replace_in_para(para, "$1,825", "$2,100")
+        assert result is True
+        assert para.runs[0].text == "$2,100"
+        assert para.runs[1].text == " per month"
