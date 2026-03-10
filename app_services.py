@@ -4,6 +4,7 @@ import base64
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,8 @@ import psycopg2
 import streamlit as st
 
 from app_helpers import hash_password
+
+log = logging.getLogger(__name__)
 
 
 _BINARY_PAYLOAD_KEY = "__memo_chef_binary__"
@@ -225,15 +228,14 @@ def ensure_users_seeded() -> None:
 @contextmanager
 def db_cursor():
     conn = get_db_conn()
+    # Detect stale connections before yielding (a context manager must yield exactly once)
     try:
-        with conn.cursor() as cur:
-            yield cur
-        return
+        conn.cursor().close()
     except (psycopg2.InterfaceError, psycopg2.OperationalError):
         get_db_conn.clear()
         conn = get_db_conn()
-        with conn.cursor() as cur:
-            yield cur
+    with conn.cursor() as cur:
+        yield cur
 
 
 def current_week_start() -> str:
@@ -258,8 +260,8 @@ def get_users() -> dict:
                 }
                 for row in rows
             }
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Failed to load users from database, falling back to secrets: %s", e)
     try:
         return dict(st.secrets["users"])
     except (KeyError, FileNotFoundError):

@@ -52,8 +52,9 @@ st.markdown(app_css(), unsafe_allow_html=True)
 
 try:
     ensure_users_seeded()
-except Exception:
-    pass
+except Exception as e:
+    import logging as _logging
+    _logging.getLogger(__name__).warning("Failed to seed users from database: %s", e)
 
 # --- Invitation sign-up page (no auth required) ---
 invite_token = st.query_params.get("invite")
