@@ -64,7 +64,7 @@ def test_analyze_supplemental_content_returns_structured_json():
         result = analyze_supplemental_content(
             supplemental_text="HHI data: 40502=$62,500, 40503=$58,200",
             memo_structure=[{"name": "Market Summary", "start_page": 6, "end_page": 9}],
-            api_key="sk-test",
+            client=MagicMock(),
             model="claude-sonnet-4-6",
         )
     assert result["slide_title"] == "Student Affluence Trends"

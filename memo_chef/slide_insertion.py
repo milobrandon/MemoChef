@@ -60,7 +60,7 @@ def detect_memo_sections(memo_text: str) -> list[dict]:
 def analyze_supplemental_content(
     supplemental_text: str,
     memo_structure: list[dict],
-    api_key: str,
+    client: Any,
     model: str = "claude-sonnet-4-6",
     user_brief: str | None = None,
     max_tokens: int = 4096,
@@ -82,7 +82,7 @@ def analyze_supplemental_content(
     prompt = prompt.replace("{supplemental_text}", supplemental_text[:50_000])
     prompt = prompt.replace("{user_brief_section}", brief_section)
 
-    response = _call_claude(prompt, api_key, model, max_tokens)
+    response = _call_claude(prompt, client, model, max_tokens)
     text = response.content[0].text.strip()
 
     json_match = re.search(r"\{[\s\S]*\}", text)
@@ -97,10 +97,8 @@ def analyze_supplemental_content(
     return result
 
 
-def _call_claude(prompt: str, api_key: str, model: str, max_tokens: int):
-    """Make a Claude API call."""
-    import anthropic
-    client = anthropic.Anthropic(api_key=api_key)
+def _call_claude(prompt: str, client: Any, model: str, max_tokens: int):
+    """Make a Claude API call using the provided client."""
     return client.messages.create(
         model=model,
         max_tokens=max_tokens,

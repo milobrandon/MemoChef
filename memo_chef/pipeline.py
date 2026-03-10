@@ -584,7 +584,7 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                     content = analyze_supplemental_content(
                         supplemental_text=supplemental_text,
                         memo_structure=sections,
-                        api_key=request.api_key,
+                        client=client,
                         model=cfg.get("claude", {}).get("model", "claude-sonnet-4-6"),
                         user_brief=request.supplemental_brief,
                     )
