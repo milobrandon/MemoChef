@@ -410,8 +410,10 @@ def record_run(
     correction_rate_pct: float | None = None,
     run_manifest_json: str | None = None,
     change_log_html: str | None = None,
+    _conn: Any | None = None,
 ) -> None:
-    with db_cursor() as cur:
+    """Record a run. Pass _conn for thread-safe usage from background worker."""
+    def _do_insert(cur):
         cur.execute(
             "INSERT INTO memo_chef_runs ("
             " run_id, username, status, memo_name, proforma_name, property_name,"
@@ -461,6 +463,13 @@ def record_run(
                 change_log_html,
             ),
         )
+
+    if _conn is not None:
+        with _conn.cursor() as cur:
+            _do_insert(cur)
+    else:
+        with db_cursor() as cur:
+            _do_insert(cur)
 
 
 def update_run_approval(
@@ -1078,7 +1087,6 @@ def _execute_job_headless(job: dict, api_key: str) -> bool:
         (run_dir / "change_log.md").write_bytes(result.log_bytes)
         (run_dir / "run_manifest.json").write_bytes(result.manifest_bytes)
 
-        started = time.time()
         record_run(
             run_id=run_id,
             username=job["username"],
@@ -1102,6 +1110,7 @@ def _execute_job_headless(job: dict, api_key: str) -> bool:
             correction_rate_pct=(result.manifest.accuracy or {}).get("correction_rate_pct"),
             run_manifest_json=result.manifest_bytes.decode("utf-8") if result.manifest_bytes else None,
             change_log_html=result.log_bytes.decode("utf-8") if result.log_bytes else None,
+            _conn=conn,
         )
 
         with conn.cursor() as cur:
