@@ -27,6 +27,7 @@ from app_services import (
     get_invitations,
     get_job,
     get_job_queue,
+    get_job_staging_dir,
     get_platform_health,
     get_profiles,
     get_recent_runs,
@@ -172,18 +173,47 @@ def _queue_item_from_inputs(
         supp_name = supplemental_url
         supp_type = "url"
 
+    job_id = uuid.uuid4().hex
+    staging = get_job_staging_dir(job_id)
+
+    memo_path = str(staging / memo_file.name)
+    with open(memo_path, "wb") as f:
+        f.write(memo_file.getvalue())
+
+    proforma_path = str(staging / proforma_file.name)
+    with open(proforma_path, "wb") as f:
+        f.write(proforma_file.getvalue())
+
+    schedule_path = None
+    if schedule_file:
+        schedule_path = str(staging / schedule_file.name)
+        with open(schedule_path, "wb") as f:
+            f.write(schedule_file.getvalue())
+
+    market_data_path = None
+    if market_data_file:
+        market_data_path = str(staging / market_data_file.name)
+        with open(market_data_path, "wb") as f:
+            f.write(market_data_file.getvalue())
+
+    supp_path = None
+    if supp_bytes:
+        supp_path = str(staging / supp_name)
+        with open(supp_path, "wb") as f:
+            f.write(supp_bytes)
+
     return {
-        "job_id": uuid.uuid4().hex,
+        "job_id": job_id,
         "memo_name": memo_file.name,
-        "memo_bytes": memo_file.getvalue(),
+        "memo_path": memo_path,
         "proforma_name": proforma_file.name,
-        "proforma_bytes": proforma_file.getvalue(),
+        "proforma_path": proforma_path,
         "schedule_name": schedule_file.name if schedule_file else None,
-        "schedule_bytes": schedule_file.getvalue() if schedule_file else None,
+        "schedule_path": schedule_path,
         "market_data_name": market_data_file.name if market_data_file else None,
-        "market_data_bytes": market_data_file.getvalue() if market_data_file else None,
+        "market_data_path": market_data_path,
         "supplemental_name": supp_name,
-        "supplemental_bytes": supp_bytes,
+        "supplemental_path": supp_path,
         "supplemental_type": supp_type,
         "supplemental_brief": supplemental_brief or None,
         "property_name": property_name or None,
@@ -244,21 +274,34 @@ def _execute_job(
         stage_log.code("\n".join(stage_lines[-10:]), language=None)
 
     run_dir = get_run_storage_dir(run_id)
-    memo_path = str(run_dir / f"input_memo{os.path.splitext(job['memo_name'])[1]}")
-    proforma_path = str(run_dir / f"input_proforma{os.path.splitext(job['proforma_name'])[1]}")
-    with open(memo_path, "wb") as handle:
-        handle.write(job["memo_bytes"])
-    with open(proforma_path, "wb") as handle:
-        handle.write(job["proforma_bytes"])
+
+    # Support both new-style (file paths on disk) and old-style (raw bytes) payloads
+    if job.get("memo_path") and os.path.isfile(job["memo_path"]):
+        memo_path = job["memo_path"]
+    else:
+        memo_path = str(run_dir / f"input_memo{os.path.splitext(job['memo_name'])[1]}")
+        with open(memo_path, "wb") as handle:
+            handle.write(job["memo_bytes"])
+
+    if job.get("proforma_path") and os.path.isfile(job["proforma_path"]):
+        proforma_path = job["proforma_path"]
+    else:
+        proforma_path = str(run_dir / f"input_proforma{os.path.splitext(job['proforma_name'])[1]}")
+        with open(proforma_path, "wb") as handle:
+            handle.write(job["proforma_bytes"])
 
     schedule_path = None
-    if job.get("schedule_bytes"):
+    if job.get("schedule_path") and os.path.isfile(job["schedule_path"]):
+        schedule_path = job["schedule_path"]
+    elif job.get("schedule_bytes"):
         schedule_path = str(run_dir / f"input_schedule{os.path.splitext(job['schedule_name'])[1]}")
         with open(schedule_path, "wb") as handle:
             handle.write(job["schedule_bytes"])
 
     market_data_path = None
-    if job.get("market_data_bytes"):
+    if job.get("market_data_path") and os.path.isfile(job["market_data_path"]):
+        market_data_path = job["market_data_path"]
+    elif job.get("market_data_bytes"):
         market_data_path = str(run_dir / f"input_market_data{os.path.splitext(job['market_data_name'])[1]}")
         with open(market_data_path, "wb") as handle:
             handle.write(job["market_data_bytes"])
@@ -267,6 +310,8 @@ def _execute_job(
     supplemental_type = job.get("supplemental_type")
     if supplemental_type == "url":
         supplemental_path = job.get("supplemental_name")  # URL string
+    elif job.get("supplemental_path") and os.path.isfile(job["supplemental_path"]):
+        supplemental_path = job["supplemental_path"]
     elif job.get("supplemental_bytes"):
         ext = os.path.splitext(job["supplemental_name"])[1] if job.get("supplemental_name") else ".pdf"
         supplemental_path = str(run_dir / f"input_supplemental{ext}")

@@ -197,6 +197,13 @@ def get_storage_root() -> Path:
     return root
 
 
+def get_job_staging_dir(job_id: str) -> Path:
+    """Return (and create) a directory for staging job input files at enqueue time."""
+    path = get_storage_root() / f"job_{job_id}"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def get_run_storage_dir(run_id: str) -> Path:
     path = get_storage_root() / run_id
     path.mkdir(parents=True, exist_ok=True)
@@ -722,8 +729,12 @@ def get_job_queue(username: str | None = None) -> list[dict]:
 
 
 def delete_job(job_id: str) -> None:
+    import shutil
     with db_cursor() as cur:
         cur.execute("DELETE FROM memo_chef_jobs WHERE job_id = %s", (job_id,))
+    staging_dir = get_storage_root() / f"job_{job_id}"
+    if staging_dir.exists():
+        shutil.rmtree(staging_dir, ignore_errors=True)
 
 
 def get_job(job_id: str) -> dict | None:
