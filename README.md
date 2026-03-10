@@ -51,6 +51,20 @@ ANTHROPIC_API_KEY=sk-ant-your-key
 
 3. Review `config.yaml`.
 
+## Secrets
+
+All required secrets are documented in `.streamlit/secrets.toml.example`. Copy it to `.streamlit/secrets.toml` and fill in real values. The five keys are:
+
+| Key | Required | Purpose |
+|-----|----------|---------|
+| `ANTHROPIC_API_KEY` | Yes | Claude API access |
+| `CREDITS_DATABASE_URL` | Yes | PostgreSQL connection for credits/users |
+| `RESEND_API_KEY` | Optional | Invite emails via Resend |
+| `APP_URL` | Optional | Public URL used in invite emails |
+| `RESEND_FROM` | Optional | Sender address for outbound emails |
+
+See also `.env.example` (for CLI usage) and `.streamlit/secrets_deploy.toml` (for Streamlit Cloud).
+
 ## CLI Usage
 
 Basic:
