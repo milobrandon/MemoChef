@@ -53,10 +53,19 @@ metric in the memo that should be updated with new values from the proforma.
      row).  If the table has multiple rows for one bedroom type (e.g. two
      "4BR" rows), distribute proforma units to the row whose competitive-
      set values (size, rent) are the closest match.
+   - **Split bedroom blocks — keep data isolated per row:** When a bedroom
+     type spans multiple table rows (e.g. two "4 BR/4 BA" blocks), each
+     row's SF range, bed count, rent, and all other metrics must reflect
+     ONLY the proforma unit types assigned to that specific row.  Do NOT
+     combine data across rows — if E1/E2/E6 are in the first block and E4
+     is in the second block, the first block's SF range must come only from
+     E1/E2/E6 sizes, and the second block's SF must come only from E4.
+     Mixing unit types across split blocks causes duplicate values.
    - **Overflow (more proforma types than slots):** When there are more
      proforma unit types than the table has rows for that bedroom count,
      combine the two most similar in size into a range for both size and
-     rent (e.g. "490 - 550 sf" and "$1,325 - $1,435").
+     rent (e.g. "490 - 550 sf" and "$1,325 - $1,435").  Only combine unit
+     types assigned to the SAME row — never combine across split blocks.
    - When the memo shows a range but the proforma has a single value,
      replace the range with the proforma value.
 
