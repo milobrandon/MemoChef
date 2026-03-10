@@ -63,8 +63,10 @@ class CheckpointManager:
         if self.request.resume_from_checkpoint and self.path.exists():
             try:
                 return RunManifest.model_validate_json(self.path.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+            except Exception as e:
+                logging.getLogger(__name__).warning(
+                    "Failed to load checkpoint %s, starting fresh: %s", self.path, e
+                )
         return RunManifest(
             run_id=self.request.run_id,
             memo_name=Path(self.request.memo_path).name,
