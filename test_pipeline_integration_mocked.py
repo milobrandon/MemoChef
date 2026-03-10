@@ -132,3 +132,80 @@ def test_full_pipeline_with_mocked_claude(sample_pptx, sample_proforma_xlsx, tmp
         tmp_dir, changes, validated, sample_pptx, sample_proforma_xlsx, backup_path
     )
     assert os.path.exists(log_path)
+
+
+class TestValidateMappingsCorrections:
+    """Tests for validate_mappings correction-application logic (lines ~1711-1746).
+
+    These tests mock _call_validation_api to avoid real API calls and focus
+    on the correction/rejection reconstruction logic.
+    """
+
+    @staticmethod
+    def _make_mappings():
+        return {
+            "table_updates": [
+                {"page": 1, "table_name": "T1", "row_label": "A",
+                 "column_index": 1, "old_value": "100", "new_value": "200",
+                 "source": "S1"},
+                {"page": 1, "table_name": "T1", "row_label": "B",
+                 "column_index": 1, "old_value": "300", "new_value": "400",
+                 "source": "S2"},
+            ],
+            "text_updates": [
+                {"page": 1, "old_text": "old narrative", "new_text": "new narrative",
+                 "source": "S3"},
+            ],
+            "row_inserts": [],
+        }
+
+    def test_correction_replaces_entry_at_correct_index(self):
+        """A correction at idx=0 replaces the first table_update."""
+        from unittest.mock import patch
+
+        mappings = self._make_mappings()
+        corrected_entry = {
+            "page": 1, "table_name": "T1", "row_label": "A",
+            "column_index": 1, "old_value": "100", "new_value": "250",
+            "source": "S1",
+        }
+        validation_result = {
+            "rejected": [],
+            "corrections": [
+                {"idx": 0, "type": "table", "corrected_entry": corrected_entry,
+                 "reason": "wrong value"},
+            ],
+            "missed": [],
+        }
+
+        with patch("memo_automator._call_validation_api", return_value=validation_result):
+            result = validate_mappings(
+                client=None, mappings=mappings, proforma_data="data",
+                memo_content="content", cfg=_cfg(),
+            )
+
+        assert result["table_updates"][0]["new_value"] == "250"
+        assert result["table_updates"][1]["new_value"] == "400"  # unchanged
+
+    def test_rejection_removes_entry(self):
+        """A rejection at idx=1 removes the second table_update."""
+        from unittest.mock import patch
+
+        mappings = self._make_mappings()
+        validation_result = {
+            "rejected": [
+                {"idx": 1, "type": "table", "reason": "old_value not found"},
+            ],
+            "corrections": [],
+            "missed": [],
+        }
+
+        with patch("memo_automator._call_validation_api", return_value=validation_result):
+            result = validate_mappings(
+                client=None, mappings=mappings, proforma_data="data",
+                memo_content="content", cfg=_cfg(),
+            )
+
+        assert len(result["table_updates"]) == 1
+        assert result["table_updates"][0]["new_value"] == "200"  # first kept
+        assert len(result["text_updates"]) == 1  # text untouched
