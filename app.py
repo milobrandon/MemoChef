@@ -976,9 +976,9 @@ def render_admin_tab() -> None:
                     st.success(f"Invitation sent to **{invite_email.strip()}**.")
                 else:
                     try:
-                        app_url = st.secrets.get("APP_URL", "http://localhost:8501")
+                        app_url = st.secrets.get("APP_URL", "https://memochef.streamlit.app")
                     except (KeyError, FileNotFoundError):
-                        app_url = "http://localhost:8501"
+                        app_url = "https://memochef.streamlit.app"
                     st.warning(
                         f"Email could not be sent. Share this link manually:\n\n`{app_url}?invite={token}`"
                     )
