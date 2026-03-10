@@ -39,7 +39,6 @@ from app_services import (
     record_run,
     reset_user_credits,
     save_profile,
-    send_invitation_email,
     start_background_worker,
     update_job_status,
     update_run_approval,
@@ -956,12 +955,12 @@ def render_admin_tab() -> None:
     admin_tabs = st.tabs(["Invite user", "Add user", "Edit user", "Delete user", "Reset credits", "Invitations", "Recent activity"])
 
     with admin_tabs[0]:
-        st.caption("Send an invitation email so a new user can create their own account.")
+        st.caption("Generate an invite link to share with a new user.")
         with st.form("invite_user_form"):
             invite_email = st.text_input("Email address")
             invite_role = st.selectbox("Role", ["user", "admin"], index=0)
             invite_credits = st.number_input("Credits per week", min_value=1, value=5)
-            invite_submitted = st.form_submit_button("Send invitation", type="primary")
+            invite_submitted = st.form_submit_button("Generate invite link", type="primary")
         if invite_submitted:
             if not invite_email.strip() or "@" not in invite_email:
                 st.error("Please enter a valid email address.")
@@ -972,16 +971,10 @@ def render_admin_tab() -> None:
                     credits_per_week=int(invite_credits),
                     invited_by=username,
                 )
-                if send_invitation_email(invite_email.strip(), token):
-                    st.success(f"Invitation sent to **{invite_email.strip()}**.")
-                else:
-                    try:
-                        app_url = st.secrets.get("APP_URL", "https://memochef.streamlit.app")
-                    except (KeyError, FileNotFoundError):
-                        app_url = "https://memochef.streamlit.app"
-                    st.warning(
-                        f"Email could not be sent. Share this link manually:\n\n`{app_url}?invite={token}`"
-                    )
+                invite_url = f"https://memochef.streamlit.app?invite={token}"
+                st.success(f"Invite created for **{invite_email.strip()}**")
+                st.code(invite_url, language=None)
+                st.caption("Copy this link and send it to the user.")
 
     with admin_tabs[1]:
         with st.form("add_user_form"):
