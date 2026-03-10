@@ -895,25 +895,41 @@ def get_invitations() -> list[dict]:
 
 
 def send_invitation_email(email: str, token: str, app_url: str | None = None) -> bool:
-    """Send an invitation email via Resend. Returns True on success."""
-    import resend
+    """Send an invitation email via Outlook SMTP. Returns True on success."""
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
 
     try:
-        api_key = st.secrets["RESEND_API_KEY"]
+        smtp_user = st.secrets["SMTP_USER"]
+        smtp_password = st.secrets["SMTP_PASSWORD"]
     except (KeyError, FileNotFoundError):
-        st.error("RESEND_API_KEY not configured in secrets.")
+        st.error("SMTP_USER / SMTP_PASSWORD not configured in secrets.")
         return False
 
-    resend.api_key = api_key
+    try:
+        smtp_host = st.secrets.get("SMTP_HOST", "smtp.office365.com")
+    except (KeyError, FileNotFoundError):
+        smtp_host = "smtp.office365.com"
+    try:
+        smtp_port = int(st.secrets.get("SMTP_PORT", "587"))
+    except (KeyError, FileNotFoundError):
+        smtp_port = 587
+    try:
+        from_addr = st.secrets.get("SMTP_FROM", smtp_user)
+    except (KeyError, FileNotFoundError):
+        from_addr = smtp_user
 
     if not app_url:
-        app_url = st.secrets.get("APP_URL", "https://memochef.streamlit.app")
+        try:
+            app_url = st.secrets.get(
+                "APP_URL", "https://memochef.streamlit.app",
+            )
+        except (KeyError, FileNotFoundError):
+            app_url = "https://memochef.streamlit.app"
     invite_url = f"{app_url}?invite={token}"
 
-    try:
-        from_addr = st.secrets.get("RESEND_FROM", "Memo Chef <onboarding@resend.dev>")
-    except (KeyError, FileNotFoundError):
-        from_addr = "Memo Chef <onboarding@resend.dev>"
+    subject = "Step into Memo City's Hottest Kitchen"
 
     html_body = f"""\
 <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -943,12 +959,21 @@ def send_invitation_email(email: str, token: str, app_url: str | None = None) ->
   </p>
 </div>"""
 
-    resend.Emails.send({
-        "from": from_addr,
-        "to": [email],
-        "subject": "Step into Memo City's Hottest Kitchen",
-        "html": html_body,
-    })
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = from_addr
+    msg["To"] = email
+    msg.attach(MIMEText(html_body, "html"))
+
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_password)
+            server.sendmail(from_addr, [email], msg.as_string())
+    except Exception as exc:
+        log.error("SMTP send failed: %s", exc)
+        st.error(f"Email send failed: {exc}")
+        return False
     return True
 
 
