@@ -30,7 +30,7 @@ def test_runtime_prompts_loaded_from_templates():
     assert VALIDATION_PROMPT == validation_file
 
 
-def test_prompt_loader_fallback():
-    fallback = "fallback prompt body"
-    loaded = _load_prompt_template("does_not_exist.txt", fallback)
-    assert loaded == fallback
+def test_prompt_loader_raises_on_missing_file():
+    import pytest
+    with pytest.raises(FileNotFoundError):
+        _load_prompt_template("does_not_exist.txt")
