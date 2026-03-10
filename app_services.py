@@ -7,6 +7,8 @@ import json
 import logging
 import os
 from pathlib import Path
+import threading
+import time
 from typing import Any
 import uuid
 
@@ -928,3 +930,233 @@ def send_invitation_email(email: str, token: str, app_url: str | None = None) ->
         "html": html_body,
     })
     return True
+
+
+# ============================================================================
+# Background Worker
+# ============================================================================
+
+def _worker_db_conn() -> psycopg2.extensions.connection:
+    """Create a fresh DB connection for the background worker thread."""
+    conn = psycopg2.connect(st.secrets["CREDITS_DATABASE_URL"])
+    conn.autocommit = True
+    return conn
+
+
+def _reset_stale_jobs(conn: psycopg2.extensions.connection, stale_minutes: int = 30) -> int:
+    """Reset jobs stuck in 'running' for more than stale_minutes back to 'queued'."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE memo_chef_jobs SET status = 'queued', error_message = 'Reset: stale running job', "
+            "updated_at = now() "
+            "WHERE status = 'running' AND updated_at < now() - interval '%s minutes' "
+            "RETURNING job_id",
+            (stale_minutes,),
+        )
+        rows = cur.fetchall()
+    if rows:
+        log.info("Reset %d stale running jobs: %s", len(rows), [r[0] for r in rows])
+    return len(rows)
+
+
+def _claim_next_queued_job(conn: psycopg2.extensions.connection) -> dict | None:
+    """Atomically claim the oldest queued job using FOR UPDATE SKIP LOCKED."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT job_id, username, payload_json "
+            "FROM memo_chef_jobs WHERE status = 'queued' "
+            "ORDER BY created_at ASC LIMIT 1 "
+            "FOR UPDATE SKIP LOCKED"
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        job_id, job_username, payload_json = row
+        cur.execute(
+            "UPDATE memo_chef_jobs SET status = 'running', updated_at = now() "
+            "WHERE job_id = %s",
+            (job_id,),
+        )
+    payload = _restore_json_payload(json.loads(payload_json))
+    return {"job_id": job_id, "username": job_username, "payload": payload}
+
+
+def _execute_job_headless(job: dict, api_key: str) -> bool:
+    """Execute a job without any Streamlit UI calls (for background worker)."""
+    from memo_chef.models import CompUrl, RunRequest
+    from memo_chef.pipeline import run_memo_pipeline
+
+    job_id = job["job_id"]
+    payload = job["payload"]
+    run_id = uuid.uuid4().hex
+
+    try:
+        # Use a worker-owned DB connection for status updates
+        conn = _worker_db_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE memo_chef_jobs SET run_id = %s, updated_at = now() WHERE job_id = %s",
+                (run_id, job_id),
+            )
+
+        run_dir = get_run_storage_dir(run_id)
+
+        # Resolve file paths — support both path-based and bytes-based payloads
+        memo_path = payload.get("memo_path")
+        if not memo_path or not os.path.isfile(memo_path):
+            memo_path = str(run_dir / f"input_memo{os.path.splitext(payload['memo_name'])[1]}")
+            with open(memo_path, "wb") as f:
+                f.write(payload["memo_bytes"])
+
+        proforma_path = payload.get("proforma_path")
+        if not proforma_path or not os.path.isfile(proforma_path):
+            proforma_path = str(run_dir / f"input_proforma{os.path.splitext(payload['proforma_name'])[1]}")
+            with open(proforma_path, "wb") as f:
+                f.write(payload["proforma_bytes"])
+
+        schedule_path = None
+        if payload.get("schedule_path") and os.path.isfile(payload["schedule_path"]):
+            schedule_path = payload["schedule_path"]
+        elif payload.get("schedule_bytes"):
+            schedule_path = str(run_dir / f"input_schedule{os.path.splitext(payload['schedule_name'])[1]}")
+            with open(schedule_path, "wb") as f:
+                f.write(payload["schedule_bytes"])
+
+        market_data_path = None
+        if payload.get("market_data_path") and os.path.isfile(payload["market_data_path"]):
+            market_data_path = payload["market_data_path"]
+        elif payload.get("market_data_bytes"):
+            market_data_path = str(run_dir / f"input_market_data{os.path.splitext(payload['market_data_name'])[1]}")
+            with open(market_data_path, "wb") as f:
+                f.write(payload["market_data_bytes"])
+
+        supplemental_path = None
+        supplemental_type = payload.get("supplemental_type")
+        if supplemental_type == "url":
+            supplemental_path = payload.get("supplemental_name")
+        elif payload.get("supplemental_path") and os.path.isfile(payload["supplemental_path"]):
+            supplemental_path = payload["supplemental_path"]
+        elif payload.get("supplemental_bytes"):
+            ext = os.path.splitext(payload["supplemental_name"])[1] if payload.get("supplemental_name") else ".pdf"
+            supplemental_path = str(run_dir / f"input_supplemental{ext}")
+            with open(supplemental_path, "wb") as f:
+                f.write(payload["supplemental_bytes"])
+
+        comp_url_objects = [CompUrl(**cu) for cu in payload.get("comp_urls", [])]
+
+        config_profile_name = payload.get("config_profile_name", "")
+        config_override_path = None
+        if config_profile_name:
+            profiles_dir = Path(__file__).resolve().parent / "config_profiles"
+            candidate = profiles_dir / f"{config_profile_name}.yaml"
+            if candidate.exists():
+                config_override_path = str(candidate)
+
+        request = RunRequest(
+            memo_path=memo_path,
+            proforma_path=proforma_path,
+            schedule_path=schedule_path,
+            market_data_path=market_data_path,
+            supplemental_path=supplemental_path,
+            supplemental_type=supplemental_type,
+            supplemental_brief=payload.get("supplemental_brief"),
+            comp_urls=comp_url_objects,
+            output_dir=str(run_dir),
+            api_key=api_key,
+            config_path=os.path.join(os.path.dirname(__file__), "config.yaml"),
+            config_override_path=config_override_path,
+            run_id=run_id,
+            property_name=payload.get("property_name"),
+            property_rename_to=payload.get("property_rename_to"),
+            dry_run=payload.get("dry_run", False),
+            skip_validation=payload.get("skip_validation", False),
+            use_batch_api=payload.get("use_batch_api", False),
+        )
+
+        result = run_memo_pipeline(request)
+        (run_dir / f"memo{os.path.splitext(payload['memo_name'])[1]}").write_bytes(result.memo_bytes)
+        (run_dir / "change_log.md").write_bytes(result.log_bytes)
+        (run_dir / "run_manifest.json").write_bytes(result.manifest_bytes)
+
+        started = time.time()
+        record_run(
+            run_id=run_id,
+            username=job["username"],
+            status=result.manifest.status,
+            memo_name=result.manifest.memo_name,
+            proforma_name=result.manifest.proforma_name,
+            property_name=result.manifest.property_name,
+            dry_run=payload.get("dry_run", False),
+            skip_validation=payload.get("skip_validation", False),
+            change_count=len(result.changes),
+            rejected_count=len(result.rejected),
+            missed_count=len(result.missed),
+            duration_seconds=0,
+            warnings=[w.model_dump() for w in result.manifest.warnings],
+            input_tokens=result.manifest.counts.get("input_tokens", 0),
+            output_tokens=result.manifest.counts.get("output_tokens", 0),
+            estimated_cost_microdollars=result.manifest.counts.get("estimated_cost_microdollars", 0),
+            slides_inserted=result.manifest.counts.get("slides_inserted", 0),
+            confidence_score=(result.manifest.accuracy or {}).get("confidence_score"),
+            coverage_pct=(result.manifest.accuracy or {}).get("coverage_pct"),
+            correction_rate_pct=(result.manifest.accuracy or {}).get("correction_rate_pct"),
+            run_manifest_json=result.manifest_bytes.decode("utf-8") if result.manifest_bytes else None,
+            change_log_html=result.log_bytes.decode("utf-8") if result.log_bytes else None,
+        )
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE memo_chef_jobs SET status = 'completed', updated_at = now() WHERE job_id = %s",
+                (job_id,),
+            )
+        log.info("Background worker completed job %s (run %s)", job_id, run_id)
+        conn.close()
+        return True
+
+    except Exception as exc:
+        log.exception("Background worker failed job %s: %s", job_id, exc)
+        try:
+            conn = _worker_db_conn()
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE memo_chef_jobs SET status = 'failed', error_message = %s, "
+                    "updated_at = now() WHERE job_id = %s",
+                    (str(exc)[:500], job_id),
+                )
+            conn.close()
+        except Exception:
+            log.exception("Failed to update job status for %s", job_id)
+        return False
+
+
+def _worker_loop(api_key: str, poll_interval: int = 10) -> None:
+    """Poll for queued jobs and execute them. Runs in a daemon thread."""
+    log.info("Background worker thread started (poll every %ds)", poll_interval)
+    while True:
+        try:
+            conn = _worker_db_conn()
+            _reset_stale_jobs(conn)
+            job = _claim_next_queued_job(conn)
+            conn.close()
+            if job:
+                log.info("Worker claimed job %s", job["job_id"])
+                _execute_job_headless(job, api_key)
+            else:
+                time.sleep(poll_interval)
+        except Exception:
+            log.exception("Worker loop error")
+            time.sleep(poll_interval)
+
+
+@st.cache_resource
+def start_background_worker() -> threading.Thread:
+    """Start the background worker daemon thread. Called once per Streamlit process."""
+    try:
+        api_key = st.secrets["ANTHROPIC_API_KEY"]
+    except (KeyError, FileNotFoundError):
+        log.warning("ANTHROPIC_API_KEY not in secrets — background worker disabled")
+        return None
+    t = threading.Thread(target=_worker_loop, args=(api_key,), daemon=True, name="memo-chef-worker")
+    t.start()
+    log.info("Background worker thread launched: %s", t.name)
+    return t
