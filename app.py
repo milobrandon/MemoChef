@@ -40,6 +40,7 @@ from app_services import (
     reset_user_credits,
     save_profile,
     send_invitation_email,
+    start_background_worker,
     update_job_status,
     update_run_approval,
     update_user,
@@ -56,6 +57,9 @@ try:
 except Exception as e:
     import logging as _logging
     _logging.getLogger(__name__).warning("Failed to seed users from database: %s", e)
+
+# Start background worker for auto-processing queued jobs
+start_background_worker()
 
 # --- Invitation sign-up page (no auth required) ---
 invite_token = st.query_params.get("invite")
@@ -886,20 +890,14 @@ def render_operations_tab() -> None:
                 for item in queue
             ]
             st.dataframe(queue_rows, use_container_width=True, hide_index=True)
+            n_queued = sum(1 for item in queue if item["status"] == "queued")
+            n_running = sum(1 for item in queue if item["status"] == "running")
+            if n_running:
+                st.info(f"Background worker is processing a job. {n_queued} remaining in queue.")
+            elif n_queued:
+                st.caption(f"{n_queued} queued job(s) will auto-start within ~10 seconds.")
             queue_cols = st.columns(4)
-            if queue_cols[0].button("Run queued jobs", type="primary", use_container_width=True):
-                queued_items = [item for item in queue if item["status"] == "queued"]
-                for index, item in enumerate(queued_items, start=1):
-                    ok = _execute_job(
-                        job={**item["payload"], "job_id": item["job_id"]},
-                        username=username,
-                        credits_per_week=credits_per_week,
-                        queue_position=index,
-                        queue_total=len(queued_items),
-                    )
-                    if not ok:
-                        break
-                st.success("Queue execution finished.")
+            if queue_cols[0].button("Refresh status", type="primary", use_container_width=True):
                 st.rerun()
             selected_job_id = queue_cols[1].selectbox(
                 "Job",
