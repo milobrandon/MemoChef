@@ -14,6 +14,11 @@ from memo_automator import (
 )
 
 
+class _FakeUsage:
+    input_tokens = 100
+    output_tokens = 50
+
+
 class _FakeTextBlock:
     def __init__(self, text: str):
         self.type = "text"
@@ -24,6 +29,23 @@ class _FakeMessage:
     def __init__(self, text: str):
         self.content = [_FakeTextBlock(text)]
         self.stop_reason = "end_turn"
+        self.usage = _FakeUsage()
+
+
+class _FakeStream:
+    """Context manager that mimics client.messages.stream()."""
+
+    def __init__(self, message: "_FakeMessage"):
+        self._message = message
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+    def get_final_message(self):
+        return self._message
 
 
 class _FakeMessagesAPI:
@@ -31,11 +53,17 @@ class _FakeMessagesAPI:
         self.mapping_payload = mapping_payload
         self.validation_payload = validation_payload
 
-    def create(self, **kwargs):
+    def _resolve(self, **kwargs):
         prompt = kwargs["messages"][0]["content"]
         if "## Proposed Changes" in prompt:
             return _FakeMessage(json.dumps(self.validation_payload))
         return _FakeMessage(json.dumps(self.mapping_payload))
+
+    def create(self, **kwargs):
+        return self._resolve(**kwargs)
+
+    def stream(self, **kwargs):
+        return _FakeStream(self._resolve(**kwargs))
 
 
 class _FakeClient:
