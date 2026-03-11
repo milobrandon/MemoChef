@@ -48,6 +48,45 @@ from memo_chef.models import CompUrl, RunRequest, StageUpdate
 from memo_chef.pipeline import run_memo_pipeline
 from memo_chef.theme import APP_SUBTITLE, APP_TITLE, app_css, info_card, render_hero
 
+# ---------------------------------------------------------------------------
+# Animated shrimp chef GIF shown during pipeline runs
+# ---------------------------------------------------------------------------
+_CHEF_CAPTIONS = [
+    "The shrimp is vibing while your memo cooks...",
+    "Chef Shrimp is plating your metrics...",
+    "Shrimp doing the happy dance for your data...",
+    "Shrimply vibing while the numbers simmer...",
+    "Party shrimp is prepping the garnish...",
+]
+
+_COOKING_SHRIMP_B64: str | None = None
+
+
+def _load_cooking_shrimp_b64() -> str:
+    """Load the cooking shrimp GIF as a base64 data URI (cached)."""
+    global _COOKING_SHRIMP_B64
+    if _COOKING_SHRIMP_B64 is None:
+        import base64
+        gif_path = Path(__file__).parent / "assets" / "cooking_shrimp.gif"
+        _COOKING_SHRIMP_B64 = base64.b64encode(gif_path.read_bytes()).decode()
+    return _COOKING_SHRIMP_B64
+
+
+def _chef_gif_html() -> str:
+    """Return HTML for the animated cooking shrimp chef GIF."""
+    import random
+    caption = random.choice(_CHEF_CAPTIONS)
+    b64 = _load_cooking_shrimp_b64()
+    return f"""
+<div style="text-align:center; margin: 15px 0;">
+  <img src="data:image/gif;base64,{b64}" alt="Chef Shrimp"
+       style="max-height:220px; border-radius:12px;
+              box-shadow: 0 4px 15px rgba(0,0,0,0.15);" />
+  <p style="margin-top:8px; font-size:14px; color:#888;
+            font-style:italic;">{caption}</p>
+</div>
+"""
+
 st.set_page_config(page_title=APP_TITLE, page_icon="✨", layout="wide")
 st.markdown(app_css(), unsafe_allow_html=True)
 
@@ -265,6 +304,8 @@ def _execute_job(
     if queue_position is not None and queue_total is not None:
         prefix = f"Queue item {queue_position}/{queue_total} · "
     progress_bar = st.progress(0, text=f"{prefix}Initializing run")
+    shrimp_placeholder = st.empty()
+    shrimp_placeholder.markdown(_chef_gif_html(), unsafe_allow_html=True)
     status_box = st.empty()
     stage_log = st.empty()
     stage_lines: list[str] = []
@@ -348,6 +389,7 @@ def _execute_job(
         result = run_memo_pipeline(request, callback=on_stage)
         duration = round(time.time() - started, 2)
         progress_bar.progress(100, text=f"{prefix}Run complete")
+        shrimp_placeholder.empty()
         status_box.success(f"{prefix}Draft generated successfully.")
         _persist_result(result, job["memo_name"])
         (run_dir / f"memo{os.path.splitext(job['memo_name'])[1]}").write_bytes(result.memo_bytes)
@@ -391,6 +433,7 @@ def _execute_job(
     except Exception as err:
         duration = round(time.time() - started, 2)
         progress_bar.progress(100, text=f"{prefix}Run failed")
+        shrimp_placeholder.empty()
         status_box.error(f"{prefix}Run failed")
         stage_log.code("\n".join(stage_lines[-10:]), language=None)
         try:
