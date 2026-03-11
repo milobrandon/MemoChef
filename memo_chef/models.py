@@ -92,4 +92,5 @@ class RunResult(BaseModel):
     changes: list[dict] = Field(default_factory=list)
     rejected: list[dict] = Field(default_factory=list)
     missed: list[dict] = Field(default_factory=list)
+    unvalidated_pages: list[int] = Field(default_factory=list)
     log_lines: list[str] = Field(default_factory=list)
