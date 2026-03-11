@@ -1249,10 +1249,10 @@ def _call_validation_api(
     if message.stop_reason == "max_tokens":
         log.warning(
             "Claude's validation response was cut off (hit max_tokens=%d). "
-            "This batch will pass through unvalidated.",
+            "Marking as truncated for re-batching.",
             max_tokens,
         )
-        return {"rejected": [], "corrections": [], "missed": []}
+        return {"rejected": [], "corrections": [], "missed": [], "_truncated": True}
 
     # Parse JSON using consolidated helper
     empty_result = {"rejected": [], "corrections": [], "missed": []}
@@ -1364,9 +1364,70 @@ def validate_mappings(
                 property_name=property_name,
                 telemetry=telemetry,
             )
-            merged_result["rejected"].extend(batch_result.get("rejected", []))
-            merged_result["corrections"].extend(batch_result.get("corrections", []))
-            merged_result["missed"].extend(batch_result.get("missed", []))
+
+            if batch_result.pop("_truncated", False):
+                # Re-batch with single-page sub-chunks
+                log.warning(
+                    "Validation batch %d/%d truncated — retrying with "
+                    "single-page sub-chunks for pages %s",
+                    ci, len(memo_chunks), sorted(chunk_pages),
+                )
+                sub_chunks = chunk_memo_by_pages(chunk, pages_per_chunk=1)
+                for si, sub_chunk in enumerate(sub_chunks, 1):
+                    sub_pages = set(
+                        int(m) for m in re.findall(r"PAGE (\d+)", sub_chunk)
+                    )
+                    sub_indexed = {
+                        "table_updates": [
+                            e for e in chunk_indexed["table_updates"]
+                            if e.get("page") in sub_pages
+                        ],
+                        "text_updates": [
+                            e for e in chunk_indexed["text_updates"]
+                            if e.get("page") in sub_pages
+                        ],
+                        "row_inserts": [
+                            e for e in chunk_indexed["row_inserts"]
+                            if e.get("page") in sub_pages
+                        ],
+                    }
+                    n_sub = (len(sub_indexed["table_updates"])
+                             + len(sub_indexed["text_updates"])
+                             + len(sub_indexed["row_inserts"]))
+                    if n_sub == 0:
+                        continue
+                    if last_api_call > 0:
+                        elapsed = time.time() - last_api_call
+                        wait = RATE_LIMIT_INTERVAL - elapsed
+                        if wait > 0:
+                            time.sleep(wait)
+                    last_api_call = time.time()
+                    sub_result = _call_validation_api(
+                        client, sub_indexed, proforma_data, sub_chunk, cfg,
+                        property_name=property_name,
+                        telemetry=telemetry,
+                    )
+                    if sub_result.pop("_truncated", False):
+                        log.warning(
+                            "  Validation sub-chunk %d (pages %s) still "
+                            "truncated — these entries pass through "
+                            "UNVALIDATED",
+                            si, sorted(sub_pages),
+                        )
+                        unvalidated_pages = merged_result.setdefault(
+                            "_unvalidated_pages", [])
+                        unvalidated_pages.extend(sorted(sub_pages))
+                    else:
+                        merged_result["rejected"].extend(
+                            sub_result.get("rejected", []))
+                        merged_result["corrections"].extend(
+                            sub_result.get("corrections", []))
+                        merged_result["missed"].extend(
+                            sub_result.get("missed", []))
+            else:
+                merged_result["rejected"].extend(batch_result.get("rejected", []))
+                merged_result["corrections"].extend(batch_result.get("corrections", []))
+                merged_result["missed"].extend(batch_result.get("missed", []))
 
         result = merged_result
     else:
@@ -1469,13 +1530,18 @@ def validate_mappings(
             "reason": rej.get("reason", "unknown"),
         })
 
-    return {
+    validated = {
         "table_updates": valid_table,
         "text_updates": valid_text,
         "row_inserts": valid_row_inserts,
         "rejected": rejected_entries,
         "missed": result.get("missed", []),
     }
+    # Propagate unvalidated pages so callers can warn users
+    unvalidated = result.get("_unvalidated_pages")
+    if unvalidated:
+        validated["_unvalidated_pages"] = sorted(set(unvalidated))
+    return validated
 
 
 # ============================================================================
@@ -2769,6 +2835,19 @@ def write_change_log(output_dir: str, all_changes: list, mappings: dict,
             f.write(f"| {i} | {c['page']} | {c['type']} | "
                     f"{_md_cell(c['location'])} | {_md_cell(old_display)} | "
                     f"{_md_cell(new_display)} | {_md_cell(c['source'])} |\n")
+
+        # Unvalidated pages warning
+        unvalidated_pages = mappings.get("_unvalidated_pages", [])
+        if unvalidated_pages:
+            f.write("\n\n## ⚠️ Unvalidated Pages\n\n")
+            f.write(
+                "**The following pages could not be fully validated due to "
+                "API response truncation. Changes on these pages passed "
+                "through without QA review. Manual review is strongly "
+                "recommended.**\n\n"
+            )
+            for pg in unvalidated_pages:
+                f.write(f"- Page {pg}\n")
 
         # Rejected updates
         rejected = mappings.get("rejected", [])

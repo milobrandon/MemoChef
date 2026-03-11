@@ -238,6 +238,7 @@ def _persist_result(result, filename: str) -> None:
     st.session_state["n_changes"] = len(result.changes)
     st.session_state["n_rejected"] = len(result.rejected)
     st.session_state["n_missed"] = len(result.missed)
+    st.session_state["unvalidated_pages"] = result.unvalidated_pages
     st.session_state["log_lines"] = result.log_lines
     st.session_state["warnings"] = [warning.model_dump() for warning in result.manifest.warnings]
     st.session_state["manifest"] = result.manifest.model_dump()
@@ -711,6 +712,13 @@ def render_new_run_tab() -> None:
 
     if "memo_bytes" in st.session_state:
         st.divider()
+        unval = st.session_state.get("unvalidated_pages", [])
+        if unval:
+            st.warning(
+                f"Pages {unval} could not be fully validated due to API "
+                f"response truncation. Changes on these pages passed without "
+                f"QA review. **Manual review is strongly recommended.**"
+            )
         st.success("Artifacts are ready for review and download.")
         metric_cols = st.columns(5)
         metric_cols[0].metric("Applied changes", st.session_state["n_changes"])

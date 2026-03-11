@@ -537,6 +537,14 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                     checkpoint=checkpoint,
                     stage="validation",
                 )
+            unvalidated_pages = validated.get("_unvalidated_pages", [])
+            if unvalidated_pages:
+                checkpoint.add_warning(
+                    "validation",
+                    f"Pages {unvalidated_pages} could not be fully validated "
+                    f"due to API response truncation. Changes on these pages "
+                    f"passed without QA. Manual review recommended.",
+                )
             validated_mapping_path = os.path.join(request.output_dir, "mappings_validated.json")
             _write_json(validated_mapping_path, validated)
             checkpoint.set_output("mappings_validated", validated_mapping_path)
@@ -673,6 +681,7 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
             changes=changes,
             rejected=validated.get("rejected", []),
             missed=validated.get("missed", []),
+            unvalidated_pages=validated.get("_unvalidated_pages", []),
             log_lines=log_capture.lines[:],
         )
     except Exception as err:
