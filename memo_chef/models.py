@@ -12,6 +12,36 @@ class CompUrl(BaseModel):
     guidance: str = ""
 
 
+class UnitMixEntry(BaseModel):
+    unit_type: str
+    beds: int | None = None
+    baths: int | None = None
+    sf: int | None = None
+    rent: float | None = None
+    rent_per_sf: float | None = None
+
+
+class CompProperty(BaseModel):
+    name: str
+    address: str | None = None
+    distance_mi: float | None = None
+    unit_mix: list[UnitMixEntry] = Field(default_factory=list)
+    total_units: int | None = None
+    occupancy_pct: float | None = None
+    year_built: int | None = None
+    concessions: str | None = None
+    source: str  # "url", "realpage", "csv", "manual"
+    source_detail: str = ""
+
+
+class CompSlideRequest(BaseModel):
+    subject_property: CompProperty
+    comps: list[CompProperty]
+    sort_by: str = "distance"
+    max_comps: int = 6
+    include_narrative: bool = True
+
+
 class StageUpdate(BaseModel):
     key: str
     label: str
@@ -34,6 +64,11 @@ class RunRequest(BaseModel):
     supplemental_type: str | None = None  # "pdf", "url", "excel", "csv"
     supplemental_brief: str | None = None
     comp_urls: list[CompUrl] = Field(default_factory=list)
+    comp_csv_path: str | None = None
+    comp_manual_entries: list[dict] | None = None
+    auto_generate_comp_slide: bool = False
+    comp_max_comps: int = 6
+    comp_sort_by: str = "distance"
     dry_run: bool = False
     skip_validation: bool = False
     use_batch_api: bool = False
