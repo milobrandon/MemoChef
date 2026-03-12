@@ -445,6 +445,7 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
         _emit(callback, "extract_sources", "Extract source data", 12)
         with checkpoint.stage("extract_sources", "Extracting proforma, market, and schedule data"):
             proforma_data = extract_proforma_data(request.proforma_path, cfg)
+            raw_proforma_text = proforma_data  # capture before schedule/market appends
             proforma_extract_path = os.path.join(request.output_dir, "proforma_extract.txt")
             Path(proforma_extract_path).write_text(proforma_data, encoding="utf-8")
             checkpoint.set_output("proforma_extract", proforma_extract_path)
@@ -670,7 +671,7 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                     store_proforma_snapshot(
                         property_name=request.property_name,
                         run_id=request.run_id,
-                        extracted_text=proforma_data,  # already extracted earlier in pipeline
+                        extracted_text=raw_proforma_text,  # pure proforma, before schedule/market appends
                     )
                 except Exception as e:
                     log.warning("Failed to store proforma snapshot: %s", e)
