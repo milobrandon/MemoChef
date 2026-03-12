@@ -39,6 +39,8 @@ class RunRequest(BaseModel):
     use_batch_api: bool = False
     resume_from_checkpoint: bool = True
     config_override_path: str | None = None
+    market_workbook_path: str | None = None
+    chart_instructions: str | None = None
 
     @property
     def memo_name(self) -> str:

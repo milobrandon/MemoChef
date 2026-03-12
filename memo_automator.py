@@ -2201,7 +2201,7 @@ def _apply_chart_updates(memo_path: str, chart_updates: list, dry_run: bool = Fa
         series_name = upd.get("series_name", "")
         new_values = upd.get("new_values", [])
         old_values = upd.get("old_values", [])
-        new_categories = upd.get("categories", None)  # noqa: F841 – reserved for future use
+        new_categories = upd.get("new_categories") or upd.get("categories")
         source = upd.get("source", "")
 
         try:
@@ -2244,6 +2244,11 @@ def _apply_chart_updates(memo_path: str, chart_updates: list, dry_run: bool = Fa
                 )
                 continue
 
+        # Namespace map for chart XML manipulation (used in series and category updates)
+        _nsmap = {
+            "c": "http://schemas.openxmlformats.org/drawingml/2006/chart",
+        }
+
         # Find and update the target series
         found_series = False
         for series in target_chart.series:
@@ -2268,9 +2273,6 @@ def _apply_chart_updates(memo_path: str, chart_updates: list, dry_run: bool = Fa
 
             # Update series values via the underlying XML cache
             try:
-                _nsmap = {
-                    "c": "http://schemas.openxmlformats.org/drawingml/2006/chart",
-                }
                 el = series._element
                 num_cache = el.find(".//c:numRef/c:numCache", _nsmap)
                 if num_cache is None:
@@ -2295,6 +2297,29 @@ def _apply_chart_updates(memo_path: str, chart_updates: list, dry_run: bool = Fa
             except Exception as e:
                 log.warning("Chart update FAILED for series '%s': %s", s_name, e)
             break
+
+        # Update category labels if provided
+        if new_categories and not dry_run:
+            try:
+                # Access the chart's plot XML to find category cache
+                plot_el = target_chart.plots[0]._element
+                cat_el = plot_el.find(".//c:cat/c:strRef/c:strCache", _nsmap)
+                if cat_el is None:
+                    cat_el = plot_el.find(".//c:cat/c:strLit", _nsmap)
+                if cat_el is not None:
+                    pts = cat_el.findall("c:pt", _nsmap)
+                    for i, pt in enumerate(pts):
+                        if i < len(new_categories):
+                            v_elem = pt.find("c:v", _nsmap)
+                            if v_elem is not None:
+                                v_elem.text = str(new_categories[i])
+                    log.info(
+                        "Updated %d category labels on page %d",
+                        min(len(pts), len(new_categories)),
+                        page,
+                    )
+            except Exception as e:
+                log.warning("Failed to update category labels on page %d: %s", page, e)
 
         if not found_series:
             log.warning(
