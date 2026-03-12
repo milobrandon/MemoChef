@@ -663,6 +663,18 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                 int(round(client.estimated_cost_usd * 1_000_000)),
             )
 
+            # Store proforma snapshot for drift detection
+            if request.property_name:
+                try:
+                    from app_services import store_proforma_snapshot
+                    store_proforma_snapshot(
+                        property_name=request.property_name,
+                        run_id=request.run_id,
+                        extracted_text=proforma_data,  # already extracted earlier in pipeline
+                    )
+                except Exception as e:
+                    log.warning("Failed to store proforma snapshot: %s", e)
+
         checkpoint.manifest.status = "completed"
         checkpoint.save()
         _emit(callback, "complete", "Run complete", 100)

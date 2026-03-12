@@ -2783,7 +2783,8 @@ def normalize_layout(memo_path: str, cfg: dict) -> dict:
 # ============================================================================
 def write_change_log(output_dir: str, all_changes: list, mappings: dict,
                      memo_path: str, proforma_path: str, backup_path: str,
-                     run_metadata: dict | None = None):
+                     run_metadata: dict | None = None,
+                     proforma_drift: dict | None = None):
     """Write a Markdown change-log summarizing every modification."""
     def _md_cell(value: str) -> str:
         return str(value).replace("|", "\\|").replace("\n", "<br>")
@@ -2825,6 +2826,27 @@ def write_change_log(output_dir: str, all_changes: list, mappings: dict,
             f.write(f"- Correction rate: {acc['correction_rate_pct']}%\n")
             f.write(f"- Match quality: {acc['match_quality_pct']}%\n")
             f.write(f"- Miss rate: {acc['miss_rate_pct']}%\n\n")
+
+        # Proforma drift section
+        if proforma_drift and proforma_drift.get("total_changes", 0) > 0:
+            f.write("\n## Proforma Drift\n\n")
+            f.write(f"**{proforma_drift['summary']}**\n\n")
+            for tab_name, changes in proforma_drift["by_tab"].items():
+                n = len(changes["changed"]) + len(changes["added"]) + len(changes["removed"])
+                if n == 0:
+                    continue
+                f.write(f"\n### {tab_name} ({n} changes)\n\n")
+                if changes["changed"]:
+                    f.write("| Row | Col | Previous | Current |\n")
+                    f.write("|-----|-----|----------|--------|\n")
+                    for c in changes["changed"]:
+                        old = _md_cell(str(c["old"]))
+                        new = _md_cell(str(c["new"]))
+                        f.write(f"| {c['row']} | {c['col_idx']} | {old} | {new} |\n")
+                if changes["added"]:
+                    f.write(f"\n*{len(changes['added'])} new rows added*\n")
+                if changes["removed"]:
+                    f.write(f"\n*{len(changes['removed'])} rows removed*\n")
 
         f.write("## Applied Changes\n\n")
         f.write("| # | Page | Type | Location | Old | New | Source |\n")
