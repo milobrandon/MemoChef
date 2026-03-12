@@ -486,7 +486,7 @@ When a user uploads a proforma for a property that's been run before, automatica
 
 ```sql
 CREATE TABLE IF NOT EXISTS proforma_snapshots (
-    id SERIAL PRIMARY KEY,
+    id TEXT PRIMARY KEY,  -- UUID generated in Python, matches run_id/job_id pattern
     property_name TEXT NOT NULL,
     run_id TEXT NOT NULL REFERENCES memo_chef_runs(run_id),
     extracted_text TEXT NOT NULL,
@@ -670,7 +670,7 @@ In `write_change_log()`, add a "Proforma Drift" section before "Applied Changes"
 | Feature | New Dependencies |
 |---------|-----------------|
 | F6 | `pywin32`, `Pillow` |
-| F7 | None |
+| F7 | `rapidfuzz` |
 | F8 | None |
 | F9 | None |
 | F10 | None |
