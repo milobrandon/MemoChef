@@ -95,7 +95,10 @@ def map_market_charts(
     prompt_path = Path(__file__).parent.parent / "prompts" / "chart_mapping_v1.txt"
     template = prompt_path.read_text(encoding="utf-8")
     prompt = template.replace("{user_instructions}", user_instructions)
-    prompt = prompt.replace("{workbook_data}", workbook_text[:50_000])
+    max_chars = 50_000
+    if len(workbook_text) > max_chars:
+        log.warning("Workbook text truncated from %d to %d chars", len(workbook_text), max_chars)
+    prompt = prompt.replace("{workbook_data}", workbook_text[:max_chars])
     prompt = prompt.replace("{memo_charts_json}", json.dumps(memo_charts, indent=2))
 
     response = client.messages.create(

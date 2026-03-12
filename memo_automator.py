@@ -2298,8 +2298,8 @@ def _apply_chart_updates(memo_path: str, chart_updates: list, dry_run: bool = Fa
                 log.warning("Chart update FAILED for series '%s': %s", s_name, e)
             break
 
-        # Update category labels if provided
-        if new_categories and not dry_run:
+        # Update category labels if provided (only when series was matched)
+        if found_series and new_categories and not dry_run:
             try:
                 # Access the chart's plot XML to find category cache
                 plot_el = target_chart.plots[0]._element
