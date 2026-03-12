@@ -29,6 +29,7 @@ from app_services import (
     get_job_queue,
     get_job_staging_dir,
     get_platform_health,
+    get_previous_proforma_snapshot,
     get_profiles,
     get_recent_runs,
     get_run_artifact_paths,
@@ -44,6 +45,7 @@ from app_services import (
     update_run_approval,
     update_user,
 )
+from memo_chef.drift import compute_proforma_diff
 from memo_chef.models import CompUrl, RunRequest, StageUpdate
 from memo_chef.pipeline import run_memo_pipeline
 from memo_chef.theme import APP_SUBTITLE, APP_TITLE, app_css, info_card, render_hero
@@ -635,6 +637,52 @@ def render_new_run_tab() -> None:
         help="If the proforma uses a different property name, enter it here. "
              "All occurrences will be renamed before the AI pass.",
     )
+
+    # --- Proforma drift detection ---
+    if property_name and proforma_file is not None:
+        prev_snapshot = get_previous_proforma_snapshot(property_name)
+        if prev_snapshot:
+            try:
+                from memo_automator import load_config, extract_proforma_data
+                import tempfile
+                import os as _os
+                cfg = load_config(os.path.join(os.path.dirname(__file__), "config.yaml"))
+                # Write uploaded proforma to temp file for extraction
+                with tempfile.NamedTemporaryFile(
+                    suffix=_os.path.splitext(proforma_file.name)[1],
+                    delete=False,
+                ) as tmp:
+                    tmp.write(proforma_file.getvalue())
+                    tmp_path = tmp.name
+                try:
+                    current_text = extract_proforma_data(tmp_path, cfg)
+                    st.session_state["cached_proforma_text"] = current_text
+                    diff = compute_proforma_diff(prev_snapshot["extracted_text"], current_text)
+                    if diff["total_changes"] > 0:
+                        st.info(
+                            f"**Proforma drift detected:** {diff['summary']} "
+                            f"(vs. run on {prev_snapshot['created_at'][:10]})"
+                        )
+                        with st.expander("View proforma changes"):
+                            for tab_name, changes in diff["by_tab"].items():
+                                n = len(changes["changed"]) + len(changes["added"]) + len(changes["removed"])
+                                if n == 0:
+                                    continue
+                                st.markdown(f"**{tab_name}**: {n} changes")
+                                if changes["changed"]:
+                                    rows = []
+                                    for c in changes["changed"]:
+                                        rows.append({"Row": c["row"], "Column": c["col_idx"], "Previous": c["old"], "Current": c["new"]})
+                                    st.dataframe(rows, use_container_width=True, hide_index=True)
+                                if changes["added"]:
+                                    st.caption(f"{len(changes['added'])} new rows added")
+                                if changes["removed"]:
+                                    st.caption(f"{len(changes['removed'])} rows removed")
+                finally:
+                    _os.unlink(tmp_path)
+            except Exception as e:
+                import logging as _logging
+                _logging.getLogger(__name__).debug("Drift detection skipped: %s", e)
 
     config_profiles = _list_config_profiles()
     config_profile_name = st.selectbox(
