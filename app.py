@@ -194,6 +194,8 @@ def _queue_item_from_inputs(
     supplemental_url: str = "",
     supplemental_brief: str = "",
     comp_urls: list[dict] | None = None,
+    auto_generate_comp_slide: bool = False,
+    comp_csv_file=None,
     property_name: str,
     property_rename_to: str = "",
     dry_run: bool,
@@ -244,6 +246,12 @@ def _queue_item_from_inputs(
         with open(supp_path, "wb") as f:
             f.write(supp_bytes)
 
+    comp_csv_path = None
+    if comp_csv_file:
+        comp_csv_path = str(staging / comp_csv_file.name)
+        with open(comp_csv_path, "wb") as f:
+            f.write(comp_csv_file.getvalue())
+
     return {
         "job_id": job_id,
         "memo_name": memo_file.name,
@@ -261,6 +269,8 @@ def _queue_item_from_inputs(
         "property_name": property_name or None,
         "property_rename_to": property_rename_to or None,
         "comp_urls": comp_urls or [],
+        "auto_generate_comp_slide": auto_generate_comp_slide,
+        "comp_csv_path": comp_csv_path,
         "dry_run": dry_run,
         "skip_validation": skip_validation,
         "use_batch_api": use_batch_api,
@@ -365,6 +375,10 @@ def _execute_job(
 
     comp_url_objects = [CompUrl(**cu) for cu in job.get("comp_urls", [])]
 
+    comp_csv_path = None
+    if job.get("comp_csv_path") and os.path.isfile(job["comp_csv_path"]):
+        comp_csv_path = job["comp_csv_path"]
+
     request = RunRequest(
         memo_path=memo_path,
         proforma_path=proforma_path,
@@ -374,6 +388,8 @@ def _execute_job(
         supplemental_type=supplemental_type,
         supplemental_brief=job.get("supplemental_brief"),
         comp_urls=comp_url_objects,
+        auto_generate_comp_slide=job.get("auto_generate_comp_slide", False),
+        comp_csv_path=comp_csv_path,
         output_dir=str(run_dir),
         api_key=api_key,
         config_path=os.path.join(os.path.dirname(__file__), "config.yaml"),
@@ -621,6 +637,12 @@ def render_new_run_tab() -> None:
             if cu_url.strip():
                 comp_url_inputs.append({"url": cu_url.strip(), "label": cu_label.strip(), "guidance": cu_guidance.strip()})
 
+    st.markdown("**Comp Slide Builder**")
+    auto_comp = st.checkbox("Auto-generate comp slide", value=False, key="auto_comp")
+    comp_csv = None
+    if auto_comp:
+        comp_csv = st.file_uploader("Comp data (CSV)", type=["csv"], key="comp_csv")
+
     rename_cols = st.columns(2)
     property_name = rename_cols[0].text_input(
         "Property name (as it appears in memo)",
@@ -718,6 +740,8 @@ def render_new_run_tab() -> None:
             supplemental_url=supplemental_url,
             supplemental_brief=supplemental_brief,
             comp_urls=comp_url_inputs,
+            auto_generate_comp_slide=auto_comp,
+            comp_csv_file=comp_csv,
             property_name=property_name,
             property_rename_to=property_rename_to,
             dry_run=dry_run,
@@ -742,6 +766,8 @@ def render_new_run_tab() -> None:
             supplemental_url=supplemental_url,
             supplemental_brief=supplemental_brief,
             comp_urls=comp_url_inputs,
+            auto_generate_comp_slide=auto_comp,
+            comp_csv_file=comp_csv,
             property_name=property_name,
             property_rename_to=property_rename_to,
             dry_run=dry_run,

@@ -620,6 +620,46 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                     log.error("Slide insertion failed: %s", e)
                     checkpoint.add_warning("slide_insertion", str(e))
 
+        # --- Comp slide builder ---
+        if request.auto_generate_comp_slide and not request.dry_run:
+            _emit(callback, "comp_slide", "Build comp slide", 86)
+            with checkpoint.stage("comp_slide", "Generating competitive analysis slide"):
+                try:
+                    from memo_chef.comp_builder import (
+                        build_comp_slide,
+                        deduplicate_comps,
+                        normalize_comps_from_csv,
+                        normalize_comps_from_urls,
+                    )
+                    from memo_chef.slide_insertion import detect_memo_sections
+                    from pptx import Presentation as PptxPresentation
+
+                    all_comps = []
+                    if request.comp_csv_path:
+                        all_comps.extend(normalize_comps_from_csv(request.comp_csv_path))
+                    if request.comp_urls:
+                        comp_texts = {}
+                        for cu in request.comp_urls:
+                            comp_extract_path = checkpoint.manifest.outputs.get("comp_extract")
+                            if comp_extract_path and os.path.isfile(comp_extract_path):
+                                comp_texts[cu.url] = Path(comp_extract_path).read_text(encoding="utf-8")
+                        all_comps.extend(normalize_comps_from_urls(request.comp_urls, comp_texts))
+
+                    if all_comps:
+                        deduped = deduplicate_comps(all_comps)
+                        sections = detect_memo_sections(memo_content)
+                        subject = deduped[0]
+                        comp_prs = PptxPresentation(request.memo_path)
+                        build_comp_slide(comp_prs, subject, deduped[1:], sections)
+                        comp_prs.save(request.memo_path)
+                        checkpoint.set_count("comp_slides_inserted", 1)
+                        log.info("Inserted comp slide with %d comps", len(deduped) - 1)
+                    else:
+                        log.warning("No comp data provided; skipping comp slide generation")
+                except Exception as e:
+                    log.error("Comp slide generation failed: %s", e)
+                    checkpoint.add_warning("comp_slide", str(e))
+
         if not request.dry_run:
             _emit(callback, "branding", "Apply branding", 90)
             with checkpoint.stage("branding", "Applying visual refresh"):
