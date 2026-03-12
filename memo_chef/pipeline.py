@@ -554,6 +554,39 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
             changes = apply_updates(request.memo_path, validated, dry_run=request.dry_run)
             checkpoint.set_count("changes", len(changes))
 
+        # --- Market workbook chart updates ---
+        if request.market_workbook_path and request.chart_instructions:
+            _emit(callback, "chart_updates", "Update charts from market workbook", 86)
+            with checkpoint.stage("chart_updates", "Updating memo charts from market workbook"):
+                try:
+                    from memo_chef.chart_extraction import (
+                        extract_memo_charts,
+                        extract_workbook_tables,
+                        map_market_charts,
+                    )
+                    from memo_automator import _apply_chart_updates
+
+                    wb_text = extract_workbook_tables(request.market_workbook_path)
+                    memo_charts = extract_memo_charts(request.memo_path)
+                    chart_updates = map_market_charts(
+                        workbook_text=wb_text,
+                        memo_charts=memo_charts,
+                        user_instructions=request.chart_instructions,
+                        client=client,
+                    )
+                    if chart_updates:
+                        chart_changes = _apply_chart_updates(
+                            request.memo_path, chart_updates, dry_run=request.dry_run
+                        )
+                        changes.extend(chart_changes)
+                        checkpoint.set_count("chart_updates", len(chart_changes))
+                        log.info("Chart updates applied: %d changes", len(chart_changes))
+                    else:
+                        log.info("No chart updates returned from mapping")
+                except Exception as e:
+                    log.error("Chart update step failed: %s", e)
+                    checkpoint.add_warning("chart_updates", str(e))
+
         # --- Accuracy metrics ---
         from memo_chef.accuracy import compute_accuracy_metrics
 

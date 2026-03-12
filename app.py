@@ -194,6 +194,8 @@ def _queue_item_from_inputs(
     supplemental_url: str = "",
     supplemental_brief: str = "",
     comp_urls: list[dict] | None = None,
+    market_wb_file=None,
+    chart_instructions: str = "",
     property_name: str,
     property_rename_to: str = "",
     dry_run: bool,
@@ -238,6 +240,12 @@ def _queue_item_from_inputs(
         with open(market_data_path, "wb") as f:
             f.write(market_data_file.getvalue())
 
+    market_wb_path = None
+    if market_wb_file:
+        market_wb_path = str(staging / market_wb_file.name)
+        with open(market_wb_path, "wb") as f:
+            f.write(market_wb_file.getvalue())
+
     supp_path = None
     if supp_bytes:
         supp_path = str(staging / supp_name)
@@ -254,6 +262,9 @@ def _queue_item_from_inputs(
         "schedule_path": schedule_path,
         "market_data_name": market_data_file.name if market_data_file else None,
         "market_data_path": market_data_path,
+        "market_wb_name": market_wb_file.name if market_wb_file else None,
+        "market_wb_path": market_wb_path,
+        "chart_instructions": chart_instructions or None,
         "supplemental_name": supp_name,
         "supplemental_path": supp_path,
         "supplemental_type": supp_type,
@@ -351,6 +362,10 @@ def _execute_job(
         with open(market_data_path, "wb") as handle:
             handle.write(job["market_data_bytes"])
 
+    market_wb_path = None
+    if job.get("market_wb_path") and os.path.isfile(job["market_wb_path"]):
+        market_wb_path = job["market_wb_path"]
+
     supplemental_path = None
     supplemental_type = job.get("supplemental_type")
     if supplemental_type == "url":
@@ -370,6 +385,8 @@ def _execute_job(
         proforma_path=proforma_path,
         schedule_path=schedule_path,
         market_data_path=market_data_path,
+        market_workbook_path=market_wb_path,
+        chart_instructions=job.get("chart_instructions"),
         supplemental_path=supplemental_path,
         supplemental_type=supplemental_type,
         supplemental_brief=job.get("supplemental_brief"),
@@ -621,6 +638,14 @@ def render_new_run_tab() -> None:
             if cu_url.strip():
                 comp_url_inputs.append({"url": cu_url.strip(), "label": cu_label.strip(), "guidance": cu_guidance.strip()})
 
+    st.markdown("**Market Data (Charts)**")
+    market_wb_file = st.file_uploader("Market workbook", type=["xlsx", "xlsm"], key="market_wb")
+    chart_instructions = st.text_area(
+        "Chart instructions",
+        placeholder="e.g., Update the rent trend chart on slide 12 with submarket rents from the 'Rent Growth' tab.",
+        key="chart_instructions",
+    )
+
     rename_cols = st.columns(2)
     property_name = rename_cols[0].text_input(
         "Property name (as it appears in memo)",
@@ -718,6 +743,8 @@ def render_new_run_tab() -> None:
             supplemental_url=supplemental_url,
             supplemental_brief=supplemental_brief,
             comp_urls=comp_url_inputs,
+            market_wb_file=market_wb_file,
+            chart_instructions=chart_instructions,
             property_name=property_name,
             property_rename_to=property_rename_to,
             dry_run=dry_run,
@@ -742,6 +769,8 @@ def render_new_run_tab() -> None:
             supplemental_url=supplemental_url,
             supplemental_brief=supplemental_brief,
             comp_urls=comp_url_inputs,
+            market_wb_file=market_wb_file,
+            chart_instructions=chart_instructions,
             property_name=property_name,
             property_rename_to=property_rename_to,
             dry_run=dry_run,

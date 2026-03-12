@@ -44,6 +44,45 @@ def extract_workbook_tables(
     return "\n".join(lines)
 
 
+def extract_memo_charts(memo_path: str) -> list[dict]:
+    """Extract a structured list of charts from a PowerPoint memo.
+
+    Returns a list of dicts describing each chart (page, shape name, title,
+    series names) for use as context in chart mapping prompts.
+    """
+    from pptx import Presentation
+
+    prs = Presentation(memo_path)
+    charts: list[dict] = []
+    for page_idx, slide in enumerate(prs.slides, start=1):
+        for shape in slide.shapes:
+            if not shape.has_chart:
+                continue
+            chart = shape.chart
+            chart_title = ""
+            if chart.has_title and chart.chart_title and chart.chart_title.has_text_frame:
+                try:
+                    chart_title = chart.chart_title.text_frame.text.strip()
+                except Exception:
+                    pass
+            series_names: list[str] = []
+            try:
+                for series in chart.series:
+                    try:
+                        series_names.append(series.name or "")
+                    except (AttributeError, IndexError):
+                        series_names.append("")
+            except Exception:
+                pass
+            charts.append({
+                "page": page_idx,
+                "shape_name": shape.name,
+                "chart_title": chart_title,
+                "series_names": series_names,
+            })
+    return charts
+
+
 def map_market_charts(
     workbook_text: str,
     memo_charts: list[dict],
