@@ -190,6 +190,20 @@ def get_db_conn():
         cur.execute(
             "ALTER TABLE memo_chef_runs ADD COLUMN IF NOT EXISTS change_log_html TEXT"
         )
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS proforma_snapshots ("
+            "  id TEXT PRIMARY KEY,"
+            "  property_name TEXT NOT NULL,"
+            "  run_id TEXT NOT NULL,"
+            "  extracted_text TEXT NOT NULL,"
+            "  tab_hashes JSONB,"
+            "  created_at TIMESTAMPTZ NOT NULL DEFAULT now()"
+            ")"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_proforma_snapshots_property "
+            "ON proforma_snapshots(property_name, created_at DESC)"
+        )
     return conn
 
 
