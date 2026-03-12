@@ -581,6 +581,122 @@ def get_run_details(run_id: str) -> dict | None:
     }
 
 
+def _compute_analytics(rows: list[dict]) -> dict:
+    """Compute analytics from a list of run row dicts (pure function, no DB)."""
+    from collections import Counter
+
+    if not rows:
+        return {
+            "total_runs": 0, "total_cost_usd": 0.0, "avg_confidence": 0.0,
+            "avg_duration_sec": 0.0, "total_changes": 0,
+            "cost_by_date": [], "accuracy_by_date": [], "by_user": [],
+            "warning_counts": [],
+        }
+
+    total_cost_micro = sum(r.get("estimated_cost_microdollars", 0) or 0 for r in rows)
+    confidences = [r["confidence_score"] for r in rows if r.get("confidence_score") is not None]
+    durations = [r["duration_seconds"] for r in rows if r.get("duration_seconds") is not None]
+    total_changes = sum(r.get("change_count", 0) or 0 for r in rows)
+
+    # Cost by date
+    cost_by_date: dict[str, float] = {}
+    for r in rows:
+        d = str(r["created_at"])[:10]
+        cost_by_date[d] = cost_by_date.get(d, 0) + (r.get("estimated_cost_microdollars", 0) or 0) / 1_000_000
+
+    # Accuracy by date (average when multiple runs per day)
+    accuracy_by_date_accum: dict[str, dict] = {}
+    for r in rows:
+        d = str(r["created_at"])[:10]
+        cc = r.get("change_count", 0) or 0
+        rc = r.get("rejected_count", 0) or 0
+        mc = r.get("missed_count", 0) or 0
+        total = cc + rc
+        rej_rate = (rc / total * 100) if total > 0 else 0.0
+        miss_rate = (mc / (cc + mc) * 100) if (cc + mc) > 0 else 0.0
+        if d not in accuracy_by_date_accum:
+            accuracy_by_date_accum[d] = {"confs": [], "rejs": [], "misses": []}
+        accuracy_by_date_accum[d]["confs"].append(r.get("confidence_score") or 0)
+        accuracy_by_date_accum[d]["rejs"].append(rej_rate)
+        accuracy_by_date_accum[d]["misses"].append(miss_rate)
+
+    accuracy_by_date: dict[str, dict] = {}
+    for d, acc in accuracy_by_date_accum.items():
+        accuracy_by_date[d] = {
+            "confidence": round(sum(acc["confs"]) / len(acc["confs"]), 1),
+            "rejection_rate": round(sum(acc["rejs"]) / len(acc["rejs"]), 1),
+            "miss_rate": round(sum(acc["misses"]) / len(acc["misses"]), 1),
+        }
+
+    # By user
+    user_data: dict[str, dict] = {}
+    for r in rows:
+        u = r["username"]
+        if u not in user_data:
+            user_data[u] = {"runs": 0, "confidences": [], "cost_micro": 0, "last_run": ""}
+        user_data[u]["runs"] += 1
+        if r.get("confidence_score") is not None:
+            user_data[u]["confidences"].append(r["confidence_score"])
+        user_data[u]["cost_micro"] += r.get("estimated_cost_microdollars", 0) or 0
+        user_data[u]["last_run"] = str(r["created_at"])[:10]
+
+    by_user = []
+    for username, data in sorted(user_data.items()):
+        by_user.append({
+            "username": username,
+            "runs": data["runs"],
+            "avg_confidence": round(sum(data["confidences"]) / len(data["confidences"]), 1) if data["confidences"] else 0.0,
+            "total_cost_usd": round(data["cost_micro"] / 1_000_000, 4),
+            "last_run": data["last_run"],
+        })
+
+    # Warning frequency
+    warning_counter: Counter = Counter()
+    for r in rows:
+        try:
+            warnings = json.loads(r.get("warnings_json") or "[]")
+            for w in warnings:
+                warning_counter[w.get("message", "unknown")] += 1
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    return {
+        "total_runs": len(rows),
+        "total_cost_usd": round(total_cost_micro / 1_000_000, 4),
+        "avg_confidence": round(sum(confidences) / len(confidences), 1) if confidences else 0.0,
+        "avg_duration_sec": round(sum(durations) / len(durations), 1) if durations else 0.0,
+        "total_changes": total_changes,
+        "cost_by_date": [{"date": d, "cost_usd": v} for d, v in sorted(cost_by_date.items())],
+        "accuracy_by_date": [{"date": d, **v} for d, v in sorted(accuracy_by_date.items())],
+        "by_user": by_user,
+        "warning_counts": [{"warning": w, "count": c} for w, c in warning_counter.most_common()],
+    }
+
+
+def get_run_analytics(days: int | None = None) -> dict:
+    """Aggregate run statistics for the analytics dashboard."""
+    with db_cursor() as cur:
+        if days:
+            cur.execute(
+                "SELECT run_id, username, status, change_count, rejected_count, missed_count, "
+                "duration_seconds, estimated_cost_microdollars, confidence_score, coverage_pct, "
+                "warnings_json, created_at "
+                "FROM memo_chef_runs WHERE created_at >= NOW() - INTERVAL '%s days' "
+                "ORDER BY created_at",
+                (days,),
+            )
+        else:
+            cur.execute(
+                "SELECT run_id, username, status, change_count, rejected_count, missed_count, "
+                "duration_seconds, estimated_cost_microdollars, confidence_score, coverage_pct, "
+                "warnings_json, created_at "
+                "FROM memo_chef_runs ORDER BY created_at"
+            )
+        columns = [desc[0] for desc in cur.description]
+        rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+    return _compute_analytics(rows)
+
+
 def save_profile(
     profile_name: str,
     owner_username: str,
