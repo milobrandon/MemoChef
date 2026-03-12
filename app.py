@@ -33,6 +33,7 @@ from app_services import (
     get_recent_runs,
     get_run_artifact_paths,
     get_run_storage_dir,
+    get_run_analytics,
     get_run_details,
     get_user_credits,
     get_users,
@@ -1002,6 +1003,49 @@ def render_admin_tab() -> None:
             }
         )
     st.dataframe(rows, use_container_width=True, hide_index=True)
+
+    # --- Analytics Dashboard ---
+    st.markdown("---")
+    st.markdown("### Run Analytics")
+    period_map = {"Last 7 days": 7, "Last 30 days": 30, "All time": None}
+    period_label = st.selectbox("Period", list(period_map.keys()), index=1)
+    analytics = get_run_analytics(days=period_map[period_label])
+
+    summary_cols = st.columns(5)
+    summary_cols[0].metric("Total Runs", analytics["total_runs"])
+    summary_cols[1].metric("Avg Confidence", f"{analytics['avg_confidence']:.0f}/100" if analytics["avg_confidence"] else "—")
+    summary_cols[2].metric("Total API Spend", f"${analytics['total_cost_usd']:.2f}")
+    avg_dur_min = analytics["avg_duration_sec"] / 60 if analytics["avg_duration_sec"] else 0
+    summary_cols[3].metric("Avg Duration", f"{avg_dur_min:.1f} min" if avg_dur_min else "—")
+    summary_cols[4].metric("Total Changes", analytics["total_changes"])
+
+    if analytics["cost_by_date"]:
+        import pandas as pd
+        cost_df = pd.DataFrame(analytics["cost_by_date"])
+        st.markdown("**API Cost Trend**")
+        st.line_chart(cost_df, x="date", y="cost_usd")
+
+    if analytics["accuracy_by_date"]:
+        acc_df = pd.DataFrame(analytics["accuracy_by_date"])
+        st.markdown("**Accuracy Trend**")
+        st.line_chart(acc_df, x="date", y=["confidence", "rejection_rate", "miss_rate"])
+
+    if analytics["by_user"]:
+        st.markdown("**Per-User Breakdown**")
+        st.dataframe(analytics["by_user"], use_container_width=True, hide_index=True)
+
+    if analytics["warning_counts"]:
+        st.markdown("**Warning Frequency**")
+        warn_df = pd.DataFrame(analytics["warning_counts"])
+        st.bar_chart(warn_df, x="warning", y="count")
+
+    # Time savings estimate
+    manual_hours = 4.0  # configurable baseline
+    total_hours_saved = (analytics["total_runs"] * manual_hours) - (analytics["avg_duration_sec"] * analytics["total_runs"] / 3600) if analytics["total_runs"] else 0
+    if total_hours_saved > 0:
+        st.metric("Estimated Hours Saved", f"{total_hours_saved:.0f} hrs")
+
+    st.markdown("---")
 
     admin_tabs = st.tabs(["Invite user", "Add user", "Edit user", "Delete user", "Reset credits", "Invitations", "Recent activity"])
 
