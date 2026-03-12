@@ -595,6 +595,67 @@ def get_run_details(run_id: str) -> dict | None:
     }
 
 
+def normalize_property_name(name: str) -> str:
+    """Normalize property name for consistent snapshot lookup."""
+    n = name.strip().lower()
+    for prefix in ("the ", "at "):
+        if n.startswith(prefix):
+            n = n[len(prefix):]
+    return n.strip()
+
+
+def store_proforma_snapshot(
+    property_name: str,
+    run_id: str,
+    extracted_text: str,
+    tab_hashes: dict[str, str] | None = None,
+    max_snapshots: int = 3,
+) -> None:
+    """Store a proforma snapshot. Auto-prunes to keep last max_snapshots per property."""
+    import json
+    import uuid
+    conn = get_db_conn()
+    normalized = normalize_property_name(property_name)
+    snapshot_id = str(uuid.uuid4())
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO proforma_snapshots (id, property_name, run_id, extracted_text, tab_hashes) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (snapshot_id, normalized, run_id, extracted_text, json.dumps(tab_hashes) if tab_hashes else None),
+        )
+        # Prune old snapshots beyond max_snapshots
+        cur.execute(
+            "DELETE FROM proforma_snapshots WHERE id IN ("
+            "  SELECT id FROM proforma_snapshots "
+            "  WHERE property_name = %s "
+            "  ORDER BY created_at DESC "
+            "  OFFSET %s"
+            ")",
+            (normalized, max_snapshots),
+        )
+
+
+def get_previous_proforma_snapshot(property_name: str) -> dict | None:
+    """Retrieve the most recent snapshot for a property.
+
+    Returns: {"run_id": str, "extracted_text": str, "created_at": str} or None.
+    """
+    conn = get_db_conn()
+    normalized = normalize_property_name(property_name)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT run_id, extracted_text, created_at "
+            "FROM proforma_snapshots "
+            "WHERE property_name = %s "
+            "ORDER BY created_at DESC LIMIT 1",
+            (normalized,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return {"run_id": row[0], "extracted_text": row[1], "created_at": str(row[2])}
+
+
 def save_profile(
     profile_name: str,
     owner_username: str,
