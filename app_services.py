@@ -676,7 +676,7 @@ def _compute_analytics(rows: list[dict]) -> dict:
 def get_run_analytics(days: int | None = None) -> dict:
     """Aggregate run statistics for the analytics dashboard."""
     with db_cursor() as cur:
-        if days:
+        if days is not None:
             cur.execute(
                 "SELECT run_id, username, status, change_count, rejected_count, missed_count, "
                 "duration_seconds, estimated_cost_microdollars, confidence_score, coverage_pct, "

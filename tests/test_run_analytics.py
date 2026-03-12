@@ -1,6 +1,5 @@
 """Tests for run analytics aggregation."""
 import json
-from unittest.mock import patch, MagicMock
 
 import pytest
 

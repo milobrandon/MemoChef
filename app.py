@@ -1019,8 +1019,9 @@ def render_admin_tab() -> None:
     summary_cols[3].metric("Avg Duration", f"{avg_dur_min:.1f} min" if avg_dur_min else "—")
     summary_cols[4].metric("Total Changes", analytics["total_changes"])
 
+    import pandas as pd
+
     if analytics["cost_by_date"]:
-        import pandas as pd
         cost_df = pd.DataFrame(analytics["cost_by_date"])
         st.markdown("**API Cost Trend**")
         st.line_chart(cost_df, x="date", y="cost_usd")
