@@ -139,3 +139,31 @@ class RunResult(BaseModel):
     missed: list[dict] = Field(default_factory=list)
     unvalidated_pages: list[int] = Field(default_factory=list)
     log_lines: list[str] = Field(default_factory=list)
+
+
+class SlideContent(BaseModel):
+    """Content specification for a single slide to generate."""
+    title: str
+    section: str  # target memo section name
+    insert_after_slide: int  # 1-based slide number
+    content_type: str  # "table_and_narrative", "chart", "table", "narrative_only"
+    source_refs: list[str] = Field(default_factory=list)  # e.g. ["supplemental:demographics.pdf"]
+    visual_type: str | None = None  # "bar_chart", "line_chart", "pie_chart", "table"
+    visual_data: dict = Field(default_factory=dict)  # categories, series, title
+    narrative: str = ""
+    rationale: str = ""
+
+
+class SlidePlan(BaseModel):
+    """Claude-generated plan for slides to create."""
+    slides_to_generate: list[SlideContent] = Field(default_factory=list)
+
+
+class DeckProfile(BaseModel):
+    """Profile of an existing memo deck's structure and style."""
+    sections: list[dict] = Field(default_factory=list)  # from detect_memo_sections
+    total_slides: int = 0
+    has_charts: bool = False
+    has_tables: bool = False
+    slide_layouts_used: list[str] = Field(default_factory=list)
+    visual_types_present: list[str] = Field(default_factory=list)  # "chart", "table", "image"

@@ -691,6 +691,54 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                     log.error("Comp slide generation failed: %s", e)
                     checkpoint.add_warning("comp_slide", str(e))
 
+        # --- Multi-slide generation (unified engine) ---
+        # Runs when any source directive has scope "slide_generation" or "both",
+        # or when supplemental data is provided with a directive targeting slides.
+        slide_gen_directives = [
+            d for d in directives_dicts
+            if d.get("scope") in ("slide_generation", "both")
+            and d.get("directive", "").strip()
+        ]
+        if slide_gen_directives and not request.dry_run:
+            _emit(callback, "generate_slides", "Generate new slides", 88)
+            with checkpoint.stage("generate_slides", "AI-driven multi-slide generation"):
+                try:
+                    from memo_chef.slide_generator import (
+                        build_and_insert_slides,
+                        extract_deck_profile,
+                        generate_slide_plan,
+                    )
+
+                    deck_profile = extract_deck_profile(request.memo_path, memo_content)
+
+                    # Gather all available source data for the slide prompt
+                    slide_source_data = proforma_data
+                    supp_extract = checkpoint.manifest.outputs.get("supplemental_extract")
+                    if supp_extract and os.path.isfile(supp_extract):
+                        slide_source_data += "\n\n## SUPPLEMENTAL DATA\n"
+                        slide_source_data += Path(supp_extract).read_text(encoding="utf-8")
+
+                    plan = generate_slide_plan(
+                        source_data=slide_source_data,
+                        memo_structure=deck_profile.sections,
+                        deck_profile=deck_profile,
+                        client=client,
+                        model=cfg.get("claude", {}).get("model", "claude-sonnet-4-6"),
+                        source_directives=slide_gen_directives,
+                    )
+
+                    n_inserted = build_and_insert_slides(
+                        request.memo_path, plan, deck_profile,
+                    )
+                    checkpoint.set_count(
+                        "ai_slides_generated",
+                        n_inserted,
+                    )
+                    log.info("Multi-slide generation: %d slides created", n_inserted)
+                except Exception as e:
+                    log.error("Multi-slide generation failed: %s", e)
+                    checkpoint.add_warning("generate_slides", str(e))
+
         if not request.dry_run:
             _emit(callback, "branding", "Apply branding", 90)
             with checkpoint.stage("branding", "Applying visual refresh"):
