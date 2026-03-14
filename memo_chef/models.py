@@ -6,6 +6,15 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 
+class SourceDirective(BaseModel):
+    """User instruction attached to a specific uploaded source."""
+
+    source_id: str  # e.g. "proforma:Unit Mix", "comp:hub-lexington", "supplemental"
+    source_type: str  # proforma_tab | supplemental | comp_url | market_data | schedule
+    directive: str  # free-text user instruction
+    scope: str = "both"  # "mapping" | "slide_generation" | "both"
+
+
 class CompUrl(BaseModel):
     url: str
     label: str = ""
@@ -69,6 +78,7 @@ class RunRequest(BaseModel):
     auto_generate_comp_slide: bool = False
     comp_max_comps: int = 6
     comp_sort_by: str = "distance"
+    source_directives: list[SourceDirective] = Field(default_factory=list)
     dry_run: bool = False
     skip_validation: bool = False
     use_batch_api: bool = False

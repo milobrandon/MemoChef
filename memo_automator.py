@@ -787,7 +787,9 @@ def _salvage_truncated_json(raw: str) -> dict | None:
         mappings.setdefault("table_updates", [])
         mappings.setdefault("text_updates", [])
         mappings.setdefault("row_inserts", [])
-        n = len(mappings["table_updates"]) + len(mappings["text_updates"]) + len(mappings["row_inserts"])
+        mappings.setdefault("narrative_updates", [])
+        n = (len(mappings["table_updates"]) + len(mappings["text_updates"])
+             + len(mappings["row_inserts"]) + len(mappings["narrative_updates"]))
         if n > 0:
             log.info("Salvaged %d updates from truncated response", n)
             return mappings
@@ -895,6 +897,7 @@ def build_mapping_batch_requests(
     memo_chunks: list[str],
     cfg: dict,
     property_name: str = "",
+    source_directives: list[dict] | None = None,
 ) -> list[dict]:
     """Build a list of batch API request dicts for the Message Batches API.
 
@@ -910,10 +913,12 @@ def build_mapping_batch_requests(
     temperature = cfg["claude"]["temperature"]
 
     pn_section = _property_name_section(property_name, "mapping")
+    directives_section = format_source_directives(source_directives or [], scope="mapping")
     system_text = MAPPING_PROMPT.format(
         proforma_data=proforma_data,
         memo_content="(see user message below)",
         property_name_section=pn_section,
+        source_directives_section=directives_section,
     )
 
     requests = []
@@ -1028,6 +1033,37 @@ def _property_name_section(property_name: str, purpose: str = "mapping") -> str:
     )
 
 
+def format_source_directives(directives: list[dict], scope: str = "both") -> str:
+    """Format user source directives into a prompt section.
+
+    Parameters
+    ----------
+    directives:
+        List of dicts with keys: source_id, source_type, directive, scope.
+    scope:
+        Filter to only include directives matching this scope ("mapping",
+        "slide_generation", or "both").  Directives with scope "both"
+        are always included.
+    """
+    relevant = [
+        d for d in directives
+        if d.get("directive", "").strip()
+        and d.get("scope", "both") in (scope, "both")
+    ]
+    if not relevant:
+        return ""
+    lines = ["\n## Source Directives — FOLLOW THESE USER INSTRUCTIONS"]
+    lines.append(
+        "The user has provided specific instructions for how to use certain sources. "
+        "You MUST follow these directives precisely. If a directive says to ignore a "
+        "source or limit its use to specific sections, obey that constraint."
+    )
+    for d in relevant:
+        src_label = d.get("source_id", d.get("source_type", "unknown"))
+        lines.append(f"- **{src_label}**: {d['directive']}")
+    return "\n".join(lines) + "\n"
+
+
 def get_metric_mappings(
     client: anthropic.Anthropic,
     proforma_data: str,
@@ -1035,6 +1071,7 @@ def get_metric_mappings(
     cfg: dict,
     property_name: str = "",
     telemetry: dict | None = None,
+    source_directives: list[dict] | None = None,
 ) -> dict:
     """
     Send proforma data + memo content to Claude and receive structured
@@ -1050,6 +1087,7 @@ def get_metric_mappings(
     use_thinking = "opus" in model.lower()
 
     pn_section = _property_name_section(property_name, "mapping")
+    directives_section = format_source_directives(source_directives or [], scope="mapping")
 
     # Split prompt into cached system prefix (instructions + proforma)
     # and varying user message (memo chunk only).
@@ -1057,6 +1095,7 @@ def get_metric_mappings(
         proforma_data=proforma_data,
         memo_content="(see user message below)",
         property_name_section=pn_section,
+        source_directives_section=directives_section,
     )
     user_text = f"## Memo Content (from PowerPoint)\n{memo_content}"
 
@@ -1151,12 +1190,14 @@ def get_metric_mappings(
     mappings.setdefault("table_updates", [])
     mappings.setdefault("text_updates", [])
     mappings.setdefault("row_inserts", [])
+    mappings.setdefault("narrative_updates", [])
 
     n_table = len(mappings["table_updates"])
     n_text = len(mappings["text_updates"])
     n_row_ins = len(mappings["row_inserts"])
-    log.info("Parsed mappings: %d table updates, %d text updates, %d row inserts",
-             n_table, n_text, n_row_ins)
+    n_narrative = len(mappings["narrative_updates"])
+    log.info("Parsed mappings: %d table, %d text, %d row inserts, %d narrative",
+             n_table, n_text, n_row_ins, n_narrative)
     return mappings
 
 
@@ -1174,6 +1215,7 @@ def _call_validation_api(
     cfg: dict,
     property_name: str = "",
     telemetry: dict | None = None,
+    source_directives: list[dict] | None = None,
 ) -> dict:
     """
     Single validation API call. Returns the parsed JSON result from Claude.
@@ -1189,6 +1231,7 @@ def _call_validation_api(
     use_thinking = "opus" in model.lower()
 
     pn_section = _property_name_section(property_name, "validation")
+    directives_section = format_source_directives(source_directives or [], scope="mapping")
 
     # Split: static context (instructions + memo + proforma) cached,
     # varying part (mappings JSON) in user message.
@@ -1197,6 +1240,7 @@ def _call_validation_api(
         memo_content=memo_content,
         proforma_data=proforma_data,
         property_name_section=pn_section,
+        source_directives_section=directives_section,
     )
     user_text = (
         "## Proposed Changes (JSON, each entry has an \"idx\" field)\n"
@@ -1272,6 +1316,7 @@ def validate_mappings(
     cfg: dict,
     property_name: str = "",
     telemetry: dict | None = None,
+    source_directives: list[dict] | None = None,
 ) -> dict:
     """
     Second Claude API call - validates the proposed mappings by cross-checking
@@ -1363,6 +1408,7 @@ def validate_mappings(
                 client, chunk_indexed, proforma_data, chunk, cfg,
                 property_name=property_name,
                 telemetry=telemetry,
+                source_directives=source_directives,
             )
 
             if batch_result.pop("_truncated", False):
@@ -1406,6 +1452,7 @@ def validate_mappings(
                         client, sub_indexed, proforma_data, sub_chunk, cfg,
                         property_name=property_name,
                         telemetry=telemetry,
+                        source_directives=source_directives,
                     )
                     if sub_result.pop("_truncated", False):
                         log.warning(
@@ -1435,6 +1482,7 @@ def validate_mappings(
             client, indexed_mappings, proforma_data, memo_content, cfg,
             property_name=property_name,
             telemetry=telemetry,
+            source_directives=source_directives,
         )
 
     # Reconstruct validated mappings: start with originals, remove rejections,
@@ -1611,6 +1659,23 @@ def pre_validate_mappings(mappings: dict, memo_content: str) -> dict:
                 ),
             })
 
+    valid_narrative = []
+    for upd in mappings.get("narrative_updates", []):
+        page = upd.get("page")
+        haystack = page_blocks.get(page, memo_content)
+        old_narrative = upd.get("old_narrative", "")
+        if old_narrative and old_narrative in haystack:
+            valid_narrative.append(upd)
+        else:
+            rejected.append({
+                "original": upd,
+                "reason": (
+                    f"old_narrative not found on page {page}: '{old_narrative[:60]}...'"
+                    if page in page_blocks
+                    else f"old_narrative not found in memo: '{old_narrative[:60]}...'"
+                ),
+            })
+
     n_rejected_new = (len(rejected) - len(mappings.get("rejected", [])))
     if n_rejected_new > 0:
         log.warning("Pre-validation rejected %d entries (old value not in memo)",
@@ -1620,6 +1685,7 @@ def pre_validate_mappings(mappings: dict, memo_content: str) -> dict:
         "table_updates": valid_table,
         "text_updates": valid_text,
         "row_inserts": mappings.get("row_inserts", []),
+        "narrative_updates": valid_narrative,
         "rejected": rejected,
         "missed": mappings.get("missed", []),
     }
@@ -2166,6 +2232,52 @@ def apply_updates(memo_path: str, mappings: dict, dry_run: bool = False) -> list
             "source": source,
         })
 
+    # --- Narrative updates (paragraph-level rewrites) ---
+    for upd in mappings.get("narrative_updates", []):
+        page = upd.get("page")
+        old_narrative = upd.get("old_narrative", "")
+        new_narrative = upd.get("new_narrative", "")
+        source = upd.get("source", "")
+
+        if not old_narrative or not new_narrative:
+            continue
+
+        try:
+            slide = prs.slides[page - 1]
+        except (IndexError, TypeError):
+            log.warning("Narrative update SKIPPED: page %s does not exist", page)
+            continue
+
+        found = False
+        for shape in slide.shapes:
+            if not dry_run:
+                if _replace_in_shape(shape, old_narrative, new_narrative):
+                    changes.append({
+                        "page": page, "type": "narrative",
+                        "location": shape.name,
+                        "old": old_narrative[:80] + ("..." if len(old_narrative) > 80 else ""),
+                        "new": new_narrative[:80] + ("..." if len(new_narrative) > 80 else ""),
+                        "source": source,
+                    })
+                    found = True
+                    break
+            else:
+                if shape.has_text_frame:
+                    full_text = "\n".join(p.text for p in shape.text_frame.paragraphs)
+                    if old_narrative in full_text:
+                        changes.append({
+                            "page": page, "type": "narrative",
+                            "location": shape.name,
+                            "old": old_narrative[:80] + ("..." if len(old_narrative) > 80 else ""),
+                            "new": new_narrative[:80] + ("..." if len(new_narrative) > 80 else ""),
+                            "source": source,
+                        })
+                        found = True
+                        break
+        if not found:
+            log.warning("Narrative update NOT FOUND: page %d, '%s...'",
+                        page, old_narrative[:60])
+
     if not dry_run:
         prs.save(memo_path)
         log.info("Memo saved with %d updates.", len(changes))
@@ -2452,7 +2564,7 @@ def _reformat_run(run, is_heading_context: bool, size_threshold: int,
     else:
         size_pt = 0
 
-    is_heading = is_heading_context or size_pt >= size_threshold
+    is_heading = is_heading_context or size_pt >= size_threshold or was_bold is True
 
     # Set font family
     run.font.name = heading_font if is_heading else body_font

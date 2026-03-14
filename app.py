@@ -203,6 +203,7 @@ def _queue_item_from_inputs(
     profile_name: str | None,
     config_profile_name: str | None = None,
     use_batch_api: bool = False,
+    source_directives: list[dict] | None = None,
 ) -> dict:
     # Determine supplemental source type
     supp_name = None
@@ -276,6 +277,7 @@ def _queue_item_from_inputs(
         "use_batch_api": use_batch_api,
         "profile_name": profile_name or "",
         "config_profile_name": config_profile_name or "",
+        "source_directives": source_directives or [],
     }
 
 
@@ -379,6 +381,14 @@ def _execute_job(
     if job.get("comp_csv_path") and os.path.isfile(job["comp_csv_path"]):
         comp_csv_path = job["comp_csv_path"]
 
+    # Build source directives from job payload
+    from memo_chef.models import SourceDirective
+
+    source_directives = []
+    for sd_dict in job.get("source_directives", []):
+        if sd_dict.get("directive", "").strip():
+            source_directives.append(SourceDirective(**sd_dict))
+
     request = RunRequest(
         memo_path=memo_path,
         proforma_path=proforma_path,
@@ -388,6 +398,7 @@ def _execute_job(
         supplemental_type=supplemental_type,
         supplemental_brief=job.get("supplemental_brief"),
         comp_urls=comp_url_objects,
+        source_directives=source_directives,
         auto_generate_comp_slide=job.get("auto_generate_comp_slide", False),
         comp_csv_path=comp_csv_path,
         output_dir=str(run_dir),
@@ -601,6 +612,39 @@ def render_new_run_tab() -> None:
     schedule_file = upload_cols[2].file_uploader("Schedule (Beta)", type=["mpp"], key="schedule_upload")
     market_data_file = upload_cols[3].file_uploader("Market data (Beta)", type=["xlsx", "xlsm"], key="market_upload")
 
+    # Per-source directives — tell Claude how to use each source
+    with st.expander("Directions for Claude (per source)", expanded=False):
+        st.caption(
+            "Give Claude specific instructions for each source. "
+            "E.g., 'Only update revenue section' or 'Ignore occupancy data'."
+        )
+        directive_cols = st.columns(2)
+        proforma_directive = directive_cols[0].text_area(
+            "Proforma directions",
+            key="proforma_directive",
+            placeholder="e.g., Only use Unit Mix and Cash Flow tabs",
+            height=68,
+        )
+        schedule_directive = directive_cols[1].text_area(
+            "Schedule directions",
+            key="schedule_directive",
+            placeholder="e.g., Focus on construction milestones only",
+            height=68,
+        )
+        directive_cols2 = st.columns(2)
+        market_data_directive = directive_cols2[0].text_area(
+            "Market data directions",
+            key="market_data_directive",
+            placeholder="e.g., Use for rent trend charts only",
+            height=68,
+        )
+        supplemental_directive = directive_cols2[1].text_area(
+            "Supplemental data directions",
+            key="supplemental_directive",
+            placeholder="e.g., Generate a market summary slide from this data",
+            height=68,
+        )
+
     # Supplemental data for slide insertion
     supp_cols = st.columns([2, 2, 3])
     supplemental_file = supp_cols[0].file_uploader(
@@ -725,6 +769,38 @@ def render_new_run_tab() -> None:
 
     action_disabled = should_disable_fire_button(memo_file, proforma_file, remaining, credits_error)
     action_cols = st.columns(2)
+    # Collect per-source directives from UI state
+    _ui_directives = []
+    if proforma_directive.strip():
+        _ui_directives.append({
+            "source_id": "proforma", "source_type": "proforma_tab",
+            "directive": proforma_directive.strip(), "scope": "both",
+        })
+    if schedule_directive.strip():
+        _ui_directives.append({
+            "source_id": "schedule", "source_type": "schedule",
+            "directive": schedule_directive.strip(), "scope": "both",
+        })
+    if market_data_directive.strip():
+        _ui_directives.append({
+            "source_id": "market_data", "source_type": "market_data",
+            "directive": market_data_directive.strip(), "scope": "both",
+        })
+    if supplemental_directive.strip():
+        _ui_directives.append({
+            "source_id": "supplemental", "source_type": "supplemental",
+            "directive": supplemental_directive.strip(), "scope": "both",
+        })
+    # Comp URL guidance is already captured in comp_url_inputs — add as directives too
+    for cu in comp_url_inputs:
+        if cu.get("guidance", "").strip():
+            _ui_directives.append({
+                "source_id": f"comp:{cu.get('label') or cu['url'][:30]}",
+                "source_type": "comp_url",
+                "directive": cu["guidance"],
+                "scope": "both",
+            })
+
     if action_cols[0].button(
         f"Generate draft ({remaining} credits left)" if remaining > 0 else "No credits remaining",
         type="primary",
@@ -749,6 +825,7 @@ def render_new_run_tab() -> None:
             profile_name=selected_profile or save_profile_name.strip() or None,
             config_profile_name=config_profile_name or None,
             use_batch_api=use_batch_api,
+            source_directives=_ui_directives,
         )
         _execute_job(job=job, username=username, credits_per_week=credits_per_week)
 
@@ -775,6 +852,7 @@ def render_new_run_tab() -> None:
             profile_name=selected_profile or save_profile_name.strip() or None,
             config_profile_name=config_profile_name or None,
             use_batch_api=use_batch_api,
+            source_directives=_ui_directives,
         )
         enqueue_job(username, job)
         st.success(f"Queued `{job['memo_name']}`.")

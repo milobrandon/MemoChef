@@ -227,6 +227,7 @@ def _mapping_with_batching(
     property_name: str | None,
     callback: StageCallback,
     checkpoint: CheckpointManager,
+    source_directives: list[dict] | None = None,
 ) -> dict:
     batch_threshold = 80_000
     rate_limit_interval = 65
@@ -240,6 +241,7 @@ def _mapping_with_batching(
             memo_content,
             cfg,
             property_name=property_name,
+            source_directives=source_directives,
             checkpoint=checkpoint,
             stage="mapping",
         )
@@ -247,7 +249,7 @@ def _mapping_with_batching(
         return mappings
 
     memo_chunks = chunk_memo_by_pages(memo_content, pages_per_chunk=3)
-    mappings = {"table_updates": [], "text_updates": [], "row_inserts": []}
+    mappings = {"table_updates": [], "text_updates": [], "row_inserts": [], "narrative_updates": []}
     last_api_call = 0.0
     for index, chunk in enumerate(memo_chunks, start=1):
         percent = 50 + int((18 * index) / max(len(memo_chunks), 1))
@@ -264,18 +266,20 @@ def _mapping_with_batching(
             chunk,
             cfg,
             property_name=property_name,
+            source_directives=source_directives,
             checkpoint=checkpoint,
             stage="mapping",
         )
         if batch.pop("_truncated", False):
             covered_pages = {
                 entry.get("page")
-                for group in ("table_updates", "text_updates", "row_inserts")
+                for group in ("table_updates", "text_updates", "row_inserts", "narrative_updates")
                 for entry in batch.get(group, [])
             }
             mappings["table_updates"].extend(batch.get("table_updates", []))
             mappings["text_updates"].extend(batch.get("text_updates", []))
             mappings["row_inserts"].extend(batch.get("row_inserts", []))
+            mappings["narrative_updates"].extend(batch.get("narrative_updates", []))
             sub_chunks = chunk_memo_by_pages(chunk, pages_per_chunk=1)
             for sub_chunk in sub_chunks:
                 sub_pages = set(int(match) for match in re.findall(r"PAGE (\d+)", sub_chunk))
@@ -292,6 +296,7 @@ def _mapping_with_batching(
                     sub_chunk,
                     cfg,
                     property_name=property_name,
+                    source_directives=source_directives,
                     checkpoint=checkpoint,
                     stage="mapping",
                 )
@@ -299,10 +304,12 @@ def _mapping_with_batching(
                 mappings["table_updates"].extend(sub_batch.get("table_updates", []))
                 mappings["text_updates"].extend(sub_batch.get("text_updates", []))
                 mappings["row_inserts"].extend(sub_batch.get("row_inserts", []))
+                mappings["narrative_updates"].extend(sub_batch.get("narrative_updates", []))
             continue
         mappings["table_updates"].extend(batch.get("table_updates", []))
         mappings["text_updates"].extend(batch.get("text_updates", []))
         mappings["row_inserts"].extend(batch.get("row_inserts", []))
+        mappings["narrative_updates"].extend(batch.get("narrative_updates", []))
 
     # Deduplicate entries that appear in multiple chunks
     mappings = _dedup_mappings(mappings)
@@ -339,10 +346,19 @@ def _dedup_mappings(mappings: dict) -> dict:
             seen_row.add(key)
             deduped_row.append(ins)
 
+    seen_narrative: set[tuple] = set()
+    deduped_narrative = []
+    for upd in mappings.get("narrative_updates", []):
+        key = (upd.get("page"), upd.get("old_narrative", "")[:100])
+        if key not in seen_narrative:
+            seen_narrative.add(key)
+            deduped_narrative.append(upd)
+
     n_removed = (
         len(mappings.get("table_updates", [])) - len(deduped_table)
         + len(mappings.get("text_updates", [])) - len(deduped_text)
         + len(mappings.get("row_inserts", [])) - len(deduped_row)
+        + len(mappings.get("narrative_updates", [])) - len(deduped_narrative)
     )
     if n_removed > 0:
         logging.getLogger("memo_automator").info(
@@ -354,6 +370,7 @@ def _dedup_mappings(mappings: dict) -> dict:
         "table_updates": deduped_table,
         "text_updates": deduped_text,
         "row_inserts": deduped_row,
+        "narrative_updates": deduped_narrative,
     }
 
 
@@ -365,6 +382,7 @@ def _mapping_with_batch_api(
     property_name: str | None,
     callback: StageCallback,
     checkpoint: CheckpointManager,
+    source_directives: list[dict] | None = None,
 ) -> dict:
     """Submit all mapping chunks as a single Message Batch (50% cost).
 
@@ -376,19 +394,21 @@ def _mapping_with_batch_api(
 
     requests = build_mapping_batch_requests(
         proforma_data, memo_chunks, cfg, property_name=property_name or "",
+        source_directives=source_directives,
     )
 
     _emit(callback, "mapping", "Batch submitted — waiting for results", 50)
     results = submit_and_poll_batch(client, requests, poll_interval=15)
 
     # Merge results in order
-    mappings: dict = {"table_updates": [], "text_updates": [], "row_inserts": []}
+    mappings: dict = {"table_updates": [], "text_updates": [], "row_inserts": [], "narrative_updates": []}
     for i in range(len(memo_chunks)):
         cid = f"mapping-chunk-{i}"
         batch_result = results.get(cid, {"table_updates": [], "text_updates": [], "row_inserts": []})
         mappings["table_updates"].extend(batch_result.get("table_updates", []))
         mappings["text_updates"].extend(batch_result.get("text_updates", []))
         mappings["row_inserts"].extend(batch_result.get("row_inserts", []))
+        mappings["narrative_updates"].extend(batch_result.get("narrative_updates", []))
 
     mappings = _dedup_mappings(mappings)
     checkpoint.set_count("batch_api_chunks", len(memo_chunks))
@@ -491,6 +511,11 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
             Path(memo_extract_path).write_text(memo_content, encoding="utf-8")
             checkpoint.set_output("memo_extract", memo_extract_path)
 
+        # Serialize source directives for prompt injection
+        directives_dicts = [
+            d.model_dump() for d in request.source_directives
+        ] if request.source_directives else []
+
         _emit(callback, "mapping", "Generate mappings", 45)
         with checkpoint.stage("mapping", "Generating candidate updates"):
             mapping_fn = (
@@ -505,6 +530,7 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                 effective_property_name,
                 callback,
                 checkpoint,
+                source_directives=directives_dicts,
             )
             mappings["table_updates"] = [
                 entry for entry in mappings["table_updates"]
@@ -513,6 +539,10 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
             mappings["text_updates"] = [
                 entry for entry in mappings["text_updates"]
                 if entry.get("old_text") != entry.get("new_text")
+            ]
+            mappings["narrative_updates"] = [
+                entry for entry in mappings.get("narrative_updates", [])
+                if entry.get("old_narrative") != entry.get("new_narrative")
             ]
             mappings = pre_validate_mappings(mappings, memo_content)
             raw_mapping_path = os.path.join(request.output_dir, "mappings_raw.json")
@@ -534,6 +564,7 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                     memo_content,
                     cfg,
                     property_name=effective_property_name,
+                    source_directives=directives_dicts,
                     checkpoint=checkpoint,
                     stage="validation",
                 )

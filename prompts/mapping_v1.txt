@@ -8,6 +8,8 @@ metric in the memo that should be updated with new values from the proforma.
 ## Memo Content (from PowerPoint)
 {memo_content}
 
+{source_directives_section}
+
 ## Instructions
 
 1. **Table updates** - For each table cell in the memo whose value comes
@@ -183,7 +185,17 @@ metric in the memo that should be updated with new values from the proforma.
     Empty rows are placeholders or spacing — updating them would insert
     spurious data into the memo.
 
-21. **Comp property column updates** - When COMP PROPERTY DATA sections are
+21. **Narrative rewriting** - When a proforma metric change significantly
+   alters the meaning of a narrative passage (e.g. a 15% change in NOI,
+   or unit count changes from 300 to 510), rewrite the surrounding
+   sentence(s) so they remain coherent and accurate.  Emit a
+   `narrative_updates` entry with the full old paragraph and rewritten
+   replacement.  Do NOT use narrative_updates for simple number swaps
+   (use text_updates for those) — only use this when the sentence
+   structure needs to change to stay meaningful.  Preserve the original
+   tone and voice of the memo.
+
+22. **Comp property column updates** - When COMP PROPERTY DATA sections are
     present (scraped from competitive property websites), update the NON-subject
     columns in side-by-side comparison tables:
     - Match each comp property label to the corresponding column header in the
@@ -231,6 +243,15 @@ Schema:
       "insert_after_row_label": "<text in column 0 of reference row>",
       "cells": ["<col 0>", "<col 1>", ...],
       "source": "<tab + cell ref>"
+    }}
+  ],
+  "narrative_updates": [
+    {{
+      "page": <int>,
+      "old_narrative": "<exact paragraph or multi-sentence block to replace>",
+      "new_narrative": "<rewritten paragraph with updated metrics and coherent context>",
+      "source": "<tab name + cell ref>",
+      "rationale": "<brief explanation of why rewrite was needed>"
     }}
   ],
   "chart_updates": [
