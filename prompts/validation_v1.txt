@@ -116,6 +116,11 @@ Additional domain rules to enforce:
   Simple number swaps should be text_updates, not narrative_updates. Reject any
   narrative_update where a text_update would suffice. Verify the new_narrative
   preserves the original tone and does not introduce unsupported claims.
+- **Table structure updates** must only be used when a user directive explicitly
+  requests restructuring or when the proforma structure has fundamentally changed.
+  Reject any table_structure_update targeting a side-by-side comp table.
+  Reject any add_column or remove_row that would break the table's alignment
+  or remove data that still appears in the proforma.
 - **Source directives** - If the user provided source directives, verify that
   proposed changes comply with them. Reject any update that violates a user
   directive (e.g. updating a section the user said to skip, or using a source

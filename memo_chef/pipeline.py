@@ -249,7 +249,7 @@ def _mapping_with_batching(
         return mappings
 
     memo_chunks = chunk_memo_by_pages(memo_content, pages_per_chunk=3)
-    mappings = {"table_updates": [], "text_updates": [], "row_inserts": [], "narrative_updates": []}
+    mappings = {"table_updates": [], "text_updates": [], "row_inserts": [], "narrative_updates": [], "table_structure_updates": []}
     last_api_call = 0.0
     for index, chunk in enumerate(memo_chunks, start=1):
         percent = 50 + int((18 * index) / max(len(memo_chunks), 1))
@@ -273,13 +273,14 @@ def _mapping_with_batching(
         if batch.pop("_truncated", False):
             covered_pages = {
                 entry.get("page")
-                for group in ("table_updates", "text_updates", "row_inserts", "narrative_updates")
+                for group in ("table_updates", "text_updates", "row_inserts", "narrative_updates", "table_structure_updates")
                 for entry in batch.get(group, [])
             }
             mappings["table_updates"].extend(batch.get("table_updates", []))
             mappings["text_updates"].extend(batch.get("text_updates", []))
             mappings["row_inserts"].extend(batch.get("row_inserts", []))
             mappings["narrative_updates"].extend(batch.get("narrative_updates", []))
+            mappings["table_structure_updates"].extend(batch.get("table_structure_updates", []))
             sub_chunks = chunk_memo_by_pages(chunk, pages_per_chunk=1)
             for sub_chunk in sub_chunks:
                 sub_pages = set(int(match) for match in re.findall(r"PAGE (\d+)", sub_chunk))
@@ -305,11 +306,13 @@ def _mapping_with_batching(
                 mappings["text_updates"].extend(sub_batch.get("text_updates", []))
                 mappings["row_inserts"].extend(sub_batch.get("row_inserts", []))
                 mappings["narrative_updates"].extend(sub_batch.get("narrative_updates", []))
+                mappings["table_structure_updates"].extend(sub_batch.get("table_structure_updates", []))
             continue
         mappings["table_updates"].extend(batch.get("table_updates", []))
         mappings["text_updates"].extend(batch.get("text_updates", []))
         mappings["row_inserts"].extend(batch.get("row_inserts", []))
         mappings["narrative_updates"].extend(batch.get("narrative_updates", []))
+        mappings["table_structure_updates"].extend(batch.get("table_structure_updates", []))
 
     # Deduplicate entries that appear in multiple chunks
     mappings = _dedup_mappings(mappings)
@@ -371,6 +374,7 @@ def _dedup_mappings(mappings: dict) -> dict:
         "text_updates": deduped_text,
         "row_inserts": deduped_row,
         "narrative_updates": deduped_narrative,
+        "table_structure_updates": mappings.get("table_structure_updates", []),
     }
 
 
@@ -409,6 +413,7 @@ def _mapping_with_batch_api(
         mappings["text_updates"].extend(batch_result.get("text_updates", []))
         mappings["row_inserts"].extend(batch_result.get("row_inserts", []))
         mappings["narrative_updates"].extend(batch_result.get("narrative_updates", []))
+        mappings["table_structure_updates"].extend(batch_result.get("table_structure_updates", []))
 
     mappings = _dedup_mappings(mappings)
     checkpoint.set_count("batch_api_chunks", len(memo_chunks))

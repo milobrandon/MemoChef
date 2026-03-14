@@ -788,8 +788,10 @@ def _salvage_truncated_json(raw: str) -> dict | None:
         mappings.setdefault("text_updates", [])
         mappings.setdefault("row_inserts", [])
         mappings.setdefault("narrative_updates", [])
+        mappings.setdefault("table_structure_updates", [])
         n = (len(mappings["table_updates"]) + len(mappings["text_updates"])
-             + len(mappings["row_inserts"]) + len(mappings["narrative_updates"]))
+             + len(mappings["row_inserts"]) + len(mappings["narrative_updates"])
+             + len(mappings["table_structure_updates"]))
         if n > 0:
             log.info("Salvaged %d updates from truncated response", n)
             return mappings
@@ -1191,13 +1193,15 @@ def get_metric_mappings(
     mappings.setdefault("text_updates", [])
     mappings.setdefault("row_inserts", [])
     mappings.setdefault("narrative_updates", [])
+    mappings.setdefault("table_structure_updates", [])
 
     n_table = len(mappings["table_updates"])
     n_text = len(mappings["text_updates"])
     n_row_ins = len(mappings["row_inserts"])
     n_narrative = len(mappings["narrative_updates"])
-    log.info("Parsed mappings: %d table, %d text, %d row inserts, %d narrative",
-             n_table, n_text, n_row_ins, n_narrative)
+    n_structure = len(mappings["table_structure_updates"])
+    log.info("Parsed mappings: %d table, %d text, %d row inserts, %d narrative, %d structure",
+             n_table, n_text, n_row_ins, n_narrative, n_structure)
     return mappings
 
 
@@ -1686,6 +1690,7 @@ def pre_validate_mappings(mappings: dict, memo_content: str) -> dict:
         "text_updates": valid_text,
         "row_inserts": mappings.get("row_inserts", []),
         "narrative_updates": valid_narrative,
+        "table_structure_updates": mappings.get("table_structure_updates", []),
         "rejected": rejected,
         "missed": mappings.get("missed", []),
     }
@@ -1999,6 +2004,111 @@ def _add_table_row(table, reference_row_idx: int, cell_values: list):
     ref_tr.addnext(new_tr)
 
 
+def _add_table_column(table, after_col: int, header: str, values: list):
+    """Add a column to a table after the given column index.
+
+    Uses lxml operations on DrawingML XML to add <a:tc> elements to each row.
+    """
+    ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    tbl_xml = table._tbl
+    rows = tbl_xml.findall(f"{{{ns}}}tr")
+
+    for row_idx, tr in enumerate(rows):
+        cells = tr.findall(f"{{{ns}}}tc")
+        if not cells:
+            continue
+
+        # Clone the cell at after_col to preserve formatting
+        ref_idx = min(after_col, len(cells) - 1)
+        new_tc = deepcopy(cells[ref_idx])
+
+        # Clear text and set new value
+        for p in new_tc.findall(f".//{{{ns}}}p"):
+            for r in p.findall(f"{{{ns}}}r"):
+                t = r.find(f"{{{ns}}}t")
+                if t is not None:
+                    t.text = ""
+
+        # Set the value
+        first_p = new_tc.find(f".//{{{ns}}}p")
+        if first_p is not None:
+            first_r = first_p.find(f"{{{ns}}}r")
+            if first_r is not None:
+                t = first_r.find(f"{{{ns}}}t")
+                if t is not None:
+                    if row_idx == 0:
+                        t.text = header
+                    else:
+                        val_idx = row_idx - 1
+                        t.text = values[val_idx] if val_idx < len(values) else ""
+
+        # Insert after the reference cell
+        if ref_idx < len(cells) - 1:
+            cells[ref_idx].addnext(new_tc)
+        else:
+            tr.append(new_tc)
+
+    # Update gridCol count
+    tbl_grid = tbl_xml.find(f"{{{ns}}}tblGrid")
+    if tbl_grid is not None:
+        grid_cols = tbl_grid.findall(f"{{{ns}}}gridCol")
+        if grid_cols:
+            new_gc = deepcopy(grid_cols[-1])
+            tbl_grid.append(new_gc)
+
+
+def _remove_table_row(table, row_idx: int):
+    """Remove a row from a table by index."""
+    ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    tbl_xml = table._tbl
+    rows = tbl_xml.findall(f"{{{ns}}}tr")
+    if 0 <= row_idx < len(rows):
+        tbl_xml.remove(rows[row_idx])
+
+
+def _reorder_table_rows(table, new_order: list[str]):
+    """Reorder table rows to match the given label order.
+
+    new_order is a list of row labels (column 0 text) in desired order.
+    The header row (index 0) is always kept first.
+    """
+    ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    tbl_xml = table._tbl
+    rows = tbl_xml.findall(f"{{{ns}}}tr")
+    if len(rows) < 2:
+        return
+
+    header_tr = rows[0]
+    data_rows = rows[1:]
+
+    # Build label -> row element map
+    label_map: dict[str, Any] = {}
+    for tr in data_rows:
+        cells = tr.findall(f"{{{ns}}}tc")
+        if cells:
+            first_p = cells[0].find(f".//{{{ns}}}p")
+            if first_p is not None:
+                first_r = first_p.find(f"{{{ns}}}r")
+                if first_r is not None:
+                    t = first_r.find(f"{{{ns}}}t")
+                    if t is not None and t.text:
+                        label_map[t.text.strip()] = tr
+
+    # Remove all data rows
+    for tr in data_rows:
+        tbl_xml.remove(tr)
+
+    # Re-add in new order
+    for label in new_order:
+        tr = label_map.pop(label, None)
+        if tr is not None:
+            tbl_xml.append(tr)
+
+    # Append any remaining rows not in new_order
+    for tr in label_map.values():
+        tbl_xml.append(tr)
+
+
 def global_property_rename(memo_path: str, old_name: str, new_name: str) -> int:
     """
     Replace ALL occurrences of *old_name* with *new_name* across every slide
@@ -2277,6 +2387,74 @@ def apply_updates(memo_path: str, mappings: dict, dry_run: bool = False) -> list
         if not found:
             log.warning("Narrative update NOT FOUND: page %d, '%s...'",
                         page, old_narrative[:60])
+
+    # --- Table structure updates (add_column, remove_row, reorder_rows) ---
+    for upd in mappings.get("table_structure_updates", []):
+        page = upd.get("page")
+        tbl_name = upd.get("table_name", "")
+        action = upd.get("action", "")
+        source = upd.get("source", "")
+
+        try:
+            slide = prs.slides[page - 1]
+        except (IndexError, TypeError):
+            log.warning("Table structure update SKIPPED: page %s does not exist", page)
+            continue
+
+        # Find target table
+        tables = [s for s in slide.shapes if s.has_table]
+        target_shape = None
+        for s in tables:
+            if _loose_match(tbl_name, s.name):
+                target_shape = s
+                break
+        if target_shape is None and len(tables) == 1:
+            target_shape = tables[0]
+        if target_shape is None:
+            log.warning("Table structure update NOT FOUND: page %d, table '%s'", page, tbl_name)
+            continue
+
+        table = target_shape.table
+        location = target_shape.name or tbl_name
+
+        if action == "add_column" and not dry_run:
+            col_header = upd.get("column_header", "")
+            values = upd.get("values", [])
+            after_col = upd.get("after_column", len(table.columns) - 1)
+            _add_table_column(table, after_col, col_header, values)
+            changes.append({
+                "page": page, "type": "table_structure",
+                "location": f"{location} / add_column '{col_header}' after col {after_col}",
+                "old": "(no column)", "new": col_header, "source": source,
+            })
+        elif action == "remove_row" and not dry_run:
+            row_label = upd.get("row_label", "")
+            row_idx = _find_row_by_label(table, row_label)
+            if row_idx is not None:
+                _remove_table_row(table, row_idx)
+                changes.append({
+                    "page": page, "type": "table_structure",
+                    "location": f"{location} / remove_row '{row_label}'",
+                    "old": row_label, "new": "(removed)", "source": source,
+                })
+            else:
+                log.warning("Table structure remove_row: row '%s' not found", row_label)
+        elif action == "reorder_rows" and not dry_run:
+            new_order = upd.get("new_order", [])
+            _reorder_table_rows(table, new_order)
+            changes.append({
+                "page": page, "type": "table_structure",
+                "location": f"{location} / reorder_rows",
+                "old": "(original order)", "new": " -> ".join(new_order[:5]),
+                "source": source,
+            })
+        elif dry_run:
+            changes.append({
+                "page": page, "type": "table_structure",
+                "location": f"{location} / {action}",
+                "old": "(dry run)", "new": str(upd.get("column_header") or upd.get("row_label") or upd.get("new_order", [])[:3]),
+                "source": source,
+            })
 
     if not dry_run:
         prs.save(memo_path)
