@@ -180,6 +180,7 @@ def _clear_run_state() -> None:
         "log_lines",
         "warnings",
         "manifest",
+        "changes",
     ]:
         st.session_state.pop(key, None)
 
@@ -293,6 +294,7 @@ def _persist_result(result, filename: str) -> None:
     st.session_state["log_lines"] = result.log_lines
     st.session_state["warnings"] = [warning.model_dump() for warning in result.manifest.warnings]
     st.session_state["manifest"] = result.manifest.model_dump()
+    st.session_state["changes"] = result.changes
 
 
 def _execute_job(
@@ -867,14 +869,30 @@ def render_new_run_tab() -> None:
                 f"QA review. **Manual review is strongly recommended.**"
             )
         st.success("Artifacts are ready for review and download.")
-        metric_cols = st.columns(5)
+        _manifest_counts = st.session_state.get("manifest", {}).get("counts", {})
+        _slides_generated = (
+            _manifest_counts.get("slides_inserted", 0)
+            + _manifest_counts.get("comp_slides_inserted", 0)
+            + _manifest_counts.get("ai_slides_generated", 0)
+        )
+        metric_cols = st.columns(6)
         metric_cols[0].metric("Applied changes", st.session_state["n_changes"])
         metric_cols[1].metric("Rejected", st.session_state["n_rejected"])
         metric_cols[2].metric("Needs review", st.session_state["n_missed"])
-        metric_cols[3].metric("Warnings", len(st.session_state.get("warnings", [])))
-        _manifest_counts = st.session_state.get("manifest", {}).get("counts", {})
+        metric_cols[3].metric("Slides generated", _slides_generated or "—")
+        metric_cols[4].metric("Warnings", len(st.session_state.get("warnings", [])))
         _cost_usd = _manifest_counts.get("estimated_cost_microdollars", 0) / 1_000_000
-        metric_cols[4].metric("Est. API cost", f"${_cost_usd:.4f}" if _cost_usd else "—")
+        metric_cols[5].metric("Est. API cost", f"${_cost_usd:.4f}" if _cost_usd else "—")
+
+        # Change type breakdown
+        _changes = st.session_state.get("changes", [])
+        if _changes:
+            _type_counts = {}
+            for c in _changes:
+                t = c.get("type", "unknown")
+                _type_counts[t] = _type_counts.get(t, 0) + 1
+            _breakdown = " · ".join(f"{v} {k}" for k, v in sorted(_type_counts.items()))
+            st.caption(f"Breakdown: {_breakdown}")
 
         download_cols = st.columns(3)
         download_cols[0].download_button(
