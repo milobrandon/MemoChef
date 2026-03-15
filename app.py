@@ -704,15 +704,48 @@ def render_new_run_tab() -> None:
              "All occurrences will be renamed before the AI pass.",
     )
 
+    # Smart defaults: auto-detect config profile from proforma tabs
+    _auto_profile = ""
+    _auto_property = ""
+    if proforma_file and not profile.get("Property"):
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(proforma_file, read_only=True, data_only=True)
+            sheet_names = [s.lower() for s in wb.sheetnames]
+            proforma_file.seek(0)  # reset for later use
+            if any("unit mix" in s or "rent roll" in s for s in sheet_names):
+                _auto_profile = "multifamily"
+            elif any("senior" in s or "assisted" in s for s in sheet_names):
+                _auto_profile = "senior_housing"
+            elif any("retail" in s or "office" in s for s in sheet_names):
+                _auto_profile = "mixed_use"
+            # Try to extract property name from first sheet header
+            first_sheet = wb[wb.sheetnames[0]]
+            for row in first_sheet.iter_rows(max_row=5, max_col=5, values_only=True):
+                for cell in row:
+                    if cell and isinstance(cell, str) and len(cell) > 3 and len(cell) < 60:
+                        _auto_property = cell.strip()
+                        break
+                if _auto_property:
+                    break
+            wb.close()
+        except Exception:
+            pass  # silently fail — these are optional hints
+
     config_profiles = _list_config_profiles()
+    # Determine default index: saved profile > auto-detected > none
+    _default_profile_idx = 0
+    if profile.get("Config Profile") and profile["Config Profile"] in config_profiles:
+        _default_profile_idx = config_profiles.index(profile["Config Profile"]) + 1
+    elif _auto_profile and _auto_profile in config_profiles:
+        _default_profile_idx = config_profiles.index(_auto_profile) + 1
     config_profile_name = st.selectbox(
         "Config profile",
         options=[""] + config_profiles,
-        index=(config_profiles.index(profile["Config Profile"]) + 1)
-        if profile.get("Config Profile") and profile["Config Profile"] in config_profiles
-        else 0,
+        index=_default_profile_idx,
         format_func=lambda v: "Default (config.yaml)" if v == "" else v.replace("_", " ").title(),
-        help="Override proforma tabs, model, or other settings for this property type.",
+        help="Override proforma tabs, model, or other settings for this property type."
+             + (f" Auto-detected: {_auto_profile}" if _auto_profile else ""),
     )
 
     pref_cols = st.columns(3)
