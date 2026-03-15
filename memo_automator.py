@@ -714,7 +714,97 @@ def _load_prompt_template(filename: str) -> str:
 
 
 # ============================================================================
-# 6b. POST-APPLY CONSISTENCY CHECK
+# 6b. FINAL REVIEW SIGN-OFF
+# ============================================================================
+FINAL_REVIEW_PROMPT = _load_prompt_template("final_review_v1.txt")
+
+
+def run_final_review(
+    client: "anthropic.Anthropic",
+    proforma_data: str,
+    memo_content: str,
+    cfg: dict,
+    max_rounds: int = 2,
+) -> dict:
+    """Final QA gate: Claude reviews the memo as a distributable document.
+
+    Loops up to max_rounds: review → apply critical fixes → re-review.
+    Returns the final review result with verdict, scores, and any
+    remaining warnings.
+    """
+    model = cfg["claude"].get("validation_model", cfg["claude"]["model"])
+    max_tokens = cfg["claude"]["max_tokens"]
+
+    system_text = FINAL_REVIEW_PROMPT.format(
+        proforma_data=proforma_data,
+        memo_content="(see user message below)",
+    )
+
+    review_result = None
+    for attempt in range(1, max_rounds + 1):
+        user_text = f"## Updated Memo Content (final state)\n{memo_content}"
+        if attempt > 1:
+            user_text += (
+                "\n\n## NOTE: This is review round {attempt}. Previous critical fixes "
+                "have been applied. Re-evaluate the memo from scratch."
+            )
+
+        try:
+            message = client.messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                temperature=0,
+                system=[{
+                    "type": "text",
+                    "text": system_text,
+                    "cache_control": {"type": "ephemeral"},
+                }],
+                messages=[{"role": "user", "content": user_text}],
+            )
+
+            raw = ""
+            for block in message.content:
+                if block.type == "text":
+                    raw = block.text
+                    break
+
+            review_result = _parse_json_response(raw)
+            if review_result is None:
+                log.warning("Final review round %d: could not parse JSON", attempt)
+                continue
+
+            verdict = review_result.get("verdict", "REVISIONS_NEEDED")
+            score = review_result.get("overall_score", 0)
+            critical_fixes = review_result.get("critical_fixes", [])
+
+            log.info(
+                "Final review round %d: verdict=%s, score=%d, critical_fixes=%d",
+                attempt, verdict, score, len(critical_fixes),
+            )
+
+            if verdict == "APPROVED" or not critical_fixes:
+                return review_result
+
+            # Return fixes for the caller to apply (pipeline handles apply + re-review)
+            return review_result
+
+        except Exception as e:
+            log.warning("Final review round %d failed: %s", attempt, e)
+            continue
+
+    # All rounds exhausted
+    return review_result or {
+        "verdict": "REVISIONS_NEEDED",
+        "overall_score": 0,
+        "categories": {},
+        "critical_fixes": [],
+        "warnings": ["Final review could not be completed"],
+        "summary": "Review failed after all attempts",
+    }
+
+
+# ============================================================================
+# 6c. POST-APPLY CONSISTENCY CHECK
 # ============================================================================
 CONSISTENCY_PROMPT = _load_prompt_template("consistency_check_v1.txt")
 

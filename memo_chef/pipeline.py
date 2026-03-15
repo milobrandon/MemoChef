@@ -1058,7 +1058,95 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                         log.error("Slide auto-split failed: %s", e)
                         checkpoint.add_warning("slide_split", str(e))
 
-        _emit(callback, "artifacts", "Write artifacts", 97)
+        # --- Final QA sign-off (last gate before distribution) ---
+        if not request.dry_run and not request.skip_validation:
+            from memo_automator import run_final_review
+
+            _emit(callback, "final_review", "Final QA review", 97)
+            with checkpoint.stage("final_review", "Claude sign-off review"):
+                max_review_rounds = 2
+                for review_round in range(1, max_review_rounds + 1):
+                    # Re-extract the final memo state
+                    final_memo = extract_memo_content(request.memo_path, cfg)
+
+                    review = run_final_review(
+                        client, proforma_data, final_memo, cfg,
+                    )
+
+                    verdict = review.get("verdict", "REVISIONS_NEEDED")
+                    score = review.get("overall_score", 0)
+                    critical_fixes = review.get("critical_fixes", [])
+
+                    checkpoint.set_count("final_review_score", score)
+                    checkpoint.set_count("final_review_round", review_round)
+
+                    if verdict == "APPROVED":
+                        log.info(
+                            "Final review APPROVED (score=%d, round %d): %s",
+                            score, review_round, review.get("summary", ""),
+                        )
+                        break
+
+                    # Apply critical fixes if available
+                    if critical_fixes:
+                        _emit(
+                            callback, "final_review",
+                            f"Applying {len(critical_fixes)} fixes (round {review_round})",
+                            97,
+                        )
+                        fix_mappings = {"table_updates": [], "text_updates": []}
+                        for fix_item in critical_fixes:
+                            fix = fix_item.get("fix", {})
+                            if not fix:
+                                continue
+                            if fix.get("update_type") == "table":
+                                fix_mappings["table_updates"].append({
+                                    "page": fix_item.get("page"),
+                                    "table_name": "",
+                                    "row_label": "",
+                                    "column_index": 1,
+                                    "old_value": fix.get("old_value", ""),
+                                    "new_value": fix.get("new_value", ""),
+                                    "source": fix.get("source", "final_review"),
+                                })
+                            else:
+                                fix_mappings["text_updates"].append({
+                                    "page": fix_item.get("page"),
+                                    "old_text": fix.get("old_value", ""),
+                                    "new_text": fix.get("new_value", ""),
+                                    "source": fix.get("source", "final_review"),
+                                })
+
+                        n_fix = (len(fix_mappings["table_updates"])
+                                 + len(fix_mappings["text_updates"]))
+                        if n_fix > 0:
+                            fix_changes = apply_updates(
+                                request.memo_path, fix_mappings, dry_run=False,
+                            )
+                            changes.extend(fix_changes)
+                            log.info(
+                                "Final review round %d: applied %d fixes",
+                                review_round, len(fix_changes),
+                            )
+                        else:
+                            # No auto-fixable issues but still not approved
+                            for cat_name, cat_data in review.get("categories", {}).items():
+                                if cat_data.get("status") == "FAIL":
+                                    for issue in cat_data.get("issues", [])[:3]:
+                                        checkpoint.add_warning("final_review", f"{cat_name}: {issue}")
+                            break
+                    else:
+                        # REVISIONS_NEEDED but no fixes provided — log warnings
+                        for w in review.get("warnings", [])[:5]:
+                            checkpoint.add_warning("final_review", w)
+                        break
+
+                # Save review result
+                review_path = os.path.join(request.output_dir, "final_review.json")
+                _write_json(review_path, review)
+                checkpoint.set_output("final_review", review_path)
+
+        _emit(callback, "artifacts", "Write artifacts", 98)
         with checkpoint.stage("artifacts", "Writing change log and manifest"):
             log_path = write_change_log(
                 request.output_dir,
