@@ -167,3 +167,8 @@ class DeckProfile(BaseModel):
     has_tables: bool = False
     slide_layouts_used: list[str] = Field(default_factory=list)
     visual_types_present: list[str] = Field(default_factory=list)  # "chart", "table", "image"
+    # Dominant formatting extracted from existing slides
+    title_font_name: str | None = None
+    title_font_size_pt: float | None = None
+    body_font_name: str | None = None
+    body_font_size_pt: float | None = None

@@ -51,6 +51,10 @@ def extract_deck_profile(
     visual_types: set[str] = set()
     layout_names: set[str] = set()
 
+    # Track font usage to find dominant fonts
+    title_fonts: dict[tuple, int] = {}  # (name, size_pt) -> count
+    body_fonts: dict[tuple, int] = {}
+
     for slide in prs.slides:
         if slide.slide_layout and slide.slide_layout.name:
             layout_names.add(slide.slide_layout.name)
@@ -61,6 +65,31 @@ def extract_deck_profile(
                 visual_types.add("table")
             if shape.shape_type and shape.shape_type == 13:  # MSO_SHAPE_TYPE.PICTURE
                 visual_types.add("image")
+            # Extract font usage from text shapes
+            if shape.has_text_frame:
+                for para in shape.text_frame.paragraphs:
+                    for run in para.runs:
+                        fname = run.font.name
+                        fsize = run.font.size
+                        if fname and fsize:
+                            size_pt = fsize.pt if hasattr(fsize, "pt") else fsize / 12700
+                            key = (fname, round(size_pt, 1))
+                            if size_pt >= 18:
+                                title_fonts[key] = title_fonts.get(key, 0) + 1
+                            else:
+                                body_fonts[key] = body_fonts.get(key, 0) + 1
+
+    # Pick dominant title and body fonts
+    title_font_name = None
+    title_font_size = None
+    body_font_name = None
+    body_font_size = None
+    if title_fonts:
+        best = max(title_fonts, key=title_fonts.get)
+        title_font_name, title_font_size = best
+    if body_fonts:
+        best = max(body_fonts, key=body_fonts.get)
+        body_font_name, body_font_size = best
 
     return DeckProfile(
         sections=sections,
@@ -69,6 +98,10 @@ def extract_deck_profile(
         has_tables="table" in visual_types,
         slide_layouts_used=sorted(layout_names),
         visual_types_present=sorted(visual_types),
+        title_font_name=title_font_name,
+        title_font_size_pt=title_font_size,
+        body_font_name=body_font_name,
+        body_font_size_pt=body_font_size,
     )
 
 
@@ -121,28 +154,58 @@ def generate_slide_plan(
         source_directives_section=directives_section,
     )
 
-    response = client.messages.create(
-        model=model,
-        max_tokens=max_tokens,
-        temperature=0,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    max_attempts = 2
+    for attempt in range(1, max_attempts + 1):
+        response = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            temperature=0,
+            messages=[{"role": "user", "content": prompt}],
+        )
 
-    raw = response.content[0].text.strip()
+        raw = response.content[0].text.strip()
 
-    # Parse JSON
-    json_match = re.search(r"\{[\s\S]*\}", raw)
-    if not json_match:
-        log.warning("Slide generation returned no valid JSON: %s", raw[:200])
-        return SlidePlan()
+        # Parse JSON
+        json_match = re.search(r"\{[\s\S]*\}", raw)
+        if not json_match:
+            if attempt < max_attempts:
+                log.warning("Slide generation attempt %d: no valid JSON, retrying...", attempt)
+                prompt += (
+                    "\n\nIMPORTANT: You MUST respond with ONLY a JSON object. "
+                    "Start with { and end with }. No text before or after."
+                )
+                continue
+            log.warning("Slide generation returned no valid JSON after %d attempts", max_attempts)
+            return SlidePlan()
 
-    try:
-        data = json.loads(json_match.group())
-    except json.JSONDecodeError as e:
-        log.warning("Slide generation JSON parse error: %s", e)
-        return SlidePlan()
+        try:
+            data = json.loads(json_match.group())
+        except json.JSONDecodeError as e:
+            if attempt < max_attempts:
+                log.warning("Slide generation attempt %d: JSON parse error: %s, retrying...", attempt, e)
+                prompt += (
+                    "\n\nIMPORTANT: Your previous response had invalid JSON. "
+                    "Return ONLY valid JSON. Start with { and end with }."
+                )
+                continue
+            log.warning("Slide generation JSON parse error after %d attempts: %s", max_attempts, e)
+            return SlidePlan()
 
-    return SlidePlan.model_validate(data)
+        plan = SlidePlan.model_validate(data)
+
+        # Validate that referenced sections exist in the memo structure
+        valid_section_names = {s["name"].lower() for s in memo_structure}
+        for slide_spec in plan.slides_to_generate:
+            if slide_spec.section.lower() not in valid_section_names:
+                log.warning(
+                    "Slide '%s' references unknown section '%s' — "
+                    "will insert at end of deck",
+                    slide_spec.title, slide_spec.section,
+                )
+
+        return plan
+
+    return SlidePlan()
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +234,7 @@ def build_and_insert_slides(
 
     for slide_spec in sorted_slides:
         try:
-            new_slide = _build_single_slide(prs, slide_spec, sections)
+            new_slide = _build_single_slide(prs, slide_spec, sections, deck_profile)
             if new_slide is not None:
                 # Adjust for previously inserted slides
                 target_idx = slide_spec.insert_after_slide - 1 + inserted
@@ -196,10 +259,12 @@ def _build_single_slide(
     prs: Presentation,
     spec: SlideContent,
     sections: list[dict],
+    deck_profile: DeckProfile | None = None,
 ) -> Any | None:
     """Build one slide from a SlideContent spec.
 
-    Tries to clone a template first; falls back to building from scratch.
+    Tries to clone a template first; falls back to building from scratch
+    using fonts from the deck profile when available.
     """
     visual_type = spec.visual_type or "table"
 
@@ -218,7 +283,7 @@ def _build_single_slide(
         "visual_data": spec.visual_data,
         "narrative": spec.narrative,
     }
-    return build_slide_from_scratch(prs, content)
+    return build_slide_from_scratch(prs, content, deck_profile=deck_profile)
 
 
 def _populate_cloned_slide(slide, spec: SlideContent) -> None:

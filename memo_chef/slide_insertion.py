@@ -82,19 +82,41 @@ def analyze_supplemental_content(
     prompt = prompt.replace("{supplemental_text}", supplemental_text[:50_000])
     prompt = prompt.replace("{user_brief_section}", brief_section)
 
-    response = _call_claude(prompt, client, model, max_tokens)
-    text = response.content[0].text.strip()
+    max_attempts = 2
+    for attempt in range(1, max_attempts + 1):
+        response = _call_claude(prompt, client, model, max_tokens)
+        text = response.content[0].text.strip()
 
-    json_match = re.search(r"\{[\s\S]*\}", text)
-    if not json_match:
-        raise ValueError(f"Claude returned no valid JSON for slide insertion:\n{text[:500]}")
+        json_match = re.search(r"\{[\s\S]*\}", text)
+        if not json_match:
+            if attempt < max_attempts:
+                log.warning("Supplemental analysis attempt %d: no JSON, retrying...", attempt)
+                prompt += (
+                    "\n\nIMPORTANT: Return ONLY valid JSON. "
+                    "Start with { and end with }."
+                )
+                continue
+            raise ValueError(f"Claude returned no valid JSON for slide insertion:\n{text[:500]}")
 
-    result = json.loads(json_match.group())
-    result["_tokens"] = {
-        "input": response.usage.input_tokens,
-        "output": response.usage.output_tokens,
-    }
-    return result
+        try:
+            result = json.loads(json_match.group())
+        except json.JSONDecodeError:
+            if attempt < max_attempts:
+                log.warning("Supplemental analysis attempt %d: invalid JSON, retrying...", attempt)
+                prompt += (
+                    "\n\nIMPORTANT: Your previous JSON was malformed. "
+                    "Return ONLY valid JSON."
+                )
+                continue
+            raise
+
+        result["_tokens"] = {
+            "input": response.usage.input_tokens,
+            "output": response.usage.output_tokens,
+        }
+        return result
+
+    raise ValueError("Supplemental analysis failed after all attempts")
 
 
 def _call_claude(prompt: str, client: Any, model: str, max_tokens: int):
@@ -180,8 +202,24 @@ def clone_slide(prs: Presentation, template_idx: int):
     return new_slide
 
 
-def build_slide_from_scratch(prs: Presentation, content: dict):
-    """Build a new slide with chart/table and narrative from scratch."""
+def build_slide_from_scratch(prs: Presentation, content: dict, deck_profile=None):
+    """Build a new slide with chart/table and narrative from scratch.
+
+    When deck_profile is provided, uses its font names and sizes instead
+    of hardcoded defaults, so generated slides match the existing deck.
+    """
+    # Resolve fonts from deck profile or use sensible defaults
+    title_size = Pt(24)
+    body_size = Pt(11)
+    title_font = None
+    body_font = None
+    if deck_profile is not None:
+        if deck_profile.title_font_size_pt:
+            title_size = Pt(deck_profile.title_font_size_pt)
+        if deck_profile.body_font_size_pt:
+            body_size = Pt(deck_profile.body_font_size_pt)
+        title_font = deck_profile.title_font_name
+        body_font = deck_profile.body_font_name
 
     layout = prs.slide_layouts[6] if len(prs.slide_layouts) > 6 else prs.slide_layouts[0]
     slide = prs.slides.add_slide(layout)
@@ -194,8 +232,10 @@ def build_slide_from_scratch(prs: Presentation, content: dict):
     tf = title_box.text_frame
     tf.text = content.get("slide_title", "")
     for para in tf.paragraphs:
-        para.font.size = Pt(24)
+        para.font.size = title_size
         para.font.bold = True
+        if title_font:
+            para.font.name = title_font
 
     if visual_type == "table":
         _build_table(slide, visual)
@@ -210,7 +250,9 @@ def build_slide_from_scratch(prs: Presentation, content: dict):
         tf.word_wrap = True
         tf.text = narrative
         for para in tf.paragraphs:
-            para.font.size = Pt(11)
+            para.font.size = body_size
+            if body_font:
+                para.font.name = body_font
 
     return slide
 

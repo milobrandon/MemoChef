@@ -31,6 +31,7 @@ from memo_automator import (
     normalize_layout,
     pre_validate_mappings,
     submit_and_poll_batch,
+    validate_mapping_formats,
     validate_mappings,
     write_change_log,
 )
@@ -420,6 +421,116 @@ def _mapping_with_batch_api(
     return mappings
 
 
+def _correction_retry(
+    *,
+    client,
+    validated: dict,
+    proforma_data: str,
+    memo_content: str,
+    cfg: dict,
+    property_name: str | None,
+    source_directives: list[dict] | None = None,
+) -> dict | None:
+    """Re-map rejected entries and missed metrics with feedback.
+
+    Sends a targeted mapping call that includes:
+    - The rejection reasons (so Claude avoids the same mistakes)
+    - The missed metric descriptions (so Claude catches them this time)
+    - Only the memo pages where rejections/misses occurred
+
+    Returns a mappings dict with recovered entries, or None if nothing recovered.
+    """
+    rejected = validated.get("rejected", [])
+    missed = validated.get("missed", [])
+    if not rejected and not missed:
+        return None
+
+    # Collect pages that need re-mapping
+    retry_pages: set[int] = set()
+    for rej in rejected:
+        orig = rej.get("original", {})
+        if orig.get("page"):
+            retry_pages.add(orig["page"])
+    for miss in missed:
+        if miss.get("page"):
+            retry_pages.add(miss["page"])
+
+    if not retry_pages:
+        return None
+
+    # Build feedback section for the prompt
+    feedback_lines = [
+        "\n## CORRECTION FEEDBACK — Fix these issues from the previous pass\n"
+    ]
+    if rejected:
+        feedback_lines.append("### Rejected entries (do NOT repeat these mistakes):")
+        for rej in rejected[:10]:  # cap to avoid prompt bloat
+            orig = rej.get("original", {})
+            feedback_lines.append(
+                f"- Page {orig.get('page', '?')}: REJECTED because: {rej.get('reason', '?')}. "
+                f"Original old_value='{orig.get('old_value', orig.get('old_text', '?'))[:50]}'"
+            )
+    if missed:
+        feedback_lines.append("\n### Missed metrics (you MUST map these):")
+        for miss in missed[:10]:
+            feedback_lines.append(
+                f"- Page {miss.get('page', '?')}: {miss.get('description', '?')}"
+            )
+
+    feedback_text = "\n".join(feedback_lines)
+
+    # Extract only the relevant pages from memo content
+    retry_chunks = []
+    for page_match in re.finditer(r"(={60,}\nPAGE\s+(\d+)[^\n]*\n={60,})", memo_content):
+        page_num = int(page_match.group(2))
+        if page_num in retry_pages:
+            start = page_match.start()
+            # Find next page boundary
+            next_match = re.search(r"={60,}\nPAGE\s+\d+", memo_content[page_match.end():])
+            end = page_match.end() + next_match.start() if next_match else len(memo_content)
+            retry_chunks.append(memo_content[start:end])
+
+    if not retry_chunks:
+        return None
+
+    retry_memo = "\n".join(retry_chunks)
+
+    # Inject feedback into proforma data so it's in the cached system message
+    augmented_proforma = proforma_data + feedback_text
+
+    log.info(
+        "Correction retry: re-mapping %d pages (%d rejected, %d missed)",
+        len(retry_pages), len(rejected), len(missed),
+    )
+
+    try:
+        retry_result = get_metric_mappings(
+            client,
+            augmented_proforma,
+            retry_memo,
+            cfg,
+            property_name=property_name,
+            source_directives=source_directives,
+        )
+        retry_result.pop("_truncated", None)
+
+        # Run pre-validation + format validation on the retry results
+        retry_result = pre_validate_mappings(retry_result, memo_content)
+        retry_result = validate_mapping_formats(retry_result)
+
+        n = sum(
+            len(retry_result.get(k, []))
+            for k in ("table_updates", "text_updates", "row_inserts",
+                      "narrative_updates", "table_structure_updates")
+        )
+        if n > 0:
+            return retry_result
+    except Exception as e:
+        log.warning("Correction retry failed: %s", e)
+
+    return None
+
+
 def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> RunResult:
     os.makedirs(request.output_dir, exist_ok=True)
     checkpoint = CheckpointManager(request)
@@ -550,6 +661,7 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                 if entry.get("old_narrative") != entry.get("new_narrative")
             ]
             mappings = pre_validate_mappings(mappings, memo_content)
+            mappings = validate_mapping_formats(mappings)
             raw_mapping_path = os.path.join(request.output_dir, "mappings_raw.json")
             _write_json(raw_mapping_path, mappings)
             checkpoint.set_output("mappings_raw", raw_mapping_path)
@@ -573,6 +685,38 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                     checkpoint=checkpoint,
                     stage="validation",
                 )
+
+                # --- Correction retry loop ---
+                # If validation rejected entries or found missed metrics,
+                # re-map those pages with feedback and merge corrections.
+                n_rejected = len(validated.get("rejected", []))
+                n_missed = len(validated.get("missed", []))
+                if n_rejected + n_missed > 0 and not request.skip_validation:
+                    _emit(callback, "validation", "Re-mapping rejected entries", 76)
+                    retry_mappings = _correction_retry(
+                        client=client,
+                        validated=validated,
+                        proforma_data=proforma_data,
+                        memo_content=memo_content,
+                        cfg=cfg,
+                        property_name=effective_property_name,
+                        source_directives=directives_dicts,
+                    )
+                    if retry_mappings:
+                        # Merge corrections into validated result
+                        for key in ("table_updates", "text_updates", "row_inserts",
+                                    "narrative_updates", "table_structure_updates"):
+                            validated.setdefault(key, []).extend(
+                                retry_mappings.get(key, [])
+                            )
+                        n_recovered = sum(
+                            len(retry_mappings.get(k, []))
+                            for k in ("table_updates", "text_updates", "row_inserts",
+                                      "narrative_updates", "table_structure_updates")
+                        )
+                        checkpoint.set_count("correction_retry_recovered", n_recovered)
+                        log.info("Correction retry recovered %d entries", n_recovered)
+
             unvalidated_pages = validated.get("_unvalidated_pages", [])
             if unvalidated_pages:
                 checkpoint.add_warning(
@@ -601,6 +745,99 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
         checkpoint.manifest.accuracy = accuracy
         checkpoint.set_count("confidence_score", int(accuracy["confidence_score"]))
         checkpoint.save()
+
+        # --- Post-apply consistency check (loop until satisfied) ---
+        if not request.dry_run and not request.skip_validation:
+            from memo_automator import run_consistency_check
+
+            _emit(callback, "consistency_check", "Verifying metric consistency", 85)
+            with checkpoint.stage("consistency_check", "Post-apply metric tie-out"):
+                max_fix_rounds = 2
+                total_fixes = 0
+                for fix_round in range(1, max_fix_rounds + 1):
+                    # Re-extract the updated memo content
+                    updated_memo = extract_memo_content(request.memo_path, cfg)
+
+                    check_result = run_consistency_check(
+                        client,
+                        proforma_data,
+                        updated_memo,
+                        changes,
+                        cfg,
+                    )
+
+                    status = check_result.get("status", "error")
+                    discrepancies = check_result.get("discrepancies", [])
+
+                    if status == "pass" or not discrepancies:
+                        log.info(
+                            "Consistency check PASSED (round %d): %s",
+                            fix_round, check_result.get("summary", ""),
+                        )
+                        break
+
+                    # Attempt to auto-fix discrepancies
+                    critical = [d for d in discrepancies if d.get("severity") == "critical"]
+                    minor = [d for d in discrepancies if d.get("severity") != "critical"]
+                    log.warning(
+                        "Consistency check round %d: %d critical, %d minor discrepancies",
+                        fix_round, len(critical), len(minor),
+                    )
+
+                    # Build fix mappings from discrepancies that include fix data
+                    fix_mappings = {"table_updates": [], "text_updates": []}
+                    for d in discrepancies:
+                        fix = d.get("fix")
+                        if not fix:
+                            continue
+                        if fix.get("update_type") == "table":
+                            fix_mappings["table_updates"].append({
+                                "page": d.get("page"),
+                                "table_name": d.get("location", ""),
+                                "row_label": "",
+                                "column_index": 1,
+                                "old_value": fix.get("old_value", ""),
+                                "new_value": fix.get("new_value", ""),
+                                "source": fix.get("source", "consistency_check"),
+                            })
+                        else:
+                            fix_mappings["text_updates"].append({
+                                "page": d.get("page"),
+                                "old_text": fix.get("old_value", ""),
+                                "new_text": fix.get("new_value", ""),
+                                "source": fix.get("source", "consistency_check"),
+                            })
+
+                    n_fixes = len(fix_mappings["table_updates"]) + len(fix_mappings["text_updates"])
+                    if n_fixes > 0:
+                        _emit(
+                            callback, "consistency_check",
+                            f"Fixing {n_fixes} discrepancies (round {fix_round})", 86,
+                        )
+                        fix_changes = apply_updates(
+                            request.memo_path, fix_mappings, dry_run=False,
+                        )
+                        changes.extend(fix_changes)
+                        total_fixes += len(fix_changes)
+                        log.info("Applied %d consistency fixes (round %d)", len(fix_changes), fix_round)
+                    else:
+                        log.warning(
+                            "Consistency check found %d issues but no auto-fixable entries",
+                            len(discrepancies),
+                        )
+                        for d in discrepancies[:5]:
+                            checkpoint.add_warning(
+                                "consistency_check",
+                                f"Page {d.get('page')}: {d.get('type')} — "
+                                f"expected '{d.get('expected', '?')}', "
+                                f"found '{d.get('found', '?')}'",
+                            )
+                        break
+
+                checkpoint.set_count("consistency_fixes", total_fixes)
+                consistency_path = os.path.join(request.output_dir, "consistency_check.json")
+                _write_json(consistency_path, check_result)
+                checkpoint.set_output("consistency_check", consistency_path)
 
         # --- Slide insertion (supplemental data) ---
         if request.supplemental_path and not request.dry_run:

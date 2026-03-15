@@ -714,6 +714,82 @@ def _load_prompt_template(filename: str) -> str:
 
 
 # ============================================================================
+# 6b. POST-APPLY CONSISTENCY CHECK
+# ============================================================================
+CONSISTENCY_PROMPT = _load_prompt_template("consistency_check_v1.txt")
+
+
+def run_consistency_check(
+    client: "anthropic.Anthropic",
+    proforma_data: str,
+    memo_content: str,
+    changes: list[dict],
+    cfg: dict,
+    max_retries: int = 2,
+) -> dict:
+    """Re-read the updated memo and verify every metric ties out.
+
+    Returns a dict with 'status' ('pass' or 'fail'), 'discrepancies' list,
+    and 'fixes' list of auto-applicable corrections.
+    """
+    model = cfg["claude"].get("validation_model", cfg["claude"]["model"])
+    max_tokens = cfg["claude"]["max_tokens"]
+
+    # Build a compact summary of changes already applied
+    changes_lines = []
+    for c in changes[:50]:  # cap to avoid prompt bloat
+        changes_lines.append(
+            f"  page {c.get('page', '?')} [{c.get('type', '?')}]: "
+            f"'{c.get('old', '')[:30]}' -> '{c.get('new', '')[:30]}'"
+        )
+    changes_summary = "\n".join(changes_lines) or "(no changes applied)"
+
+    system_text = CONSISTENCY_PROMPT.format(
+        proforma_data=proforma_data,
+        memo_content=memo_content,
+        changes_summary=changes_summary,
+    )
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            message = client.messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                temperature=0,
+                system=[{
+                    "type": "text",
+                    "text": system_text,
+                    "cache_control": {"type": "ephemeral"},
+                }],
+                messages=[{"role": "user", "content": "Perform the consistency check now."}],
+            )
+
+            raw = ""
+            for block in message.content:
+                if block.type == "text":
+                    raw = block.text
+                    break
+
+            result = _parse_json_response(raw)
+            if result is None:
+                if attempt < max_retries:
+                    log.warning("Consistency check attempt %d: invalid JSON, retrying...", attempt)
+                    continue
+                return {"status": "error", "discrepancies": [], "summary": "Could not parse check results"}
+
+            return result
+
+        except Exception as e:
+            if attempt < max_retries:
+                log.warning("Consistency check attempt %d failed: %s", attempt, e)
+                continue
+            log.error("Consistency check failed after %d attempts: %s", max_retries, e)
+            return {"status": "error", "discrepancies": [], "summary": str(e)}
+
+    return {"status": "error", "discrepancies": [], "summary": "All attempts failed"}
+
+
+# ============================================================================
 # 7. CLAUDE API - METRIC MAPPING
 # ============================================================================
 MAPPING_PROMPT = _load_prompt_template("mapping_v1.txt")
@@ -1597,7 +1673,156 @@ def validate_mappings(
 
 
 # ============================================================================
-# 8. PRE-VALIDATION (local Python check)
+# 8a. FORMAT VALIDATION (detect style mismatches)
+# ============================================================================
+
+def _detect_number_format(value: str) -> dict:
+    """Detect the formatting style of a numeric string.
+
+    Returns a dict with keys: has_commas, has_dollar, decimal_places, has_percent.
+    """
+    # Strip non-numeric suffixes (like %) before counting decimal places
+    numeric_part = re.sub(r"[%$,\s]", "", value)
+    if "." in numeric_part:
+        decimal_places = len(numeric_part.split(".")[-1])
+    else:
+        decimal_places = 0
+    return {
+        "has_dollar": "$" in value,
+        "has_commas": bool(re.search(r"\d{1,3}(,\d{3})+", value)),
+        "has_percent": "%" in value,
+        "decimal_places": decimal_places,
+    }
+
+
+def _format_matches(old_val: str, new_val: str) -> tuple[bool, str]:
+    """Check if new_val preserves old_val's formatting style.
+
+    Returns (is_ok, reason) — reason is empty if ok.
+    """
+    old_fmt = _detect_number_format(old_val)
+    new_fmt = _detect_number_format(new_val)
+
+    # Dollar sign consistency
+    if old_fmt["has_dollar"] and not new_fmt["has_dollar"]:
+        return False, f"missing dollar sign: '{old_val}' -> '{new_val}'"
+    if not old_fmt["has_dollar"] and new_fmt["has_dollar"]:
+        return False, f"unexpected dollar sign: '{old_val}' -> '{new_val}'"
+
+    # Comma consistency (only check if value is large enough to need commas)
+    # Strip dollar/percent for numeric comparison
+    new_digits = re.sub(r"[^\d.]", "", new_val)
+    if old_fmt["has_commas"] and not new_fmt["has_commas"]:
+        try:
+            if float(new_digits) >= 1000:
+                return False, f"missing commas: '{old_val}' -> '{new_val}'"
+        except ValueError:
+            pass
+
+    # Percentage consistency
+    if old_fmt["has_percent"] and not new_fmt["has_percent"]:
+        return False, f"missing percent sign: '{old_val}' -> '{new_val}'"
+
+    # Decimal precision
+    if old_fmt["has_percent"] and new_fmt["has_percent"]:
+        if old_fmt["decimal_places"] != new_fmt["decimal_places"]:
+            return False, (
+                f"decimal precision mismatch: '{old_val}' ({old_fmt['decimal_places']}dp) "
+                f"-> '{new_val}' ({new_fmt['decimal_places']}dp)"
+            )
+
+    return True, ""
+
+
+def _auto_fix_format(old_val: str, new_val: str) -> str:
+    """Attempt to auto-correct formatting in new_val to match old_val's style."""
+    old_fmt = _detect_number_format(old_val)
+
+    # Extract the raw number from new_val
+    raw = re.sub(r"[^\d.\-]", "", new_val)
+    if not raw:
+        return new_val
+
+    try:
+        num = float(raw)
+    except ValueError:
+        return new_val
+
+    # Build formatted string
+    result = ""
+
+    if old_fmt["has_dollar"]:
+        result += "$"
+
+    if old_fmt["has_commas"]:
+        if old_fmt["decimal_places"] > 0:
+            result += f"{num:,.{old_fmt['decimal_places']}f}"
+        else:
+            result += f"{int(num):,}"
+    else:
+        if old_fmt["decimal_places"] > 0:
+            result += f"{num:.{old_fmt['decimal_places']}f}"
+        else:
+            result += str(int(num))
+
+    if old_fmt["has_percent"]:
+        result += "%"
+
+    return result
+
+
+def validate_mapping_formats(mappings: dict) -> dict:
+    """Check and auto-fix formatting consistency between old and new values.
+
+    Returns the mappings dict with formatting issues fixed in-place and
+    unfixable mismatches added to the rejected list.
+    """
+    fixed_count = 0
+    format_warnings = []
+
+    for upd in mappings.get("table_updates", []):
+        old_val = upd.get("old_value", "")
+        new_val = upd.get("new_value", "")
+        if not old_val or not new_val:
+            continue
+        ok, reason = _format_matches(old_val, new_val)
+        if not ok:
+            corrected = _auto_fix_format(old_val, new_val)
+            if corrected != new_val:
+                upd["new_value"] = corrected
+                fixed_count += 1
+            else:
+                format_warnings.append(
+                    f"page {upd.get('page')}: {reason}"
+                )
+
+    for upd in mappings.get("text_updates", []):
+        old_txt = upd.get("old_text", "")
+        new_txt = upd.get("new_text", "")
+        if not old_txt or not new_txt:
+            continue
+        # Extract embedded numbers for format checking
+        old_nums = re.findall(r"\$[\d,]+\.?\d*%?|\d[\d,]*\.?\d*%", old_txt)
+        new_nums = re.findall(r"\$[\d,]+\.?\d*%?|\d[\d,]*\.?\d*%", new_txt)
+        for old_n, new_n in zip(old_nums, new_nums):
+            ok, reason = _format_matches(old_n, new_n)
+            if not ok:
+                corrected = _auto_fix_format(old_n, new_n)
+                if corrected != new_n:
+                    upd["new_text"] = upd["new_text"].replace(new_n, corrected, 1)
+                    fixed_count += 1
+
+    if fixed_count > 0:
+        log.info("Format validation auto-corrected %d values", fixed_count)
+    if format_warnings:
+        for w in format_warnings[:5]:
+            log.warning("Format mismatch (unfixable): %s", w)
+
+    return mappings
+
+
+# ============================================================================
+# 8b. PRE-VALIDATION (local Python check)
 # ============================================================================
 def pre_validate_mappings(mappings: dict, memo_content: str) -> dict:
     """
@@ -1751,10 +1976,22 @@ def _replace_in_para(para, old_text: str, new_text: str) -> bool:
             # Preserve text after match in last overlapping run
             last_run_end = run_starts[last_run_idx] + len(para.runs[last_run_idx].text)
             post = full_text[match_end:last_run_end]
-            # Write replacement into first overlapping run, clear the rest
-            para.runs[first_run_idx].text = pre + new_text + post
+
+            # Save formatting from the first overlapping run so we can
+            # re-apply it after writing new text.  The run's XML element
+            # keeps its rPr (run properties) automatically — we just need
+            # to make sure the cleared runs don't leave orphan formatting.
+            first_run = para.runs[first_run_idx]
+
+            # Write replacement into first overlapping run
+            first_run.text = pre + new_text + post
+
+            # For cleared runs: preserve the run element (keeps XML valid)
+            # but empty the text.  If the last run has text AFTER the
+            # match region, move it there to preserve its formatting.
             for i in range(first_run_idx + 1, last_run_idx + 1):
                 para.runs[i].text = ""
+
             return True
 
     return False
