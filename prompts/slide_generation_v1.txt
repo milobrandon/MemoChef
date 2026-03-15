@@ -17,6 +17,21 @@ Given the source data, memo structure, and user directions, generate a plan for 
 11. Do NOT generate slides that would duplicate content already in the memo.
 12. Each slide should have a clear, specific purpose. Do not generate generic "overview" slides.
 13. If user directives specify what slides to generate, follow those instructions precisely.
+14. **Proactive insight generation** — You are encouraged to identify compelling
+    data insights that are NOT currently visualized in the memo, even if the
+    user did not explicitly request them. For example:
+    - A rent growth trend in market data that supports the investment thesis
+    - A supply/demand imbalance visible in pipeline or comp data
+    - A demographic shift (enrollment growth, population trend) from supplemental data
+    - A notable competitive advantage (occupancy premium, rent premium vs comps)
+    If the data supports a strong visual story that strengthens the IC
+    presentation, generate the slide. Include a clear rationale explaining
+    the insight. Do NOT add slides for trivial or obvious observations.
+15. **Footer and title consistency** — Every generated slide MUST include
+    the project name in the title area, matching the exact casing and format
+    used in the existing memo. If the existing memo has a footer pattern
+    (e.g. "Confidential | Project Name | Date"), preserve that pattern.
+    Never introduce a different project name or footer format.
 
 ## MEMO STRUCTURE
 

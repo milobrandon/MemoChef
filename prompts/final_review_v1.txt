@@ -49,6 +49,12 @@ not ship.
 - Every table that references the subject property has been updated
 - Schedule milestones match the schedule data (if provided)
 
+### 6. FOOTER & TITLE CONSISTENCY
+- Every slide uses the SAME project name (exact casing and format)
+- Footer text is identical across all slides (confidentiality notice, date, etc.)
+- No slides reference an old/rebranded project name
+- Section headers use consistent capitalization and formatting
+
 ## Output Format
 
 Return ONLY valid JSON. Start with {{ and end with }}.

@@ -934,14 +934,20 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                     checkpoint.add_warning("comp_slide", str(e))
 
         # --- Multi-slide generation (unified engine) ---
-        # Runs when any source directive has scope "slide_generation" or "both",
-        # or when supplemental data is provided with a directive targeting slides.
+        # Runs when:
+        # 1. Any source directive targets slide generation, OR
+        # 2. Market data or supplemental data is available (proactive insights)
         slide_gen_directives = [
             d for d in directives_dicts
             if d.get("scope") in ("slide_generation", "both")
             and d.get("directive", "").strip()
         ]
-        if slide_gen_directives and not request.dry_run:
+        has_rich_sources = bool(
+            request.market_data_path
+            or request.supplemental_path
+            or request.comp_urls
+        )
+        if (slide_gen_directives or has_rich_sources) and not request.dry_run:
             _emit(callback, "generate_slides", "Generate new slides", 88)
             with checkpoint.stage("generate_slides", "AI-driven multi-slide generation"):
                 try:
