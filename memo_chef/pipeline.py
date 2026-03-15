@@ -1064,15 +1064,21 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                         log.error("Slide auto-split failed: %s", e)
                         checkpoint.add_warning("slide_split", str(e))
 
-        # --- Final QA sign-off (last gate before distribution) ---
+        # --- Final QA sign-off (up to 5 rounds, can redo full cycle) ---
         if not request.dry_run and not request.skip_validation:
-            from memo_automator import run_final_review
+            from memo_automator import run_consistency_check, run_final_review
 
             _emit(callback, "final_review", "Final QA review", 97)
             with checkpoint.stage("final_review", "Claude sign-off review"):
-                max_review_rounds = 2
+                max_review_rounds = 5
+                review = None
                 for review_round in range(1, max_review_rounds + 1):
-                    # Re-extract the final memo state
+                    _emit(
+                        callback, "final_review",
+                        f"QA review round {review_round}/{max_review_rounds}", 97,
+                    )
+
+                    # Re-extract the final memo state each round
                     final_memo = extract_memo_content(request.memo_path, cfg)
 
                     review = run_final_review(
@@ -1093,7 +1099,70 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                         )
                         break
 
-                    # Apply critical fixes if available
+                    log.warning(
+                        "Final review round %d: REVISIONS_NEEDED (score=%d, %d critical fixes)",
+                        review_round, score, len(critical_fixes),
+                    )
+
+                    # ---- Triage: simple fixes vs full redo ----
+                    # If accuracy category FAILED, that means metrics don't tie
+                    # out — we need to redo the full consistency check + re-map
+                    accuracy_failed = (
+                        review.get("categories", {})
+                        .get("accuracy", {})
+                        .get("status") == "FAIL"
+                    )
+
+                    if accuracy_failed and review_round <= 3:
+                        # Full redo: re-run consistency check which will
+                        # re-verify and auto-fix metric mismatches
+                        _emit(
+                            callback, "final_review",
+                            f"Accuracy failed — re-running consistency check (round {review_round})",
+                            97,
+                        )
+                        updated_memo = extract_memo_content(request.memo_path, cfg)
+                        consistency = run_consistency_check(
+                            client, proforma_data, updated_memo, changes, cfg,
+                        )
+                        c_discrepancies = consistency.get("discrepancies", [])
+                        if c_discrepancies:
+                            c_fix_mappings = {"table_updates": [], "text_updates": []}
+                            for d in c_discrepancies:
+                                fix = d.get("fix")
+                                if not fix:
+                                    continue
+                                if fix.get("update_type") == "table":
+                                    c_fix_mappings["table_updates"].append({
+                                        "page": d.get("page"),
+                                        "table_name": d.get("location", ""),
+                                        "row_label": "",
+                                        "column_index": 1,
+                                        "old_value": fix.get("old_value", ""),
+                                        "new_value": fix.get("new_value", ""),
+                                        "source": fix.get("source", "consistency_redo"),
+                                    })
+                                else:
+                                    c_fix_mappings["text_updates"].append({
+                                        "page": d.get("page"),
+                                        "old_text": fix.get("old_value", ""),
+                                        "new_text": fix.get("new_value", ""),
+                                        "source": fix.get("source", "consistency_redo"),
+                                    })
+                            c_n = (len(c_fix_mappings["table_updates"])
+                                   + len(c_fix_mappings["text_updates"]))
+                            if c_n > 0:
+                                c_changes = apply_updates(
+                                    request.memo_path, c_fix_mappings, dry_run=False,
+                                )
+                                changes.extend(c_changes)
+                                log.info(
+                                    "Consistency redo round %d: applied %d fixes",
+                                    review_round, len(c_changes),
+                                )
+                        continue  # re-review after consistency redo
+
+                    # Simple fixes from the review itself
                     if critical_fixes:
                         _emit(
                             callback, "final_review",
@@ -1134,22 +1203,35 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                                 "Final review round %d: applied %d fixes",
                                 review_round, len(fix_changes),
                             )
-                        else:
-                            # No auto-fixable issues but still not approved
-                            for cat_name, cat_data in review.get("categories", {}).items():
-                                if cat_data.get("status") == "FAIL":
-                                    for issue in cat_data.get("issues", [])[:3]:
-                                        checkpoint.add_warning("final_review", f"{cat_name}: {issue}")
-                            break
-                    else:
-                        # REVISIONS_NEEDED but no fixes provided — log warnings
-                        for w in review.get("warnings", [])[:5]:
-                            checkpoint.add_warning("final_review", w)
-                        break
+                            continue  # re-review after fixes
+
+                    # No fixable issues — log warnings and stop
+                    for cat_name, cat_data in review.get("categories", {}).items():
+                        if cat_data.get("status") == "FAIL":
+                            for issue in cat_data.get("issues", [])[:3]:
+                                checkpoint.add_warning(
+                                    "final_review", f"{cat_name}: {issue}",
+                                )
+                    for w in review.get("warnings", [])[:5]:
+                        checkpoint.add_warning("final_review", w)
+                    break
+                else:
+                    # Exhausted all rounds without APPROVED
+                    log.warning(
+                        "Final review exhausted %d rounds without APPROVED (last score=%d)",
+                        max_review_rounds,
+                        review.get("overall_score", 0) if review else 0,
+                    )
+                    checkpoint.add_warning(
+                        "final_review",
+                        f"Memo not fully approved after {max_review_rounds} review rounds. "
+                        f"Last score: {review.get('overall_score', 0) if review else 0}. "
+                        f"Manual review recommended.",
+                    )
 
                 # Save review result
                 review_path = os.path.join(request.output_dir, "final_review.json")
-                _write_json(review_path, review)
+                _write_json(review_path, review or {})
                 checkpoint.set_output("final_review", review_path)
 
         _emit(callback, "artifacts", "Write artifacts", 98)
