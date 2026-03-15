@@ -1001,6 +1001,62 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                     "page_numbers_snapped",
                     int(layout_summary.get("page_numbers_snapped", 0)),
                 )
+                checkpoint.set_count(
+                    "shapes_clamped_to_margins",
+                    int(layout_summary.get("shapes_clamped_to_margins", 0)),
+                )
+                checkpoint.set_count(
+                    "table_font_size_normalized",
+                    int(layout_summary.get("table_font_size_normalized", 0)),
+                )
+
+            # --- Auto-split overflowed slides ---
+            overflow_count = layout_summary.get("overflow_slides_detected", 0)
+            if overflow_count > 0:
+                _emit(callback, "slide_split", f"Splitting {overflow_count} dense slides", 96)
+                with checkpoint.stage("slide_split", "Auto-splitting overflowed slides"):
+                    try:
+                        from memo_chef.slide_generator import split_overflowed_slides
+
+                        # Re-run density detection to get the actual slide indices
+                        # (normalize_layout already flagged them but we need fresh indices)
+                        from pptx import Presentation as PptxPresentation
+                        from pptx.util import Inches as _Inches
+
+                        _prs = PptxPresentation(request.memo_path)
+                        _overflow = []
+                        for _idx, _slide in enumerate(_prs.slides):
+                            if _idx == 0:
+                                continue
+                            _tc = sum(
+                                len(p.text) for sh in _slide.shapes
+                                if sh.has_text_frame
+                                for p in sh.text_frame.paragraphs
+                            )
+                            _tr = sum(
+                                len(sh.table.rows) for sh in _slide.shapes
+                                if sh.has_table
+                            )
+                            _sc = len(list(_slide.shapes))
+                            if _tc > 1200 or _tr > 15 or (_tc > 600 and _tr > 8) or _sc > 12:
+                                _overflow.append((_idx, {
+                                    "text_chars": _tc,
+                                    "table_rows": _tr,
+                                    "shape_count": _sc,
+                                }))
+
+                        if _overflow:
+                            n_split = split_overflowed_slides(
+                                request.memo_path,
+                                _overflow,
+                                client,
+                                model=cfg.get("claude", {}).get("model", "claude-sonnet-4-6"),
+                            )
+                            checkpoint.set_count("slides_split", n_split)
+                            log.info("Auto-split %d overflowed slides", n_split)
+                    except Exception as e:
+                        log.error("Slide auto-split failed: %s", e)
+                        checkpoint.add_warning("slide_split", str(e))
 
         _emit(callback, "artifacts", "Write artifacts", 97)
         with checkpoint.stage("artifacts", "Writing change log and manifest"):

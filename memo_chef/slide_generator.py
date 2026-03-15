@@ -363,3 +363,207 @@ def _repopulate_table(table, visual_data: dict) -> None:
                 table.cell(i + 1, j + 1).text = str(val)
             except (IndexError, AttributeError):
                 pass
+
+
+# ---------------------------------------------------------------------------
+# 5. Slide splitting — split overflowed slides into two
+# ---------------------------------------------------------------------------
+
+_SPLIT_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "slide_split_v1.txt"
+
+
+def split_overflowed_slides(
+    memo_path: str,
+    overflow_slides: list[tuple[int, dict]],
+    client: Any,
+    model: str = "claude-sonnet-4-6",
+) -> int:
+    """Split slides that exceed content density thresholds.
+
+    Parameters
+    ----------
+    memo_path: path to the PPTX
+    overflow_slides: list of (slide_idx, metrics_dict) from normalize_layout
+    client: Anthropic client
+    model: Claude model to use
+
+    Returns the number of slides that were successfully split.
+    """
+    if not overflow_slides:
+        return 0
+
+    prs = Presentation(memo_path)
+    splits_done = 0
+    offset = 0  # track index shifts from prior splits
+
+    for orig_idx, metrics in overflow_slides:
+        idx = orig_idx + offset
+        if idx >= len(prs.slides):
+            continue
+
+        slide = prs.slides[idx]
+
+        # Extract slide content text for Claude
+        content_lines = []
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                content_lines.append(
+                    f"[{shape.name}] " +
+                    " | ".join(p.text for p in shape.text_frame.paragraphs if p.text.strip())
+                )
+            if shape.has_table:
+                for row_idx_t, row in enumerate(shape.table.rows):
+                    cells = [c.text.strip() for c in row.cells]
+                    content_lines.append(f"  Row {row_idx_t}: {' | '.join(cells)}")
+
+        slide_content = "\n".join(content_lines)
+        if not slide_content.strip():
+            continue
+
+        # Ask Claude how to split
+        try:
+            prompt_template = _SPLIT_PROMPT_PATH.read_text(encoding="utf-8")
+            prompt = prompt_template.format(
+                page_number=idx + 1,
+                slide_content=slide_content[:8000],
+                text_chars=metrics.get("text_chars", 0),
+                table_rows=metrics.get("table_rows", 0),
+                shape_count=metrics.get("shape_count", 0),
+            )
+
+            response = client.messages.create(
+                model=model,
+                max_tokens=4096,
+                temperature=0,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            raw = response.content[0].text.strip()
+            json_match = re.search(r"\{[\s\S]*\}", raw)
+            if not json_match:
+                log.warning("Slide split: no JSON returned for slide %d", idx + 1)
+                continue
+
+            split_plan = json.loads(json_match.group())
+        except Exception as e:
+            log.warning("Slide split failed for slide %d: %s", idx + 1, e)
+            continue
+
+        # Execute the split: for table splits, clone the slide and
+        # remove rows from each copy
+        strategy = split_plan.get("split_strategy", "")
+        if strategy == "table_split":
+            table_rows_end = split_plan.get("slide_1", {}).get("table_rows_end")
+            table_rows_start = split_plan.get("slide_2", {}).get("table_rows_start")
+            if table_rows_end is None or table_rows_start is None:
+                continue
+
+            # Clone the slide for the continuation
+            new_slide = clone_slide(prs, idx)
+            insert_slide_at_position(prs, new_slide, idx)
+
+            # Now we have two copies: prs.slides[idx] and prs.slides[idx+1]
+            # Remove excess rows from each
+            _trim_table_rows(prs.slides[idx], keep_end=table_rows_end)
+            _trim_table_rows(prs.slides[idx + 1], keep_start=table_rows_start)
+
+            # Update title on continuation slide
+            cont_title = split_plan.get("slide_2", {}).get("title", "")
+            if cont_title:
+                _update_slide_title(prs.slides[idx + 1], cont_title)
+
+            splits_done += 1
+            offset += 1
+            log.info("Split slide %d (table_split at row %d)", orig_idx + 1, table_rows_end)
+
+        elif strategy == "visual_narrative_split":
+            # Clone slide, remove narrative from first, remove visual from second
+            new_slide = clone_slide(prs, idx)
+            insert_slide_at_position(prs, new_slide, idx)
+
+            # First slide: remove large text shapes (narrative)
+            _remove_narrative_shapes(prs.slides[idx])
+            # Second slide: remove tables/charts, keep narrative
+            _remove_visual_shapes(prs.slides[idx + 1])
+
+            cont_title = split_plan.get("slide_2", {}).get("title", "")
+            if cont_title:
+                _update_slide_title(prs.slides[idx + 1], cont_title)
+
+            splits_done += 1
+            offset += 1
+            log.info("Split slide %d (visual_narrative_split)", orig_idx + 1)
+
+    if splits_done > 0:
+        prs.save(memo_path)
+        log.info("Saved memo after splitting %d overflowed slides", splits_done)
+
+    return splits_done
+
+
+def _trim_table_rows(slide, keep_end: int | None = None, keep_start: int | None = None):
+    """Remove rows from the first table on a slide.
+
+    keep_end: keep rows 0..keep_end (remove the rest)
+    keep_start: keep rows 0 (header) + keep_start..end (remove middle)
+    """
+    ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    for shape in slide.shapes:
+        if not shape.has_table:
+            continue
+        tbl_xml = shape.table._tbl
+        rows = tbl_xml.findall(f"{{{ns}}}tr")
+        if keep_end is not None:
+            # Remove rows after keep_end
+            for i in range(len(rows) - 1, keep_end, -1):
+                tbl_xml.remove(rows[i])
+        elif keep_start is not None:
+            # Keep header (row 0) + rows from keep_start onward
+            for i in range(keep_start - 1, 0, -1):
+                tbl_xml.remove(rows[i])
+        break  # only process first table
+
+
+def _update_slide_title(slide, new_title: str):
+    """Update the title text on a slide."""
+    for shape in slide.shapes:
+        if shape.has_text_frame:
+            for para in shape.text_frame.paragraphs:
+                if para.font.size and para.font.size >= Pt(18):
+                    para.text = new_title
+                    return
+    # Fallback: check placeholders
+    for shape in slide.placeholders:
+        try:
+            if shape.placeholder_format.idx == 0:
+                shape.text = new_title
+                return
+        except Exception:
+            pass
+
+
+def _remove_narrative_shapes(slide):
+    """Remove large text-only shapes (narrative paragraphs) from a slide."""
+    to_remove = []
+    for shape in slide.shapes:
+        if not shape.has_text_frame:
+            continue
+        if shape.has_table or shape.has_chart:
+            continue
+        total_text = sum(len(p.text) for p in shape.text_frame.paragraphs)
+        if total_text > 200:  # likely narrative, not a title or label
+            to_remove.append(shape)
+    for shape in to_remove:
+        sp = shape._element
+        sp.getparent().remove(sp)
+
+
+def _remove_visual_shapes(slide):
+    """Remove tables and charts from a slide, keeping text shapes."""
+    to_remove = []
+    for shape in slide.shapes:
+        if shape.has_table or shape.has_chart:
+            to_remove.append(shape)
+    for shape in to_remove:
+        sp = shape._element
+        sp.getparent().remove(sp)

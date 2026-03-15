@@ -3300,6 +3300,121 @@ def normalize_layout(memo_path: str, cfg: dict) -> dict:
             except Exception:
                 pass  # some shapes don't support auto_size
 
+    # ------------------------------------------------------------------
+    # 1g. Content density scoring & overflow flagging
+    # ------------------------------------------------------------------
+    overflow_slides: list[tuple[int, dict]] = []  # (slide_idx, metrics)
+    for idx, slide in enumerate(prs.slides):
+        if idx == 0:
+            continue  # skip cover
+
+        text_chars = 0
+        table_rows = 0
+        table_count = 0
+        chart_count = 0
+        shape_count = 0
+
+        for shape in slide.shapes:
+            shape_count += 1
+            if shape.has_text_frame:
+                text_chars += sum(len(p.text) for p in shape.text_frame.paragraphs)
+            if shape.has_table:
+                table_count += 1
+                table_rows += len(shape.table.rows)
+            if shape.has_chart:
+                chart_count += 1
+
+        # Heuristic thresholds for "too full"
+        is_overflow = (
+            text_chars > 1200          # lots of text
+            or table_rows > 15         # table won't fit vertically
+            or (text_chars > 600 and table_rows > 8)  # both crowded
+            or shape_count > 12        # too many shapes
+        )
+        if is_overflow:
+            overflow_slides.append((idx, {
+                "text_chars": text_chars,
+                "table_rows": table_rows,
+                "table_count": table_count,
+                "chart_count": chart_count,
+                "shape_count": shape_count,
+            }))
+
+    summary["overflow_slides_detected"] = len(overflow_slides)
+    if overflow_slides:
+        log.warning(
+            "Content density: %d slides exceed density threshold: %s",
+            len(overflow_slides),
+            [idx + 1 for idx, _ in overflow_slides],
+        )
+
+    # ------------------------------------------------------------------
+    # 1h. Cross-slide formatting consistency
+    # ------------------------------------------------------------------
+    # Detect the dominant font for body text and table cells, then
+    # normalize outliers to the dominant style.
+    from collections import defaultdict
+
+    body_font_usage: dict[str, int] = defaultdict(int)   # font_name -> count
+    body_size_usage: dict[float, int] = defaultdict(int)  # size_pt -> count
+    table_size_usage: dict[float, int] = defaultdict(int)
+
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                for para in shape.text_frame.paragraphs:
+                    for run in para.runs:
+                        if run.font.name:
+                            body_font_usage[run.font.name] += 1
+                        if run.font.size:
+                            try:
+                                body_size_usage[round(run.font.size.pt, 1)] += 1
+                            except Exception:
+                                pass
+            if shape.has_table:
+                for row in shape.table.rows:
+                    for cell in row.cells:
+                        for para in cell.text_frame.paragraphs:
+                            for run in para.runs:
+                                if run.font.size:
+                                    try:
+                                        table_size_usage[round(run.font.size.pt, 1)] += 1
+                                    except Exception:
+                                        pass
+
+    # Find dominant table cell font size
+    dominant_table_size = None
+    if table_size_usage:
+        dominant_table_size = max(table_size_usage, key=table_size_usage.get)
+
+    # Normalize: if a table cell has a font size that's >2pt off the
+    # dominant size AND it's not a header row (>= 2pt larger), fix it.
+    format_fixes = 0
+    if dominant_table_size:
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if not shape.has_table:
+                    continue
+                for row_idx, row in enumerate(shape.table.rows):
+                    if row_idx == 0:
+                        continue  # skip header row
+                    for cell in row.cells:
+                        for para in cell.text_frame.paragraphs:
+                            for run in para.runs:
+                                if run.font.size:
+                                    try:
+                                        size = round(run.font.size.pt, 1)
+                                        diff = abs(size - dominant_table_size)
+                                        if 0.5 < diff < 4.0:  # outlier but not intentional header
+                                            run.font.size = Pt(dominant_table_size)
+                                            format_fixes += 1
+                                    except Exception:
+                                        pass
+
+    summary["table_font_size_normalized"] = format_fixes
+    if format_fixes > 0:
+        log.info("Normalized %d table cell font sizes to %.1fpt", format_fixes, dominant_table_size)
+
     prs.save(memo_path)
     log.info("Layout normalized: %s", summary)
     return summary
