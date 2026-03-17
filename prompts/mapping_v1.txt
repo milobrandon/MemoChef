@@ -8,6 +8,8 @@ metric in the memo that should be updated with new values from the proforma.
 ## Memo Content (from PowerPoint)
 {memo_content}
 
+{source_directives_section}
+
 ## Instructions
 
 1. **Table updates** - For each table cell in the memo whose value comes
@@ -183,7 +185,17 @@ metric in the memo that should be updated with new values from the proforma.
     Empty rows are placeholders or spacing — updating them would insert
     spurious data into the memo.
 
-21. **Comp property column updates** - When COMP PROPERTY DATA sections are
+21. **Narrative rewriting** - When a proforma metric change significantly
+   alters the meaning of a narrative passage (e.g. a 15% change in NOI,
+   or unit count changes from 300 to 510), rewrite the surrounding
+   sentence(s) so they remain coherent and accurate.  Emit a
+   `narrative_updates` entry with the full old paragraph and rewritten
+   replacement.  Do NOT use narrative_updates for simple number swaps
+   (use text_updates for those) — only use this when the sentence
+   structure needs to change to stay meaningful.  Preserve the original
+   tone and voice of the memo.
+
+22. **Comp property column updates** - When COMP PROPERTY DATA sections are
     present (scraped from competitive property websites), update the NON-subject
     columns in side-by-side comparison tables:
     - Match each comp property label to the corresponding column header in the
@@ -197,6 +209,17 @@ metric in the memo that should be updated with new values from the proforma.
     - Do NOT insert rows into side-by-side tables (same restriction as rule 17).
     - Do NOT modify the subject property column using comp data — the subject
       column is updated only from the proforma.
+
+23. **Table structure changes** — When a source directive explicitly requests
+   table restructuring (e.g. "add a column for Year 3 projections",
+   "remove the old pipeline row", "reorder unit types alphabetically"),
+   emit `table_structure_updates` entries.  Do NOT restructure tables
+   unless a user directive or significant proforma structural change
+   warrants it.  Available actions:
+   - `add_column`: adds a new column with header and values
+   - `remove_row`: removes a row by its label
+   - `reorder_rows`: reorders data rows to match a given label sequence
+   **Never use table_structure_updates on side-by-side comp tables.**
 
 CRITICAL: Return ONLY the raw JSON object below. Do NOT include any analysis,
 reasoning, explanation, or commentary before or after the JSON. Your entire
@@ -231,6 +254,28 @@ Schema:
       "insert_after_row_label": "<text in column 0 of reference row>",
       "cells": ["<col 0>", "<col 1>", ...],
       "source": "<tab + cell ref>"
+    }}
+  ],
+  "narrative_updates": [
+    {{
+      "page": <int>,
+      "old_narrative": "<exact paragraph or multi-sentence block to replace>",
+      "new_narrative": "<rewritten paragraph with updated metrics and coherent context>",
+      "source": "<tab name + cell ref>",
+      "rationale": "<brief explanation of why rewrite was needed>"
+    }}
+  ],
+  "table_structure_updates": [
+    {{
+      "page": <int>,
+      "table_name": "<shape name>",
+      "action": "<add_column | remove_row | reorder_rows>",
+      "column_header": "<for add_column: new column header>",
+      "values": ["<for add_column: cell values, one per data row>"],
+      "after_column": <for add_column: 0-based column index to insert after>,
+      "row_label": "<for remove_row: column 0 text of row to remove>",
+      "new_order": ["<for reorder_rows: list of row labels in desired order>"],
+      "source": "<tab name + cell ref>"
     }}
   ],
   "chart_updates": [

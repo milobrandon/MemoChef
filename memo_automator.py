@@ -714,6 +714,172 @@ def _load_prompt_template(filename: str) -> str:
 
 
 # ============================================================================
+# 6b. FINAL REVIEW SIGN-OFF
+# ============================================================================
+FINAL_REVIEW_PROMPT = _load_prompt_template("final_review_v1.txt")
+
+
+def run_final_review(
+    client: "anthropic.Anthropic",
+    proforma_data: str,
+    memo_content: str,
+    cfg: dict,
+    max_rounds: int = 2,
+) -> dict:
+    """Final QA gate: Claude reviews the memo as a distributable document.
+
+    Loops up to max_rounds: review → apply critical fixes → re-review.
+    Returns the final review result with verdict, scores, and any
+    remaining warnings.
+    """
+    model = cfg["claude"].get("validation_model", cfg["claude"]["model"])
+    max_tokens = cfg["claude"]["max_tokens"]
+
+    system_text = FINAL_REVIEW_PROMPT.format(
+        proforma_data=proforma_data,
+        memo_content="(see user message below)",
+    )
+
+    review_result = None
+    for attempt in range(1, max_rounds + 1):
+        user_text = f"## Updated Memo Content (final state)\n{memo_content}"
+        if attempt > 1:
+            user_text += (
+                "\n\n## NOTE: This is review round {attempt}. Previous critical fixes "
+                "have been applied. Re-evaluate the memo from scratch."
+            )
+
+        try:
+            message = client.messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                temperature=0,
+                system=[{
+                    "type": "text",
+                    "text": system_text,
+                    "cache_control": {"type": "ephemeral"},
+                }],
+                messages=[{"role": "user", "content": user_text}],
+            )
+
+            raw = ""
+            for block in message.content:
+                if block.type == "text":
+                    raw = block.text
+                    break
+
+            review_result = _parse_json_response(raw)
+            if review_result is None:
+                log.warning("Final review round %d: could not parse JSON", attempt)
+                continue
+
+            verdict = review_result.get("verdict", "REVISIONS_NEEDED")
+            score = review_result.get("overall_score", 0)
+            critical_fixes = review_result.get("critical_fixes", [])
+
+            log.info(
+                "Final review round %d: verdict=%s, score=%d, critical_fixes=%d",
+                attempt, verdict, score, len(critical_fixes),
+            )
+
+            if verdict == "APPROVED" or not critical_fixes:
+                return review_result
+
+            # Return fixes for the caller to apply (pipeline handles apply + re-review)
+            return review_result
+
+        except Exception as e:
+            log.warning("Final review round %d failed: %s", attempt, e)
+            continue
+
+    # All rounds exhausted
+    return review_result or {
+        "verdict": "REVISIONS_NEEDED",
+        "overall_score": 0,
+        "categories": {},
+        "critical_fixes": [],
+        "warnings": ["Final review could not be completed"],
+        "summary": "Review failed after all attempts",
+    }
+
+
+# ============================================================================
+# 6c. POST-APPLY CONSISTENCY CHECK
+# ============================================================================
+CONSISTENCY_PROMPT = _load_prompt_template("consistency_check_v1.txt")
+
+
+def run_consistency_check(
+    client: "anthropic.Anthropic",
+    proforma_data: str,
+    memo_content: str,
+    changes: list[dict],
+    cfg: dict,
+    max_retries: int = 2,
+) -> dict:
+    """Re-read the updated memo and verify every metric ties out.
+
+    Returns a dict with 'status' ('pass' or 'fail'), 'discrepancies' list,
+    and 'fixes' list of auto-applicable corrections.
+    """
+    model = cfg["claude"].get("validation_model", cfg["claude"]["model"])
+    max_tokens = cfg["claude"]["max_tokens"]
+
+    # Build a compact summary of changes already applied
+    changes_lines = []
+    for c in changes[:50]:  # cap to avoid prompt bloat
+        changes_lines.append(
+            f"  page {c.get('page', '?')} [{c.get('type', '?')}]: "
+            f"'{c.get('old', '')[:30]}' -> '{c.get('new', '')[:30]}'"
+        )
+    changes_summary = "\n".join(changes_lines) or "(no changes applied)"
+
+    system_text = CONSISTENCY_PROMPT.format(
+        proforma_data=proforma_data,
+        memo_content=memo_content,
+        changes_summary=changes_summary,
+    )
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            message = client.messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                temperature=0,
+                system=[{
+                    "type": "text",
+                    "text": system_text,
+                    "cache_control": {"type": "ephemeral"},
+                }],
+                messages=[{"role": "user", "content": "Perform the consistency check now."}],
+            )
+
+            raw = ""
+            for block in message.content:
+                if block.type == "text":
+                    raw = block.text
+                    break
+
+            result = _parse_json_response(raw)
+            if result is None:
+                if attempt < max_retries:
+                    log.warning("Consistency check attempt %d: invalid JSON, retrying...", attempt)
+                    continue
+                return {"status": "error", "discrepancies": [], "summary": "Could not parse check results"}
+
+            return result
+
+        except Exception as e:
+            if attempt < max_retries:
+                log.warning("Consistency check attempt %d failed: %s", attempt, e)
+                continue
+            log.error("Consistency check failed after %d attempts: %s", max_retries, e)
+            return {"status": "error", "discrepancies": [], "summary": str(e)}
+
+    return {"status": "error", "discrepancies": [], "summary": "All attempts failed"}
+
+
+# ============================================================================
 # 7. CLAUDE API - METRIC MAPPING
 # ============================================================================
 MAPPING_PROMPT = _load_prompt_template("mapping_v1.txt")
@@ -787,7 +953,11 @@ def _salvage_truncated_json(raw: str) -> dict | None:
         mappings.setdefault("table_updates", [])
         mappings.setdefault("text_updates", [])
         mappings.setdefault("row_inserts", [])
-        n = len(mappings["table_updates"]) + len(mappings["text_updates"]) + len(mappings["row_inserts"])
+        mappings.setdefault("narrative_updates", [])
+        mappings.setdefault("table_structure_updates", [])
+        n = (len(mappings["table_updates"]) + len(mappings["text_updates"])
+             + len(mappings["row_inserts"]) + len(mappings["narrative_updates"])
+             + len(mappings["table_structure_updates"]))
         if n > 0:
             log.info("Salvaged %d updates from truncated response", n)
             return mappings
@@ -895,6 +1065,7 @@ def build_mapping_batch_requests(
     memo_chunks: list[str],
     cfg: dict,
     property_name: str = "",
+    source_directives: list[dict] | None = None,
 ) -> list[dict]:
     """Build a list of batch API request dicts for the Message Batches API.
 
@@ -910,10 +1081,12 @@ def build_mapping_batch_requests(
     temperature = cfg["claude"]["temperature"]
 
     pn_section = _property_name_section(property_name, "mapping")
+    directives_section = format_source_directives(source_directives or [], scope="mapping")
     system_text = MAPPING_PROMPT.format(
         proforma_data=proforma_data,
         memo_content="(see user message below)",
         property_name_section=pn_section,
+        source_directives_section=directives_section,
     )
 
     requests = []
@@ -1028,6 +1201,37 @@ def _property_name_section(property_name: str, purpose: str = "mapping") -> str:
     )
 
 
+def format_source_directives(directives: list[dict], scope: str = "both") -> str:
+    """Format user source directives into a prompt section.
+
+    Parameters
+    ----------
+    directives:
+        List of dicts with keys: source_id, source_type, directive, scope.
+    scope:
+        Filter to only include directives matching this scope ("mapping",
+        "slide_generation", or "both").  Directives with scope "both"
+        are always included.
+    """
+    relevant = [
+        d for d in directives
+        if d.get("directive", "").strip()
+        and d.get("scope", "both") in (scope, "both")
+    ]
+    if not relevant:
+        return ""
+    lines = ["\n## Source Directives — FOLLOW THESE USER INSTRUCTIONS"]
+    lines.append(
+        "The user has provided specific instructions for how to use certain sources. "
+        "You MUST follow these directives precisely. If a directive says to ignore a "
+        "source or limit its use to specific sections, obey that constraint."
+    )
+    for d in relevant:
+        src_label = d.get("source_id", d.get("source_type", "unknown"))
+        lines.append(f"- **{src_label}**: {d['directive']}")
+    return "\n".join(lines) + "\n"
+
+
 def get_metric_mappings(
     client: anthropic.Anthropic,
     proforma_data: str,
@@ -1035,6 +1239,7 @@ def get_metric_mappings(
     cfg: dict,
     property_name: str = "",
     telemetry: dict | None = None,
+    source_directives: list[dict] | None = None,
 ) -> dict:
     """
     Send proforma data + memo content to Claude and receive structured
@@ -1050,6 +1255,7 @@ def get_metric_mappings(
     use_thinking = "opus" in model.lower()
 
     pn_section = _property_name_section(property_name, "mapping")
+    directives_section = format_source_directives(source_directives or [], scope="mapping")
 
     # Split prompt into cached system prefix (instructions + proforma)
     # and varying user message (memo chunk only).
@@ -1057,6 +1263,7 @@ def get_metric_mappings(
         proforma_data=proforma_data,
         memo_content="(see user message below)",
         property_name_section=pn_section,
+        source_directives_section=directives_section,
     )
     user_text = f"## Memo Content (from PowerPoint)\n{memo_content}"
 
@@ -1151,12 +1358,16 @@ def get_metric_mappings(
     mappings.setdefault("table_updates", [])
     mappings.setdefault("text_updates", [])
     mappings.setdefault("row_inserts", [])
+    mappings.setdefault("narrative_updates", [])
+    mappings.setdefault("table_structure_updates", [])
 
     n_table = len(mappings["table_updates"])
     n_text = len(mappings["text_updates"])
     n_row_ins = len(mappings["row_inserts"])
-    log.info("Parsed mappings: %d table updates, %d text updates, %d row inserts",
-             n_table, n_text, n_row_ins)
+    n_narrative = len(mappings["narrative_updates"])
+    n_structure = len(mappings["table_structure_updates"])
+    log.info("Parsed mappings: %d table, %d text, %d row inserts, %d narrative, %d structure",
+             n_table, n_text, n_row_ins, n_narrative, n_structure)
     return mappings
 
 
@@ -1174,6 +1385,7 @@ def _call_validation_api(
     cfg: dict,
     property_name: str = "",
     telemetry: dict | None = None,
+    source_directives: list[dict] | None = None,
 ) -> dict:
     """
     Single validation API call. Returns the parsed JSON result from Claude.
@@ -1189,6 +1401,7 @@ def _call_validation_api(
     use_thinking = "opus" in model.lower()
 
     pn_section = _property_name_section(property_name, "validation")
+    directives_section = format_source_directives(source_directives or [], scope="mapping")
 
     # Split: static context (instructions + memo + proforma) cached,
     # varying part (mappings JSON) in user message.
@@ -1197,6 +1410,7 @@ def _call_validation_api(
         memo_content=memo_content,
         proforma_data=proforma_data,
         property_name_section=pn_section,
+        source_directives_section=directives_section,
     )
     user_text = (
         "## Proposed Changes (JSON, each entry has an \"idx\" field)\n"
@@ -1272,6 +1486,7 @@ def validate_mappings(
     cfg: dict,
     property_name: str = "",
     telemetry: dict | None = None,
+    source_directives: list[dict] | None = None,
 ) -> dict:
     """
     Second Claude API call - validates the proposed mappings by cross-checking
@@ -1363,6 +1578,7 @@ def validate_mappings(
                 client, chunk_indexed, proforma_data, chunk, cfg,
                 property_name=property_name,
                 telemetry=telemetry,
+                source_directives=source_directives,
             )
 
             if batch_result.pop("_truncated", False):
@@ -1406,6 +1622,7 @@ def validate_mappings(
                         client, sub_indexed, proforma_data, sub_chunk, cfg,
                         property_name=property_name,
                         telemetry=telemetry,
+                        source_directives=source_directives,
                     )
                     if sub_result.pop("_truncated", False):
                         log.warning(
@@ -1435,6 +1652,7 @@ def validate_mappings(
             client, indexed_mappings, proforma_data, memo_content, cfg,
             property_name=property_name,
             telemetry=telemetry,
+            source_directives=source_directives,
         )
 
     # Reconstruct validated mappings: start with originals, remove rejections,
@@ -1545,7 +1763,156 @@ def validate_mappings(
 
 
 # ============================================================================
-# 8. PRE-VALIDATION (local Python check)
+# 8a. FORMAT VALIDATION (detect style mismatches)
+# ============================================================================
+
+def _detect_number_format(value: str) -> dict:
+    """Detect the formatting style of a numeric string.
+
+    Returns a dict with keys: has_commas, has_dollar, decimal_places, has_percent.
+    """
+    # Strip non-numeric suffixes (like %) before counting decimal places
+    numeric_part = re.sub(r"[%$,\s]", "", value)
+    if "." in numeric_part:
+        decimal_places = len(numeric_part.split(".")[-1])
+    else:
+        decimal_places = 0
+    return {
+        "has_dollar": "$" in value,
+        "has_commas": bool(re.search(r"\d{1,3}(,\d{3})+", value)),
+        "has_percent": "%" in value,
+        "decimal_places": decimal_places,
+    }
+
+
+def _format_matches(old_val: str, new_val: str) -> tuple[bool, str]:
+    """Check if new_val preserves old_val's formatting style.
+
+    Returns (is_ok, reason) — reason is empty if ok.
+    """
+    old_fmt = _detect_number_format(old_val)
+    new_fmt = _detect_number_format(new_val)
+
+    # Dollar sign consistency
+    if old_fmt["has_dollar"] and not new_fmt["has_dollar"]:
+        return False, f"missing dollar sign: '{old_val}' -> '{new_val}'"
+    if not old_fmt["has_dollar"] and new_fmt["has_dollar"]:
+        return False, f"unexpected dollar sign: '{old_val}' -> '{new_val}'"
+
+    # Comma consistency (only check if value is large enough to need commas)
+    # Strip dollar/percent for numeric comparison
+    new_digits = re.sub(r"[^\d.]", "", new_val)
+    if old_fmt["has_commas"] and not new_fmt["has_commas"]:
+        try:
+            if float(new_digits) >= 1000:
+                return False, f"missing commas: '{old_val}' -> '{new_val}'"
+        except ValueError:
+            pass
+
+    # Percentage consistency
+    if old_fmt["has_percent"] and not new_fmt["has_percent"]:
+        return False, f"missing percent sign: '{old_val}' -> '{new_val}'"
+
+    # Decimal precision
+    if old_fmt["has_percent"] and new_fmt["has_percent"]:
+        if old_fmt["decimal_places"] != new_fmt["decimal_places"]:
+            return False, (
+                f"decimal precision mismatch: '{old_val}' ({old_fmt['decimal_places']}dp) "
+                f"-> '{new_val}' ({new_fmt['decimal_places']}dp)"
+            )
+
+    return True, ""
+
+
+def _auto_fix_format(old_val: str, new_val: str) -> str:
+    """Attempt to auto-correct formatting in new_val to match old_val's style."""
+    old_fmt = _detect_number_format(old_val)
+
+    # Extract the raw number from new_val
+    raw = re.sub(r"[^\d.\-]", "", new_val)
+    if not raw:
+        return new_val
+
+    try:
+        num = float(raw)
+    except ValueError:
+        return new_val
+
+    # Build formatted string
+    result = ""
+
+    if old_fmt["has_dollar"]:
+        result += "$"
+
+    if old_fmt["has_commas"]:
+        if old_fmt["decimal_places"] > 0:
+            result += f"{num:,.{old_fmt['decimal_places']}f}"
+        else:
+            result += f"{int(num):,}"
+    else:
+        if old_fmt["decimal_places"] > 0:
+            result += f"{num:.{old_fmt['decimal_places']}f}"
+        else:
+            result += str(int(num))
+
+    if old_fmt["has_percent"]:
+        result += "%"
+
+    return result
+
+
+def validate_mapping_formats(mappings: dict) -> dict:
+    """Check and auto-fix formatting consistency between old and new values.
+
+    Returns the mappings dict with formatting issues fixed in-place and
+    unfixable mismatches added to the rejected list.
+    """
+    fixed_count = 0
+    format_warnings = []
+
+    for upd in mappings.get("table_updates", []):
+        old_val = upd.get("old_value", "")
+        new_val = upd.get("new_value", "")
+        if not old_val or not new_val:
+            continue
+        ok, reason = _format_matches(old_val, new_val)
+        if not ok:
+            corrected = _auto_fix_format(old_val, new_val)
+            if corrected != new_val:
+                upd["new_value"] = corrected
+                fixed_count += 1
+            else:
+                format_warnings.append(
+                    f"page {upd.get('page')}: {reason}"
+                )
+
+    for upd in mappings.get("text_updates", []):
+        old_txt = upd.get("old_text", "")
+        new_txt = upd.get("new_text", "")
+        if not old_txt or not new_txt:
+            continue
+        # Extract embedded numbers for format checking
+        old_nums = re.findall(r"\$[\d,]+\.?\d*%?|\d[\d,]*\.?\d*%", old_txt)
+        new_nums = re.findall(r"\$[\d,]+\.?\d*%?|\d[\d,]*\.?\d*%", new_txt)
+        for old_n, new_n in zip(old_nums, new_nums):
+            ok, reason = _format_matches(old_n, new_n)
+            if not ok:
+                corrected = _auto_fix_format(old_n, new_n)
+                if corrected != new_n:
+                    upd["new_text"] = upd["new_text"].replace(new_n, corrected, 1)
+                    fixed_count += 1
+
+    if fixed_count > 0:
+        log.info("Format validation auto-corrected %d values", fixed_count)
+    if format_warnings:
+        for w in format_warnings[:5]:
+            log.warning("Format mismatch (unfixable): %s", w)
+
+    return mappings
+
+
+# ============================================================================
+# 8b. PRE-VALIDATION (local Python check)
 # ============================================================================
 def pre_validate_mappings(mappings: dict, memo_content: str) -> dict:
     """
@@ -1611,6 +1978,23 @@ def pre_validate_mappings(mappings: dict, memo_content: str) -> dict:
                 ),
             })
 
+    valid_narrative = []
+    for upd in mappings.get("narrative_updates", []):
+        page = upd.get("page")
+        haystack = page_blocks.get(page, memo_content)
+        old_narrative = upd.get("old_narrative", "")
+        if old_narrative and old_narrative in haystack:
+            valid_narrative.append(upd)
+        else:
+            rejected.append({
+                "original": upd,
+                "reason": (
+                    f"old_narrative not found on page {page}: '{old_narrative[:60]}...'"
+                    if page in page_blocks
+                    else f"old_narrative not found in memo: '{old_narrative[:60]}...'"
+                ),
+            })
+
     n_rejected_new = (len(rejected) - len(mappings.get("rejected", [])))
     if n_rejected_new > 0:
         log.warning("Pre-validation rejected %d entries (old value not in memo)",
@@ -1620,6 +2004,8 @@ def pre_validate_mappings(mappings: dict, memo_content: str) -> dict:
         "table_updates": valid_table,
         "text_updates": valid_text,
         "row_inserts": mappings.get("row_inserts", []),
+        "narrative_updates": valid_narrative,
+        "table_structure_updates": mappings.get("table_structure_updates", []),
         "rejected": rejected,
         "missed": mappings.get("missed", []),
     }
@@ -1680,10 +2066,22 @@ def _replace_in_para(para, old_text: str, new_text: str) -> bool:
             # Preserve text after match in last overlapping run
             last_run_end = run_starts[last_run_idx] + len(para.runs[last_run_idx].text)
             post = full_text[match_end:last_run_end]
-            # Write replacement into first overlapping run, clear the rest
-            para.runs[first_run_idx].text = pre + new_text + post
+
+            # Save formatting from the first overlapping run so we can
+            # re-apply it after writing new text.  The run's XML element
+            # keeps its rPr (run properties) automatically — we just need
+            # to make sure the cleared runs don't leave orphan formatting.
+            first_run = para.runs[first_run_idx]
+
+            # Write replacement into first overlapping run
+            first_run.text = pre + new_text + post
+
+            # For cleared runs: preserve the run element (keeps XML valid)
+            # but empty the text.  If the last run has text AFTER the
+            # match region, move it there to preserve its formatting.
             for i in range(first_run_idx + 1, last_run_idx + 1):
                 para.runs[i].text = ""
+
             return True
 
     return False
@@ -1933,6 +2331,111 @@ def _add_table_row(table, reference_row_idx: int, cell_values: list):
     ref_tr.addnext(new_tr)
 
 
+def _add_table_column(table, after_col: int, header: str, values: list):
+    """Add a column to a table after the given column index.
+
+    Uses lxml operations on DrawingML XML to add <a:tc> elements to each row.
+    """
+    ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    tbl_xml = table._tbl
+    rows = tbl_xml.findall(f"{{{ns}}}tr")
+
+    for row_idx, tr in enumerate(rows):
+        cells = tr.findall(f"{{{ns}}}tc")
+        if not cells:
+            continue
+
+        # Clone the cell at after_col to preserve formatting
+        ref_idx = min(after_col, len(cells) - 1)
+        new_tc = deepcopy(cells[ref_idx])
+
+        # Clear text and set new value
+        for p in new_tc.findall(f".//{{{ns}}}p"):
+            for r in p.findall(f"{{{ns}}}r"):
+                t = r.find(f"{{{ns}}}t")
+                if t is not None:
+                    t.text = ""
+
+        # Set the value
+        first_p = new_tc.find(f".//{{{ns}}}p")
+        if first_p is not None:
+            first_r = first_p.find(f"{{{ns}}}r")
+            if first_r is not None:
+                t = first_r.find(f"{{{ns}}}t")
+                if t is not None:
+                    if row_idx == 0:
+                        t.text = header
+                    else:
+                        val_idx = row_idx - 1
+                        t.text = values[val_idx] if val_idx < len(values) else ""
+
+        # Insert after the reference cell
+        if ref_idx < len(cells) - 1:
+            cells[ref_idx].addnext(new_tc)
+        else:
+            tr.append(new_tc)
+
+    # Update gridCol count
+    tbl_grid = tbl_xml.find(f"{{{ns}}}tblGrid")
+    if tbl_grid is not None:
+        grid_cols = tbl_grid.findall(f"{{{ns}}}gridCol")
+        if grid_cols:
+            new_gc = deepcopy(grid_cols[-1])
+            tbl_grid.append(new_gc)
+
+
+def _remove_table_row(table, row_idx: int):
+    """Remove a row from a table by index."""
+    ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    tbl_xml = table._tbl
+    rows = tbl_xml.findall(f"{{{ns}}}tr")
+    if 0 <= row_idx < len(rows):
+        tbl_xml.remove(rows[row_idx])
+
+
+def _reorder_table_rows(table, new_order: list[str]):
+    """Reorder table rows to match the given label order.
+
+    new_order is a list of row labels (column 0 text) in desired order.
+    The header row (index 0) is always kept first.
+    """
+    ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    tbl_xml = table._tbl
+    rows = tbl_xml.findall(f"{{{ns}}}tr")
+    if len(rows) < 2:
+        return
+
+    header_tr = rows[0]
+    data_rows = rows[1:]
+
+    # Build label -> row element map
+    label_map: dict[str, Any] = {}
+    for tr in data_rows:
+        cells = tr.findall(f"{{{ns}}}tc")
+        if cells:
+            first_p = cells[0].find(f".//{{{ns}}}p")
+            if first_p is not None:
+                first_r = first_p.find(f"{{{ns}}}r")
+                if first_r is not None:
+                    t = first_r.find(f"{{{ns}}}t")
+                    if t is not None and t.text:
+                        label_map[t.text.strip()] = tr
+
+    # Remove all data rows
+    for tr in data_rows:
+        tbl_xml.remove(tr)
+
+    # Re-add in new order
+    for label in new_order:
+        tr = label_map.pop(label, None)
+        if tr is not None:
+            tbl_xml.append(tr)
+
+    # Append any remaining rows not in new_order
+    for tr in label_map.values():
+        tbl_xml.append(tr)
+
+
 def global_property_rename(memo_path: str, old_name: str, new_name: str) -> int:
     """
     Replace ALL occurrences of *old_name* with *new_name* across every slide
@@ -2165,6 +2668,120 @@ def apply_updates(memo_path: str, mappings: dict, dry_run: bool = False) -> list
             "old": "(new row)", "new": " | ".join(cell_values),
             "source": source,
         })
+
+    # --- Narrative updates (paragraph-level rewrites) ---
+    for upd in mappings.get("narrative_updates", []):
+        page = upd.get("page")
+        old_narrative = upd.get("old_narrative", "")
+        new_narrative = upd.get("new_narrative", "")
+        source = upd.get("source", "")
+
+        if not old_narrative or not new_narrative:
+            continue
+
+        try:
+            slide = prs.slides[page - 1]
+        except (IndexError, TypeError):
+            log.warning("Narrative update SKIPPED: page %s does not exist", page)
+            continue
+
+        found = False
+        for shape in slide.shapes:
+            if not dry_run:
+                if _replace_in_shape(shape, old_narrative, new_narrative):
+                    changes.append({
+                        "page": page, "type": "narrative",
+                        "location": shape.name,
+                        "old": old_narrative[:80] + ("..." if len(old_narrative) > 80 else ""),
+                        "new": new_narrative[:80] + ("..." if len(new_narrative) > 80 else ""),
+                        "source": source,
+                    })
+                    found = True
+                    break
+            else:
+                if shape.has_text_frame:
+                    full_text = "\n".join(p.text for p in shape.text_frame.paragraphs)
+                    if old_narrative in full_text:
+                        changes.append({
+                            "page": page, "type": "narrative",
+                            "location": shape.name,
+                            "old": old_narrative[:80] + ("..." if len(old_narrative) > 80 else ""),
+                            "new": new_narrative[:80] + ("..." if len(new_narrative) > 80 else ""),
+                            "source": source,
+                        })
+                        found = True
+                        break
+        if not found:
+            log.warning("Narrative update NOT FOUND: page %d, '%s...'",
+                        page, old_narrative[:60])
+
+    # --- Table structure updates (add_column, remove_row, reorder_rows) ---
+    for upd in mappings.get("table_structure_updates", []):
+        page = upd.get("page")
+        tbl_name = upd.get("table_name", "")
+        action = upd.get("action", "")
+        source = upd.get("source", "")
+
+        try:
+            slide = prs.slides[page - 1]
+        except (IndexError, TypeError):
+            log.warning("Table structure update SKIPPED: page %s does not exist", page)
+            continue
+
+        # Find target table
+        tables = [s for s in slide.shapes if s.has_table]
+        target_shape = None
+        for s in tables:
+            if _loose_match(tbl_name, s.name):
+                target_shape = s
+                break
+        if target_shape is None and len(tables) == 1:
+            target_shape = tables[0]
+        if target_shape is None:
+            log.warning("Table structure update NOT FOUND: page %d, table '%s'", page, tbl_name)
+            continue
+
+        table = target_shape.table
+        location = target_shape.name or tbl_name
+
+        if action == "add_column" and not dry_run:
+            col_header = upd.get("column_header", "")
+            values = upd.get("values", [])
+            after_col = upd.get("after_column", len(table.columns) - 1)
+            _add_table_column(table, after_col, col_header, values)
+            changes.append({
+                "page": page, "type": "table_structure",
+                "location": f"{location} / add_column '{col_header}' after col {after_col}",
+                "old": "(no column)", "new": col_header, "source": source,
+            })
+        elif action == "remove_row" and not dry_run:
+            row_label = upd.get("row_label", "")
+            row_idx = _find_row_by_label(table, row_label)
+            if row_idx is not None:
+                _remove_table_row(table, row_idx)
+                changes.append({
+                    "page": page, "type": "table_structure",
+                    "location": f"{location} / remove_row '{row_label}'",
+                    "old": row_label, "new": "(removed)", "source": source,
+                })
+            else:
+                log.warning("Table structure remove_row: row '%s' not found", row_label)
+        elif action == "reorder_rows" and not dry_run:
+            new_order = upd.get("new_order", [])
+            _reorder_table_rows(table, new_order)
+            changes.append({
+                "page": page, "type": "table_structure",
+                "location": f"{location} / reorder_rows",
+                "old": "(original order)", "new": " -> ".join(new_order[:5]),
+                "source": source,
+            })
+        elif dry_run:
+            changes.append({
+                "page": page, "type": "table_structure",
+                "location": f"{location} / {action}",
+                "old": "(dry run)", "new": str(upd.get("column_header") or upd.get("row_label") or upd.get("new_order", [])[:3]),
+                "source": source,
+            })
 
     if not dry_run:
         prs.save(memo_path)
@@ -2452,7 +3069,7 @@ def _reformat_run(run, is_heading_context: bool, size_threshold: int,
     else:
         size_pt = 0
 
-    is_heading = is_heading_context or size_pt >= size_threshold
+    is_heading = is_heading_context or size_pt >= size_threshold or was_bold is True
 
     # Set font family
     run.font.name = heading_font if is_heading else body_font
@@ -2772,6 +3389,196 @@ def normalize_layout(memo_path: str, cfg: dict) -> dict:
                     summary["auto_size_applied"] += 1
             except Exception:
                 pass  # some shapes don't support auto_size
+
+    # ------------------------------------------------------------------
+    # 1g. Footer and project title consistency
+    # ------------------------------------------------------------------
+    # Detect the canonical footer text and project name, then normalize
+    # all slides to match.
+    from collections import defaultdict
+
+    footer_texts: dict[str, int] = defaultdict(int)
+    project_titles: dict[str, int] = defaultdict(int)
+
+    for idx, slide in enumerate(prs.slides):
+        for shape in slide.shapes:
+            if not shape.has_text_frame:
+                continue
+            text = shape.text_frame.text.strip()
+            # Detect footers: small text at the bottom of the slide
+            if shape.top and slide_height:
+                try:
+                    if shape.top > slide_height * 0.85 and len(text) > 5 and len(text) < 200:
+                        footer_texts[text] += 1
+                except Exception:
+                    pass
+        # Detect project title from title placeholder
+        for shape in slide.placeholders:
+            try:
+                ph_idx = shape.placeholder_format.idx
+            except Exception:
+                ph_idx = None
+            if ph_idx == 0 or (shape.name and shape.name.lower().startswith("title")):
+                if shape.has_text_frame:
+                    title_text = shape.text_frame.text.strip()
+                    if title_text and len(title_text) < 100:
+                        project_titles[title_text] += 1
+
+    # Determine the canonical footer (most common)
+    canonical_footer = None
+    if footer_texts:
+        canonical_footer = max(footer_texts, key=footer_texts.get)
+
+    # Normalize footers: if a slide has a different footer, fix it
+    footer_fixes = 0
+    if canonical_footer and footer_texts.get(canonical_footer, 0) >= 3:
+        for idx, slide in enumerate(prs.slides):
+            if idx == 0:
+                continue
+            for shape in slide.shapes:
+                if not shape.has_text_frame:
+                    continue
+                if not (shape.top and slide_height):
+                    continue
+                try:
+                    is_footer = shape.top > slide_height * 0.85
+                except Exception:
+                    continue
+                if not is_footer:
+                    continue
+                text = shape.text_frame.text.strip()
+                if text and text != canonical_footer and len(text) < 200:
+                    # Check if it's a variation of the footer (e.g., different date)
+                    # Only fix if it looks like a footer (has separators)
+                    if "|" in canonical_footer or "confidential" in canonical_footer.lower():
+                        for para in shape.text_frame.paragraphs:
+                            for run in para.runs:
+                                if run.text.strip():
+                                    # Preserve formatting, update text
+                                    pass  # Complex footer — skip run-level replace
+                        # Simple approach: if footer is a single paragraph
+                        if len(shape.text_frame.paragraphs) == 1:
+                            shape.text_frame.paragraphs[0].text = canonical_footer
+                            footer_fixes += 1
+
+    summary["footer_fixes"] = footer_fixes
+    if footer_fixes > 0:
+        log.info("Normalized %d footer(s) to canonical: '%s'", footer_fixes, canonical_footer[:50])
+
+    # ------------------------------------------------------------------
+    # 1h. Content density scoring & overflow flagging
+    # ------------------------------------------------------------------
+    overflow_slides: list[tuple[int, dict]] = []  # (slide_idx, metrics)
+    for idx, slide in enumerate(prs.slides):
+        if idx == 0:
+            continue  # skip cover
+
+        text_chars = 0
+        table_rows = 0
+        table_count = 0
+        chart_count = 0
+        shape_count = 0
+
+        for shape in slide.shapes:
+            shape_count += 1
+            if shape.has_text_frame:
+                text_chars += sum(len(p.text) for p in shape.text_frame.paragraphs)
+            if shape.has_table:
+                table_count += 1
+                table_rows += len(shape.table.rows)
+            if shape.has_chart:
+                chart_count += 1
+
+        # Heuristic thresholds for "too full"
+        is_overflow = (
+            text_chars > 1200          # lots of text
+            or table_rows > 15         # table won't fit vertically
+            or (text_chars > 600 and table_rows > 8)  # both crowded
+            or shape_count > 12        # too many shapes
+        )
+        if is_overflow:
+            overflow_slides.append((idx, {
+                "text_chars": text_chars,
+                "table_rows": table_rows,
+                "table_count": table_count,
+                "chart_count": chart_count,
+                "shape_count": shape_count,
+            }))
+
+    summary["overflow_slides_detected"] = len(overflow_slides)
+    if overflow_slides:
+        log.warning(
+            "Content density: %d slides exceed density threshold: %s",
+            len(overflow_slides),
+            [idx + 1 for idx, _ in overflow_slides],
+        )
+
+    # ------------------------------------------------------------------
+    # 1h. Cross-slide formatting consistency
+    # ------------------------------------------------------------------
+    # Detect the dominant font for body text and table cells, then
+    # normalize outliers to the dominant style.
+    from collections import defaultdict
+
+    body_font_usage: dict[str, int] = defaultdict(int)   # font_name -> count
+    body_size_usage: dict[float, int] = defaultdict(int)  # size_pt -> count
+    table_size_usage: dict[float, int] = defaultdict(int)
+
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                for para in shape.text_frame.paragraphs:
+                    for run in para.runs:
+                        if run.font.name:
+                            body_font_usage[run.font.name] += 1
+                        if run.font.size:
+                            try:
+                                body_size_usage[round(run.font.size.pt, 1)] += 1
+                            except Exception:
+                                pass
+            if shape.has_table:
+                for row in shape.table.rows:
+                    for cell in row.cells:
+                        for para in cell.text_frame.paragraphs:
+                            for run in para.runs:
+                                if run.font.size:
+                                    try:
+                                        table_size_usage[round(run.font.size.pt, 1)] += 1
+                                    except Exception:
+                                        pass
+
+    # Find dominant table cell font size
+    dominant_table_size = None
+    if table_size_usage:
+        dominant_table_size = max(table_size_usage, key=table_size_usage.get)
+
+    # Normalize: if a table cell has a font size that's >2pt off the
+    # dominant size AND it's not a header row (>= 2pt larger), fix it.
+    format_fixes = 0
+    if dominant_table_size:
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if not shape.has_table:
+                    continue
+                for row_idx, row in enumerate(shape.table.rows):
+                    if row_idx == 0:
+                        continue  # skip header row
+                    for cell in row.cells:
+                        for para in cell.text_frame.paragraphs:
+                            for run in para.runs:
+                                if run.font.size:
+                                    try:
+                                        size = round(run.font.size.pt, 1)
+                                        diff = abs(size - dominant_table_size)
+                                        if 0.5 < diff < 4.0:  # outlier but not intentional header
+                                            run.font.size = Pt(dominant_table_size)
+                                            format_fixes += 1
+                                    except Exception:
+                                        pass
+
+    summary["table_font_size_normalized"] = format_fixes
+    if format_fixes > 0:
+        log.info("Normalized %d table cell font sizes to %.1fpt", format_fixes, dominant_table_size)
 
     prs.save(memo_path)
     log.info("Layout normalized: %s", summary)

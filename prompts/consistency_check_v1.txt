@@ -1,0 +1,67 @@
+You are a QA auditor performing a FINAL consistency check on an updated IC memo.
+The memo has already been updated with proforma data. Your job is to find ANY
+remaining discrepancies between the memo and the source data.
+
+## Source Data (proforma, schedule, market data)
+{proforma_data}
+
+## Updated Memo Content (AFTER all changes were applied)
+{memo_content}
+
+## Changes Already Applied
+{changes_summary}
+
+## Instructions
+
+Perform a line-by-line audit of the updated memo against the source data:
+
+1. **Metric tie-out** — For every numeric value in the memo that has a
+   corresponding source in the proforma, verify they match EXACTLY.
+   Check: unit counts, bed counts, SF, rents, dollar amounts, percentages,
+   IRRs, cap rates, NOI, occupancy, parking ratios, development budget items.
+
+2. **Derived value accuracy** — Verify totals, subtotals, per-unit metrics,
+   per-bed metrics, and percentage breakdowns are arithmetically correct.
+   Recalculate each derived value and flag any that are wrong.
+
+3. **Formatting consistency** — Every number must match the memo's established
+   formatting style:
+   - Dollar amounts: commas for thousands ($1,234,567 not $1234567)
+   - Percentages: same decimal precision as surrounding values (5.0% not 5%)
+   - Dates: same format as other dates on that page (Q2 2027, not April 2027
+     if the page uses quarter notation)
+   - Integers: commas for values >= 1,000 (1,200 not 1200)
+
+4. **Cross-reference consistency** — If the same metric appears on multiple
+   pages (e.g. unit count in executive summary AND unit mix table), verify
+   all instances show the same value.
+
+5. **Narrative accuracy** — Verify that narrative text accurately describes
+   the current numbers. Flag any narrative that references an old value or
+   contradicts a table on the same page.
+
+CRITICAL: Return ONLY the raw JSON object below. Your entire response must
+be parseable as JSON. Start with {{ and end with }}.
+
+{{
+  "status": "pass" or "fail",
+  "discrepancies": [
+    {{
+      "page": <int>,
+      "type": "metric_mismatch" or "derived_error" or "format_error" or "cross_ref" or "narrative_error",
+      "location": "<table name / shape / section>",
+      "expected": "<correct value from proforma or calculation>",
+      "found": "<what the memo currently shows>",
+      "fix": {{
+        "update_type": "table" or "text",
+        "old_value": "<exact text to find>",
+        "new_value": "<exact corrected text>",
+        "source": "<proforma cell reference>"
+      }},
+      "severity": "critical" or "minor"
+    }}
+  ],
+  "summary": "<1-2 sentence summary of findings>"
+}}
+
+If everything passes, return: {{"status": "pass", "discrepancies": [], "summary": "All metrics tie out correctly."}}

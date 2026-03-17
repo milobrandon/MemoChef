@@ -1015,6 +1015,14 @@ def _execute_job_headless(job: dict, api_key: str) -> bool:
             if candidate.exists():
                 config_override_path = str(candidate)
 
+        # Build source directives from payload
+        from memo_chef.models import SourceDirective
+
+        source_directives = []
+        for sd_dict in payload.get("source_directives", []):
+            if sd_dict.get("directive", "").strip():
+                source_directives.append(SourceDirective(**sd_dict))
+
         request = RunRequest(
             memo_path=memo_path,
             proforma_path=proforma_path,
@@ -1024,6 +1032,7 @@ def _execute_job_headless(job: dict, api_key: str) -> bool:
             supplemental_type=supplemental_type,
             supplemental_brief=payload.get("supplemental_brief"),
             comp_urls=comp_url_objects,
+            source_directives=source_directives,
             output_dir=str(run_dir),
             api_key=api_key,
             config_path=os.path.join(os.path.dirname(__file__), "config.yaml"),

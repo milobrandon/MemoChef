@@ -180,6 +180,7 @@ def _clear_run_state() -> None:
         "log_lines",
         "warnings",
         "manifest",
+        "changes",
     ]:
         st.session_state.pop(key, None)
 
@@ -194,6 +195,8 @@ def _queue_item_from_inputs(
     supplemental_url: str = "",
     supplemental_brief: str = "",
     comp_urls: list[dict] | None = None,
+    auto_generate_comp_slide: bool = False,
+    comp_csv_file=None,
     property_name: str,
     property_rename_to: str = "",
     dry_run: bool,
@@ -201,6 +204,7 @@ def _queue_item_from_inputs(
     profile_name: str | None,
     config_profile_name: str | None = None,
     use_batch_api: bool = False,
+    source_directives: list[dict] | None = None,
 ) -> dict:
     # Determine supplemental source type
     supp_name = None
@@ -244,6 +248,12 @@ def _queue_item_from_inputs(
         with open(supp_path, "wb") as f:
             f.write(supp_bytes)
 
+    comp_csv_path = None
+    if comp_csv_file:
+        comp_csv_path = str(staging / comp_csv_file.name)
+        with open(comp_csv_path, "wb") as f:
+            f.write(comp_csv_file.getvalue())
+
     return {
         "job_id": job_id,
         "memo_name": memo_file.name,
@@ -261,11 +271,14 @@ def _queue_item_from_inputs(
         "property_name": property_name or None,
         "property_rename_to": property_rename_to or None,
         "comp_urls": comp_urls or [],
+        "auto_generate_comp_slide": auto_generate_comp_slide,
+        "comp_csv_path": comp_csv_path,
         "dry_run": dry_run,
         "skip_validation": skip_validation,
         "use_batch_api": use_batch_api,
         "profile_name": profile_name or "",
         "config_profile_name": config_profile_name or "",
+        "source_directives": source_directives or [],
     }
 
 
@@ -281,6 +294,7 @@ def _persist_result(result, filename: str) -> None:
     st.session_state["log_lines"] = result.log_lines
     st.session_state["warnings"] = [warning.model_dump() for warning in result.manifest.warnings]
     st.session_state["manifest"] = result.manifest.model_dump()
+    st.session_state["changes"] = result.changes
 
 
 def _execute_job(
@@ -365,6 +379,18 @@ def _execute_job(
 
     comp_url_objects = [CompUrl(**cu) for cu in job.get("comp_urls", [])]
 
+    comp_csv_path = None
+    if job.get("comp_csv_path") and os.path.isfile(job["comp_csv_path"]):
+        comp_csv_path = job["comp_csv_path"]
+
+    # Build source directives from job payload
+    from memo_chef.models import SourceDirective
+
+    source_directives = []
+    for sd_dict in job.get("source_directives", []):
+        if sd_dict.get("directive", "").strip():
+            source_directives.append(SourceDirective(**sd_dict))
+
     request = RunRequest(
         memo_path=memo_path,
         proforma_path=proforma_path,
@@ -374,6 +400,9 @@ def _execute_job(
         supplemental_type=supplemental_type,
         supplemental_brief=job.get("supplemental_brief"),
         comp_urls=comp_url_objects,
+        source_directives=source_directives,
+        auto_generate_comp_slide=job.get("auto_generate_comp_slide", False),
+        comp_csv_path=comp_csv_path,
         output_dir=str(run_dir),
         api_key=api_key,
         config_path=os.path.join(os.path.dirname(__file__), "config.yaml"),
@@ -585,6 +614,39 @@ def render_new_run_tab() -> None:
     schedule_file = upload_cols[2].file_uploader("Schedule (Beta)", type=["mpp"], key="schedule_upload")
     market_data_file = upload_cols[3].file_uploader("Market data (Beta)", type=["xlsx", "xlsm"], key="market_upload")
 
+    # Per-source directives — tell Claude how to use each source
+    with st.expander("Directions for Claude (per source)", expanded=False):
+        st.caption(
+            "Give Claude specific instructions for each source. "
+            "E.g., 'Only update revenue section' or 'Ignore occupancy data'."
+        )
+        directive_cols = st.columns(2)
+        proforma_directive = directive_cols[0].text_area(
+            "Proforma directions",
+            key="proforma_directive",
+            placeholder="e.g., Only use Unit Mix and Cash Flow tabs",
+            height=68,
+        )
+        schedule_directive = directive_cols[1].text_area(
+            "Schedule directions",
+            key="schedule_directive",
+            placeholder="e.g., Focus on construction milestones only",
+            height=68,
+        )
+        directive_cols2 = st.columns(2)
+        market_data_directive = directive_cols2[0].text_area(
+            "Market data directions",
+            key="market_data_directive",
+            placeholder="e.g., Use for rent trend charts only",
+            height=68,
+        )
+        supplemental_directive = directive_cols2[1].text_area(
+            "Supplemental data directions",
+            key="supplemental_directive",
+            placeholder="e.g., Generate a market summary slide from this data",
+            height=68,
+        )
+
     # Supplemental data for slide insertion
     supp_cols = st.columns([2, 2, 3])
     supplemental_file = supp_cols[0].file_uploader(
@@ -621,6 +683,12 @@ def render_new_run_tab() -> None:
             if cu_url.strip():
                 comp_url_inputs.append({"url": cu_url.strip(), "label": cu_label.strip(), "guidance": cu_guidance.strip()})
 
+    st.markdown("**Comp Slide Builder**")
+    auto_comp = st.checkbox("Auto-generate comp slide", value=False, key="auto_comp")
+    comp_csv = None
+    if auto_comp:
+        comp_csv = st.file_uploader("Comp data (CSV)", type=["csv"], key="comp_csv")
+
     rename_cols = st.columns(2)
     property_name = rename_cols[0].text_input(
         "Property name (as it appears in memo)",
@@ -636,15 +704,48 @@ def render_new_run_tab() -> None:
              "All occurrences will be renamed before the AI pass.",
     )
 
+    # Smart defaults: auto-detect config profile from proforma tabs
+    _auto_profile = ""
+    _auto_property = ""
+    if proforma_file and not profile.get("Property"):
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(proforma_file, read_only=True, data_only=True)
+            sheet_names = [s.lower() for s in wb.sheetnames]
+            proforma_file.seek(0)  # reset for later use
+            if any("unit mix" in s or "rent roll" in s for s in sheet_names):
+                _auto_profile = "multifamily"
+            elif any("senior" in s or "assisted" in s for s in sheet_names):
+                _auto_profile = "senior_housing"
+            elif any("retail" in s or "office" in s for s in sheet_names):
+                _auto_profile = "mixed_use"
+            # Try to extract property name from first sheet header
+            first_sheet = wb[wb.sheetnames[0]]
+            for row in first_sheet.iter_rows(max_row=5, max_col=5, values_only=True):
+                for cell in row:
+                    if cell and isinstance(cell, str) and len(cell) > 3 and len(cell) < 60:
+                        _auto_property = cell.strip()
+                        break
+                if _auto_property:
+                    break
+            wb.close()
+        except Exception:
+            pass  # silently fail — these are optional hints
+
     config_profiles = _list_config_profiles()
+    # Determine default index: saved profile > auto-detected > none
+    _default_profile_idx = 0
+    if profile.get("Config Profile") and profile["Config Profile"] in config_profiles:
+        _default_profile_idx = config_profiles.index(profile["Config Profile"]) + 1
+    elif _auto_profile and _auto_profile in config_profiles:
+        _default_profile_idx = config_profiles.index(_auto_profile) + 1
     config_profile_name = st.selectbox(
         "Config profile",
         options=[""] + config_profiles,
-        index=(config_profiles.index(profile["Config Profile"]) + 1)
-        if profile.get("Config Profile") and profile["Config Profile"] in config_profiles
-        else 0,
+        index=_default_profile_idx,
         format_func=lambda v: "Default (config.yaml)" if v == "" else v.replace("_", " ").title(),
-        help="Override proforma tabs, model, or other settings for this property type.",
+        help="Override proforma tabs, model, or other settings for this property type."
+             + (f" Auto-detected: {_auto_profile}" if _auto_profile else ""),
     )
 
     pref_cols = st.columns(3)
@@ -703,6 +804,38 @@ def render_new_run_tab() -> None:
 
     action_disabled = should_disable_fire_button(memo_file, proforma_file, remaining, credits_error)
     action_cols = st.columns(2)
+    # Collect per-source directives from UI state
+    _ui_directives = []
+    if proforma_directive.strip():
+        _ui_directives.append({
+            "source_id": "proforma", "source_type": "proforma_tab",
+            "directive": proforma_directive.strip(), "scope": "both",
+        })
+    if schedule_directive.strip():
+        _ui_directives.append({
+            "source_id": "schedule", "source_type": "schedule",
+            "directive": schedule_directive.strip(), "scope": "both",
+        })
+    if market_data_directive.strip():
+        _ui_directives.append({
+            "source_id": "market_data", "source_type": "market_data",
+            "directive": market_data_directive.strip(), "scope": "both",
+        })
+    if supplemental_directive.strip():
+        _ui_directives.append({
+            "source_id": "supplemental", "source_type": "supplemental",
+            "directive": supplemental_directive.strip(), "scope": "both",
+        })
+    # Comp URL guidance is already captured in comp_url_inputs — add as directives too
+    for cu in comp_url_inputs:
+        if cu.get("guidance", "").strip():
+            _ui_directives.append({
+                "source_id": f"comp:{cu.get('label') or cu['url'][:30]}",
+                "source_type": "comp_url",
+                "directive": cu["guidance"],
+                "scope": "both",
+            })
+
     if action_cols[0].button(
         f"Generate draft ({remaining} credits left)" if remaining > 0 else "No credits remaining",
         type="primary",
@@ -718,6 +851,8 @@ def render_new_run_tab() -> None:
             supplemental_url=supplemental_url,
             supplemental_brief=supplemental_brief,
             comp_urls=comp_url_inputs,
+            auto_generate_comp_slide=auto_comp,
+            comp_csv_file=comp_csv,
             property_name=property_name,
             property_rename_to=property_rename_to,
             dry_run=dry_run,
@@ -725,6 +860,7 @@ def render_new_run_tab() -> None:
             profile_name=selected_profile or save_profile_name.strip() or None,
             config_profile_name=config_profile_name or None,
             use_batch_api=use_batch_api,
+            source_directives=_ui_directives,
         )
         _execute_job(job=job, username=username, credits_per_week=credits_per_week)
 
@@ -742,6 +878,8 @@ def render_new_run_tab() -> None:
             supplemental_url=supplemental_url,
             supplemental_brief=supplemental_brief,
             comp_urls=comp_url_inputs,
+            auto_generate_comp_slide=auto_comp,
+            comp_csv_file=comp_csv,
             property_name=property_name,
             property_rename_to=property_rename_to,
             dry_run=dry_run,
@@ -749,6 +887,7 @@ def render_new_run_tab() -> None:
             profile_name=selected_profile or save_profile_name.strip() or None,
             config_profile_name=config_profile_name or None,
             use_batch_api=use_batch_api,
+            source_directives=_ui_directives,
         )
         enqueue_job(username, job)
         st.success(f"Queued `{job['memo_name']}`.")
@@ -763,14 +902,30 @@ def render_new_run_tab() -> None:
                 f"QA review. **Manual review is strongly recommended.**"
             )
         st.success("Artifacts are ready for review and download.")
-        metric_cols = st.columns(5)
+        _manifest_counts = st.session_state.get("manifest", {}).get("counts", {})
+        _slides_generated = (
+            _manifest_counts.get("slides_inserted", 0)
+            + _manifest_counts.get("comp_slides_inserted", 0)
+            + _manifest_counts.get("ai_slides_generated", 0)
+        )
+        metric_cols = st.columns(6)
         metric_cols[0].metric("Applied changes", st.session_state["n_changes"])
         metric_cols[1].metric("Rejected", st.session_state["n_rejected"])
         metric_cols[2].metric("Needs review", st.session_state["n_missed"])
-        metric_cols[3].metric("Warnings", len(st.session_state.get("warnings", [])))
-        _manifest_counts = st.session_state.get("manifest", {}).get("counts", {})
+        metric_cols[3].metric("Slides generated", _slides_generated or "—")
+        metric_cols[4].metric("Warnings", len(st.session_state.get("warnings", [])))
         _cost_usd = _manifest_counts.get("estimated_cost_microdollars", 0) / 1_000_000
-        metric_cols[4].metric("Est. API cost", f"${_cost_usd:.4f}" if _cost_usd else "—")
+        metric_cols[5].metric("Est. API cost", f"${_cost_usd:.4f}" if _cost_usd else "—")
+
+        # Change type breakdown
+        _changes = st.session_state.get("changes", [])
+        if _changes:
+            _type_counts = {}
+            for c in _changes:
+                t = c.get("type", "unknown")
+                _type_counts[t] = _type_counts.get(t, 0) + 1
+            _breakdown = " · ".join(f"{v} {k}" for k, v in sorted(_type_counts.items()))
+            st.caption(f"Breakdown: {_breakdown}")
 
         download_cols = st.columns(3)
         download_cols[0].download_button(

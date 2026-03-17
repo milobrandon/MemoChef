@@ -11,6 +11,8 @@ find ONLY the problems - do NOT echo back entries that are correct.
 ## Proforma Data
 {proforma_data}
 
+{source_directives_section}
+
 ## Instructions
 
 Review each proposed update and check:
@@ -109,4 +111,18 @@ Additional domain rules to enforce:
   from the schedule, verify the correct task was referenced. Date formatting must
   match the memo's existing style (Q2 2027 vs April 2027 vs 4/5/2027). Flag as
   missed if the memo references timeline milestones that were not updated.
+- **Narrative rewrites** (narrative_updates) should only be used when the
+  sentence structure genuinely needs to change due to significant metric shifts.
+  Simple number swaps should be text_updates, not narrative_updates. Reject any
+  narrative_update where a text_update would suffice. Verify the new_narrative
+  preserves the original tone and does not introduce unsupported claims.
+- **Table structure updates** must only be used when a user directive explicitly
+  requests restructuring or when the proforma structure has fundamentally changed.
+  Reject any table_structure_update targeting a side-by-side comp table.
+  Reject any add_column or remove_row that would break the table's alignment
+  or remove data that still appears in the proforma.
+- **Source directives** - If the user provided source directives, verify that
+  proposed changes comply with them. Reject any update that violates a user
+  directive (e.g. updating a section the user said to skip, or using a source
+  the user said to ignore).
 {property_name_section}
