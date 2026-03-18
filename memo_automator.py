@@ -1564,7 +1564,7 @@ def validate_mappings(
     removed and any missed metrics flagged.
     """
     BATCH_THRESHOLD = 80_000  # chars; same as mapping step
-    RATE_LIMIT_INTERVAL = 65  # seconds between API calls
+    RATE_LIMIT_INTERVAL = 5  # seconds between API calls
 
     # Add idx to each entry so Claude can reference them by index
     table_updates = mappings.get("table_updates", [])
@@ -3479,80 +3479,8 @@ def normalize_layout(memo_path: str, cfg: dict) -> dict:
             except Exception:
                 pass  # some shapes don't support auto_size
 
-    # ------------------------------------------------------------------
-    # 1g. Footer and project title consistency
-    # ------------------------------------------------------------------
-    # Detect the canonical footer text and project name, then normalize
-    # all slides to match.
-    from collections import defaultdict
-
-    footer_texts: dict[str, int] = defaultdict(int)
-    project_titles: dict[str, int] = defaultdict(int)
-
-    for idx, slide in enumerate(prs.slides):
-        for shape in slide.shapes:
-            if not shape.has_text_frame:
-                continue
-            text = shape.text_frame.text.strip()
-            # Detect footers: small text at the bottom of the slide
-            if shape.top and slide_height:
-                try:
-                    if shape.top > slide_height * 0.85 and len(text) > 5 and len(text) < 200:
-                        footer_texts[text] += 1
-                except Exception:
-                    pass
-        # Detect project title from title placeholder
-        for shape in slide.placeholders:
-            try:
-                ph_idx = shape.placeholder_format.idx
-            except Exception:
-                ph_idx = None
-            if ph_idx == 0 or (shape.name and shape.name.lower().startswith("title")):
-                if shape.has_text_frame:
-                    title_text = shape.text_frame.text.strip()
-                    if title_text and len(title_text) < 100:
-                        project_titles[title_text] += 1
-
-    # Determine the canonical footer (most common)
-    canonical_footer = None
-    if footer_texts:
-        canonical_footer = max(footer_texts, key=footer_texts.get)
-
-    # Normalize footers: if a slide has a different footer, fix it
-    footer_fixes = 0
-    if canonical_footer and footer_texts.get(canonical_footer, 0) >= 3:
-        for idx, slide in enumerate(prs.slides):
-            if idx == 0:
-                continue
-            for shape in slide.shapes:
-                if not shape.has_text_frame:
-                    continue
-                if not (shape.top and slide_height):
-                    continue
-                try:
-                    is_footer = shape.top > slide_height * 0.85
-                except Exception:
-                    continue
-                if not is_footer:
-                    continue
-                text = shape.text_frame.text.strip()
-                if text and text != canonical_footer and len(text) < 200:
-                    # Check if it's a variation of the footer (e.g., different date)
-                    # Only fix if it looks like a footer (has separators)
-                    if "|" in canonical_footer or "confidential" in canonical_footer.lower():
-                        for para in shape.text_frame.paragraphs:
-                            for run in para.runs:
-                                if run.text.strip():
-                                    # Preserve formatting, update text
-                                    pass  # Complex footer — skip run-level replace
-                        # Simple approach: if footer is a single paragraph
-                        if len(shape.text_frame.paragraphs) == 1:
-                            shape.text_frame.paragraphs[0].text = canonical_footer
-                            footer_fixes += 1
-
-    summary["footer_fixes"] = footer_fixes
-    if footer_fixes > 0:
-        log.info("Normalized %d footer(s) to canonical: '%s'", footer_fixes, canonical_footer[:50])
+    # 1g. Footer normalization — DISABLED (was stomping on slide titles)
+    summary["footer_fixes"] = 0
 
     # ------------------------------------------------------------------
     # 1h. Content density scoring & overflow flagging
@@ -3875,7 +3803,7 @@ def main():
         log.info("=" * 60)
         step_started = time.time()
         BATCH_THRESHOLD = 80_000  # chars; above this, process slides in batches
-        RATE_LIMIT_INTERVAL = 65  # seconds between API calls for rate limiting
+        RATE_LIMIT_INTERVAL = 5  # seconds between API calls for rate limiting
         prompt_size = len(proforma_data) + len(memo_content)
         if prompt_size > BATCH_THRESHOLD:
             log.info("Large prompt (%d chars) - processing slides in batches of 3", prompt_size)

@@ -231,7 +231,7 @@ def _mapping_with_batching(
     source_directives: list[dict] | None = None,
 ) -> dict:
     batch_threshold = 80_000
-    rate_limit_interval = 65
+    rate_limit_interval = 5
     prompt_size = len(proforma_data) + len(memo_content)
     if prompt_size <= batch_threshold:
         _emit(callback, "mapping", "Generate mappings", 52, "Sending full-deck mapping pass")
@@ -686,36 +686,8 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                     stage="validation",
                 )
 
-                # --- Correction retry loop ---
-                # If validation rejected entries or found missed metrics,
-                # re-map those pages with feedback and merge corrections.
-                n_rejected = len(validated.get("rejected", []))
-                n_missed = len(validated.get("missed", []))
-                if n_rejected + n_missed > 0 and not request.skip_validation:
-                    _emit(callback, "validation", "Re-mapping rejected entries", 76)
-                    retry_mappings = _correction_retry(
-                        client=client,
-                        validated=validated,
-                        proforma_data=proforma_data,
-                        memo_content=memo_content,
-                        cfg=cfg,
-                        property_name=effective_property_name,
-                        source_directives=directives_dicts,
-                    )
-                    if retry_mappings:
-                        # Merge corrections into validated result
-                        for key in ("table_updates", "text_updates", "row_inserts",
-                                    "narrative_updates", "table_structure_updates"):
-                            validated.setdefault(key, []).extend(
-                                retry_mappings.get(key, [])
-                            )
-                        n_recovered = sum(
-                            len(retry_mappings.get(k, []))
-                            for k in ("table_updates", "text_updates", "row_inserts",
-                                      "narrative_updates", "table_structure_updates")
-                        )
-                        checkpoint.set_count("correction_retry_recovered", n_recovered)
-                        log.info("Correction retry recovered %d entries", n_recovered)
+                # Correction retry — DISABLED (duplicative with validation
+                # corrections and adds API cost without clear benefit)
 
             unvalidated_pages = validated.get("_unvalidated_pages", [])
             if unvalidated_pages:
@@ -746,95 +718,27 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
         checkpoint.set_count("confidence_score", int(accuracy["confidence_score"]))
         checkpoint.save()
 
-        # --- Post-apply consistency check (loop until satisfied) ---
+        # --- Post-apply consistency check (single pass, report only) ---
         if not request.dry_run and not request.skip_validation:
             from memo_automator import run_consistency_check
 
             _emit(callback, "consistency_check", "Verifying metric consistency", 85)
             with checkpoint.stage("consistency_check", "Post-apply metric tie-out"):
-                max_fix_rounds = 2
-                total_fixes = 0
-                for fix_round in range(1, max_fix_rounds + 1):
-                    # Re-extract the updated memo content
-                    updated_memo = extract_memo_content(request.memo_path, cfg)
-
-                    check_result = run_consistency_check(
-                        client,
-                        proforma_data,
-                        updated_memo,
-                        changes,
-                        cfg,
-                    )
-
-                    status = check_result.get("status", "error")
-                    discrepancies = check_result.get("discrepancies", [])
-
-                    if status == "pass" or not discrepancies:
-                        log.info(
-                            "Consistency check PASSED (round %d): %s",
-                            fix_round, check_result.get("summary", ""),
+                updated_memo = extract_memo_content(request.memo_path, cfg)
+                check_result = run_consistency_check(
+                    client, proforma_data, updated_memo, changes, cfg,
+                )
+                discrepancies = check_result.get("discrepancies", [])
+                if discrepancies:
+                    for d in discrepancies[:10]:
+                        checkpoint.add_warning(
+                            "consistency_check",
+                            f"Page {d.get('page')}: {d.get('type')} — "
+                            f"expected '{d.get('expected', '?')}', "
+                            f"found '{d.get('found', '?')}'",
                         )
-                        break
-
-                    # Attempt to auto-fix discrepancies
-                    critical = [d for d in discrepancies if d.get("severity") == "critical"]
-                    minor = [d for d in discrepancies if d.get("severity") != "critical"]
-                    log.warning(
-                        "Consistency check round %d: %d critical, %d minor discrepancies",
-                        fix_round, len(critical), len(minor),
-                    )
-
-                    # Build fix mappings from discrepancies that include fix data
-                    fix_mappings = {"table_updates": [], "text_updates": []}
-                    for d in discrepancies:
-                        fix = d.get("fix")
-                        if not fix:
-                            continue
-                        if fix.get("update_type") == "table":
-                            fix_mappings["table_updates"].append({
-                                "page": d.get("page"),
-                                "table_name": d.get("location", ""),
-                                "row_label": "",
-                                "column_index": 1,
-                                "old_value": fix.get("old_value", ""),
-                                "new_value": fix.get("new_value", ""),
-                                "source": fix.get("source", "consistency_check"),
-                            })
-                        else:
-                            fix_mappings["text_updates"].append({
-                                "page": d.get("page"),
-                                "old_text": fix.get("old_value", ""),
-                                "new_text": fix.get("new_value", ""),
-                                "source": fix.get("source", "consistency_check"),
-                            })
-
-                    n_fixes = len(fix_mappings["table_updates"]) + len(fix_mappings["text_updates"])
-                    if n_fixes > 0:
-                        _emit(
-                            callback, "consistency_check",
-                            f"Fixing {n_fixes} discrepancies (round {fix_round})", 86,
-                        )
-                        fix_changes = apply_updates(
-                            request.memo_path, fix_mappings, dry_run=False,
-                        )
-                        changes.extend(fix_changes)
-                        total_fixes += len(fix_changes)
-                        log.info("Applied %d consistency fixes (round %d)", len(fix_changes), fix_round)
-                    else:
-                        log.warning(
-                            "Consistency check found %d issues but no auto-fixable entries",
-                            len(discrepancies),
-                        )
-                        for d in discrepancies[:5]:
-                            checkpoint.add_warning(
-                                "consistency_check",
-                                f"Page {d.get('page')}: {d.get('type')} — "
-                                f"expected '{d.get('expected', '?')}', "
-                                f"found '{d.get('found', '?')}'",
-                            )
-                        break
-
-                checkpoint.set_count("consistency_fixes", total_fixes)
+                else:
+                    log.info("Consistency check PASSED: %s", check_result.get("summary", ""))
                 consistency_path = os.path.join(request.output_dir, "consistency_check.json")
                 _write_json(consistency_path, check_result)
                 checkpoint.set_output("consistency_check", consistency_path)
@@ -1016,220 +920,35 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                     int(layout_summary.get("table_font_size_normalized", 0)),
                 )
 
-            # --- Auto-split overflowed slides ---
+            # Auto-split — DISABLED (creates broken slides with orphaned
+            # content and broken chart relationships. Needs production hardening.)
             overflow_count = layout_summary.get("overflow_slides_detected", 0)
             if overflow_count > 0:
-                _emit(callback, "slide_split", f"Splitting {overflow_count} dense slides", 96)
-                with checkpoint.stage("slide_split", "Auto-splitting overflowed slides"):
-                    try:
-                        from memo_chef.slide_generator import split_overflowed_slides
+                log.info("Content density: %d slides exceed threshold (split disabled)", overflow_count)
 
-                        # Re-run density detection to get the actual slide indices
-                        # (normalize_layout already flagged them but we need fresh indices)
-                        from pptx import Presentation as PptxPresentation
-                        from pptx.util import Inches as _Inches
-
-                        _prs = PptxPresentation(request.memo_path)
-                        _overflow = []
-                        for _idx, _slide in enumerate(_prs.slides):
-                            if _idx == 0:
-                                continue
-                            _tc = sum(
-                                len(p.text) for sh in _slide.shapes
-                                if sh.has_text_frame
-                                for p in sh.text_frame.paragraphs
-                            )
-                            _tr = sum(
-                                len(sh.table.rows) for sh in _slide.shapes
-                                if sh.has_table
-                            )
-                            _sc = len(list(_slide.shapes))
-                            if _tc > 1200 or _tr > 15 or (_tc > 600 and _tr > 8) or _sc > 12:
-                                _overflow.append((_idx, {
-                                    "text_chars": _tc,
-                                    "table_rows": _tr,
-                                    "shape_count": _sc,
-                                }))
-
-                        if _overflow:
-                            n_split = split_overflowed_slides(
-                                request.memo_path,
-                                _overflow,
-                                client,
-                                model=cfg.get("claude", {}).get("model", "claude-sonnet-4-6"),
-                            )
-                            checkpoint.set_count("slides_split", n_split)
-                            log.info("Auto-split %d overflowed slides", n_split)
-                    except Exception as e:
-                        log.error("Slide auto-split failed: %s", e)
-                        checkpoint.add_warning("slide_split", str(e))
-
-        # --- Final QA sign-off (up to 5 rounds, can redo full cycle) ---
+        # --- Final QA sign-off (single pass, report only) ---
         if not request.dry_run and not request.skip_validation:
-            from memo_automator import run_consistency_check, run_final_review
+            from memo_automator import run_final_review
 
             _emit(callback, "final_review", "Final QA review", 97)
             with checkpoint.stage("final_review", "Claude sign-off review"):
-                max_review_rounds = 5
-                review = None
-                for review_round in range(1, max_review_rounds + 1):
-                    _emit(
-                        callback, "final_review",
-                        f"QA review round {review_round}/{max_review_rounds}", 97,
-                    )
+                final_memo = extract_memo_content(request.memo_path, cfg)
+                review = run_final_review(
+                    client, proforma_data, final_memo, cfg,
+                )
+                score = review.get("overall_score", 0)
+                checkpoint.set_count("final_review_score", score)
+                checkpoint.set_count("final_review_round", 1)
 
-                    # Re-extract the final memo state each round
-                    final_memo = extract_memo_content(request.memo_path, cfg)
-
-                    review = run_final_review(
-                        client, proforma_data, final_memo, cfg,
-                    )
-
-                    verdict = review.get("verdict", "REVISIONS_NEEDED")
-                    score = review.get("overall_score", 0)
-                    critical_fixes = review.get("critical_fixes", [])
-
-                    checkpoint.set_count("final_review_score", score)
-                    checkpoint.set_count("final_review_round", review_round)
-
-                    if verdict == "APPROVED":
-                        log.info(
-                            "Final review APPROVED (score=%d, round %d): %s",
-                            score, review_round, review.get("summary", ""),
-                        )
-                        break
-
-                    log.warning(
-                        "Final review round %d: REVISIONS_NEEDED (score=%d, %d critical fixes)",
-                        review_round, score, len(critical_fixes),
-                    )
-
-                    # ---- Triage: simple fixes vs full redo ----
-                    # If accuracy category FAILED, that means metrics don't tie
-                    # out — we need to redo the full consistency check + re-map
-                    accuracy_failed = (
-                        review.get("categories", {})
-                        .get("accuracy", {})
-                        .get("status") == "FAIL"
-                    )
-
-                    if accuracy_failed and review_round <= 3:
-                        # Full redo: re-run consistency check which will
-                        # re-verify and auto-fix metric mismatches
-                        _emit(
-                            callback, "final_review",
-                            f"Accuracy failed — re-running consistency check (round {review_round})",
-                            97,
-                        )
-                        updated_memo = extract_memo_content(request.memo_path, cfg)
-                        consistency = run_consistency_check(
-                            client, proforma_data, updated_memo, changes, cfg,
-                        )
-                        c_discrepancies = consistency.get("discrepancies", [])
-                        if c_discrepancies:
-                            c_fix_mappings = {"table_updates": [], "text_updates": []}
-                            for d in c_discrepancies:
-                                fix = d.get("fix")
-                                if not fix:
-                                    continue
-                                if fix.get("update_type") == "table":
-                                    c_fix_mappings["table_updates"].append({
-                                        "page": d.get("page"),
-                                        "table_name": d.get("location", ""),
-                                        "row_label": "",
-                                        "column_index": 1,
-                                        "old_value": fix.get("old_value", ""),
-                                        "new_value": fix.get("new_value", ""),
-                                        "source": fix.get("source", "consistency_redo"),
-                                    })
-                                else:
-                                    c_fix_mappings["text_updates"].append({
-                                        "page": d.get("page"),
-                                        "old_text": fix.get("old_value", ""),
-                                        "new_text": fix.get("new_value", ""),
-                                        "source": fix.get("source", "consistency_redo"),
-                                    })
-                            c_n = (len(c_fix_mappings["table_updates"])
-                                   + len(c_fix_mappings["text_updates"]))
-                            if c_n > 0:
-                                c_changes = apply_updates(
-                                    request.memo_path, c_fix_mappings, dry_run=False,
-                                )
-                                changes.extend(c_changes)
-                                log.info(
-                                    "Consistency redo round %d: applied %d fixes",
-                                    review_round, len(c_changes),
-                                )
-                        continue  # re-review after consistency redo
-
-                    # Simple fixes from the review itself
-                    if critical_fixes:
-                        _emit(
-                            callback, "final_review",
-                            f"Applying {len(critical_fixes)} fixes (round {review_round})",
-                            97,
-                        )
-                        fix_mappings = {"table_updates": [], "text_updates": []}
-                        for fix_item in critical_fixes:
-                            fix = fix_item.get("fix", {})
-                            if not fix:
-                                continue
-                            if fix.get("update_type") == "table":
-                                fix_mappings["table_updates"].append({
-                                    "page": fix_item.get("page"),
-                                    "table_name": "",
-                                    "row_label": "",
-                                    "column_index": 1,
-                                    "old_value": fix.get("old_value", ""),
-                                    "new_value": fix.get("new_value", ""),
-                                    "source": fix.get("source", "final_review"),
-                                })
-                            else:
-                                fix_mappings["text_updates"].append({
-                                    "page": fix_item.get("page"),
-                                    "old_text": fix.get("old_value", ""),
-                                    "new_text": fix.get("new_value", ""),
-                                    "source": fix.get("source", "final_review"),
-                                })
-
-                        n_fix = (len(fix_mappings["table_updates"])
-                                 + len(fix_mappings["text_updates"]))
-                        if n_fix > 0:
-                            fix_changes = apply_updates(
-                                request.memo_path, fix_mappings, dry_run=False,
-                            )
-                            changes.extend(fix_changes)
-                            log.info(
-                                "Final review round %d: applied %d fixes",
-                                review_round, len(fix_changes),
-                            )
-                            continue  # re-review after fixes
-
-                    # No fixable issues — log warnings and stop
+                if review.get("verdict") == "APPROVED":
+                    log.info("Final review APPROVED (score=%d): %s", score, review.get("summary", ""))
+                else:
+                    log.warning("Final review: score=%d, %s", score, review.get("summary", ""))
                     for cat_name, cat_data in review.get("categories", {}).items():
                         if cat_data.get("status") == "FAIL":
                             for issue in cat_data.get("issues", [])[:3]:
-                                checkpoint.add_warning(
-                                    "final_review", f"{cat_name}: {issue}",
-                                )
-                    for w in review.get("warnings", [])[:5]:
-                        checkpoint.add_warning("final_review", w)
-                    break
-                else:
-                    # Exhausted all rounds without APPROVED
-                    log.warning(
-                        "Final review exhausted %d rounds without APPROVED (last score=%d)",
-                        max_review_rounds,
-                        review.get("overall_score", 0) if review else 0,
-                    )
-                    checkpoint.add_warning(
-                        "final_review",
-                        f"Memo not fully approved after {max_review_rounds} review rounds. "
-                        f"Last score: {review.get('overall_score', 0) if review else 0}. "
-                        f"Manual review recommended.",
-                    )
+                                checkpoint.add_warning("final_review", f"{cat_name}: {issue}")
 
-                # Save review result
                 review_path = os.path.join(request.output_dir, "final_review.json")
                 _write_json(review_path, review or {})
                 checkpoint.set_output("final_review", review_path)
