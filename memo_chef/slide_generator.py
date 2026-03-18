@@ -286,8 +286,51 @@ def _build_single_slide(
     return build_slide_from_scratch(prs, content, deck_profile=deck_profile)
 
 
+_TOC_ROW_PATTERNS = re.compile(
+    r"^(table of contents|toc|overview|executive summary|investment summary|"
+    r"market summary|site overview|financial summary|appendix|"
+    r"competitive landscape|development budget|sources\s*&?\s*uses|"
+    r"cover|back\s*to\s*|navigate|page\s*\d+)$",
+    re.IGNORECASE,
+)
+
+
+def _strip_toc_rows(slide) -> None:
+    """Remove table rows that look like TOC navigation entries from all tables on a slide.
+
+    Cloned template slides sometimes inherit a navigation/TOC table whose rows
+    contain section-title links. These must be removed before populating new content.
+    """
+    ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    for shape in slide.shapes:
+        if not shape.has_table:
+            continue
+        tbl_xml = shape.table._tbl
+        rows = tbl_xml.findall(f"{{{ns}}}tr")
+        to_remove = []
+        for row_el in rows:
+            # Collect text from all cells in the row
+            cell_texts = []
+            for tc in row_el.findall(f".//{{{ns}}}tc"):
+                parts = [r.text or "" for r in tc.findall(f".//{{{ns}}}t")]
+                cell_texts.append("".join(parts).strip())
+            non_empty = [t for t in cell_texts if t]
+            if not non_empty:
+                continue
+            # A TOC row typically has exactly one non-empty cell that matches
+            # a known section name pattern, with no numeric data.
+            if len(non_empty) == 1 and _TOC_ROW_PATTERNS.match(non_empty[0]):
+                to_remove.append(row_el)
+        for row_el in to_remove:
+            tbl_xml.remove(row_el)
+            log.debug("Stripped TOC row '%s' from cloned slide", row_el)
+
+
 def _populate_cloned_slide(slide, spec: SlideContent) -> None:
     """Repopulate a cloned template slide with new content."""
+    # Remove any inherited TOC/navigation table rows before populating
+    _strip_toc_rows(slide)
+
     # Update title (first text shape with large font or first shape)
     for shape in slide.shapes:
         if shape.has_text_frame:

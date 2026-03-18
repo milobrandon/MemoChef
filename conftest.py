@@ -57,6 +57,20 @@ def sample_pptx(tmp_dir):
     text_box.name = "NarrativeBox"
     text_box.text_frame.text = "IRR is 5.0% and units are 120."
 
+    # Subheader text shape: bold run followed by body run (for branding test)
+    sub_box = slide.shapes.add_textbox(
+        Inches(0.5), Inches(5.5), Inches(8.0), Inches(0.5)
+    )
+    sub_box.name = "SubheaderBox"
+    sub_para = sub_box.text_frame.paragraphs[0]
+    sub_para.clear()
+    sub_run = sub_para.add_run()
+    sub_run.text = "Key Metrics"
+    sub_run.font.bold = True
+    body_run = sub_para.add_run()
+    body_run.text = " — overview of returns"
+    body_run.font.bold = False
+
     prs.save(path)
     return path
 
