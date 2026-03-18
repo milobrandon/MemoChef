@@ -452,47 +452,51 @@ def split_overflowed_slides(
         # Execute the split: for table splits, clone the slide and
         # remove rows from each copy
         strategy = split_plan.get("split_strategy", "")
-        if strategy == "table_split":
-            table_rows_end = split_plan.get("slide_1", {}).get("table_rows_end")
-            table_rows_start = split_plan.get("slide_2", {}).get("table_rows_start")
-            if table_rows_end is None or table_rows_start is None:
-                continue
+        try:
+            if strategy == "table_split":
+                table_rows_end = split_plan.get("slide_1", {}).get("table_rows_end")
+                table_rows_start = split_plan.get("slide_2", {}).get("table_rows_start")
+                if table_rows_end is None or table_rows_start is None:
+                    continue
 
-            # Clone the slide for the continuation
-            new_slide = clone_slide(prs, idx)
-            insert_slide_at_position(prs, new_slide, idx)
+                # Clone the slide for the continuation
+                new_slide = clone_slide(prs, idx)
+                insert_slide_at_position(prs, new_slide, idx)
 
-            # Now we have two copies: prs.slides[idx] and prs.slides[idx+1]
-            # Remove excess rows from each
-            _trim_table_rows(prs.slides[idx], keep_end=table_rows_end)
-            _trim_table_rows(prs.slides[idx + 1], keep_start=table_rows_start)
+                # Now we have two copies: prs.slides[idx] and prs.slides[idx+1]
+                # Remove excess rows from each
+                _trim_table_rows(prs.slides[idx], keep_end=table_rows_end)
+                _trim_table_rows(prs.slides[idx + 1], keep_start=table_rows_start)
 
-            # Update title on continuation slide
-            cont_title = split_plan.get("slide_2", {}).get("title", "")
-            if cont_title:
-                _update_slide_title(prs.slides[idx + 1], cont_title)
+                # Update title on continuation slide
+                cont_title = split_plan.get("slide_2", {}).get("title", "")
+                if cont_title:
+                    _update_slide_title(prs.slides[idx + 1], cont_title)
 
-            splits_done += 1
-            offset += 1
-            log.info("Split slide %d (table_split at row %d)", orig_idx + 1, table_rows_end)
+                splits_done += 1
+                offset += 1
+                log.info("Split slide %d (table_split at row %d)", orig_idx + 1, table_rows_end)
 
-        elif strategy == "visual_narrative_split":
-            # Clone slide, remove narrative from first, remove visual from second
-            new_slide = clone_slide(prs, idx)
-            insert_slide_at_position(prs, new_slide, idx)
+            elif strategy == "visual_narrative_split":
+                # Clone slide, remove narrative from first, remove visual from second
+                new_slide = clone_slide(prs, idx)
+                insert_slide_at_position(prs, new_slide, idx)
 
-            # First slide: remove large text shapes (narrative)
-            _remove_narrative_shapes(prs.slides[idx])
-            # Second slide: remove tables/charts, keep narrative
-            _remove_visual_shapes(prs.slides[idx + 1])
+                # First slide: remove large text shapes (narrative)
+                _remove_narrative_shapes(prs.slides[idx])
+                # Second slide: remove tables/charts, keep narrative
+                _remove_visual_shapes(prs.slides[idx + 1])
 
-            cont_title = split_plan.get("slide_2", {}).get("title", "")
-            if cont_title:
-                _update_slide_title(prs.slides[idx + 1], cont_title)
+                cont_title = split_plan.get("slide_2", {}).get("title", "")
+                if cont_title:
+                    _update_slide_title(prs.slides[idx + 1], cont_title)
 
-            splits_done += 1
-            offset += 1
-            log.info("Split slide %d (visual_narrative_split)", orig_idx + 1)
+                splits_done += 1
+                offset += 1
+                log.info("Split slide %d (visual_narrative_split)", orig_idx + 1)
+        except (IndexError, KeyError, AttributeError) as e:
+            log.warning("Slide split execution failed for slide %d: %s", idx + 1, e)
+            continue
 
     if splits_done > 0:
         prs.save(memo_path)
@@ -513,12 +517,18 @@ def _trim_table_rows(slide, keep_end: int | None = None, keep_start: int | None 
             continue
         tbl_xml = shape.table._tbl
         rows = tbl_xml.findall(f"{{{ns}}}tr")
+        n_rows = len(rows)
+        if n_rows < 2:
+            break  # nothing to trim
+
         if keep_end is not None:
-            # Remove rows after keep_end
-            for i in range(len(rows) - 1, keep_end, -1):
+            # Clamp to valid range
+            keep_end = min(keep_end, n_rows - 1)
+            for i in range(n_rows - 1, keep_end, -1):
                 tbl_xml.remove(rows[i])
         elif keep_start is not None:
-            # Keep header (row 0) + rows from keep_start onward
+            # Clamp to valid range
+            keep_start = max(1, min(keep_start, n_rows - 1))
             for i in range(keep_start - 1, 0, -1):
                 tbl_xml.remove(rows[i])
         break  # only process first table
