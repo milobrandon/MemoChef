@@ -441,12 +441,69 @@ def extract_market_data(market_data_path: str, cfg: dict) -> str:
     wb.close()
 
     if found_tabs == 0:
-        log.warning(
-            "No dashboard tabs found in market data file. "
-            "Expected tabs: %s. Available: %s. Skipping market data.",
-            _MARKET_DASHBOARD_TABS, wb.sheetnames,
-        )
-        return ""
+        # Fallback: scan ALL tabs for market-relevant data.
+        # Pick tabs whose names contain keywords like rent, sales, comp,
+        # pipeline, supply, demand, occupancy, market, land.
+        _market_keywords = [
+            "rent", "sale", "comp", "pipeline", "supply", "demand",
+            "occupancy", "market", "land", "prelease", "sbys", "side",
+            "growth", "rate", "unit mix", "taxes",
+        ]
+        fallback_tabs = []
+        for sn in wb.sheetnames:
+            sn_lower = sn.lower()
+            if any(kw in sn_lower for kw in _market_keywords):
+                fallback_tabs.append(sn)
+
+        if fallback_tabs:
+            log.info(
+                "No configured dashboard tabs matched. Falling back to %d "
+                "market-keyword tabs: %s",
+                len(fallback_tabs), fallback_tabs[:10],
+            )
+            # Re-open since wb was already used
+            wb2 = openpyxl.load_workbook(market_data_path, data_only=True)
+            # Prioritize tabs with rent/comp/market keywords and recent dates.
+            # Score each tab: high-value keywords + recency.
+            _high_value = ["rent", "sbys", "side", "comp", "sale", "market", "unit mix"]
+            def _tab_score(name: str) -> int:
+                nl = name.lower()
+                score = sum(2 for kw in _high_value if kw in nl)
+                # Bonus for recent dates (2026, 2025)
+                if "2026" in name:
+                    score += 3
+                elif "2025" in name:
+                    score += 1
+                return score
+            fallback_tabs.sort(key=_tab_score, reverse=True)
+            for tab_name in fallback_tabs[:4]:  # cap at 4 tabs
+                ws = wb2[tab_name]
+                found_tabs += 1
+                lines.append(f"\n{'='*70}")
+                lines.append(f"TAB: {tab_name}")
+                lines.append(f"{'='*70}")
+
+                end_row = ws.max_row if max_rows == 0 else min(ws.max_row, max_rows)
+                end_col = ws.max_column if max_cols == 0 else min(ws.max_column, max_cols)
+
+                for row in ws.iter_rows(
+                    min_row=1, max_row=end_row, max_col=end_col, values_only=False
+                ):
+                    row_data = []
+                    for cell in row:
+                        if cell.value is not None:
+                            row_data.append(str(cell.value))
+                    if row_data:
+                        lines.append(f"Row {row[0].row}:\t" + "\t".join(row_data))
+                        data_rows += 1
+            wb2.close()
+        else:
+            log.warning(
+                "No dashboard tabs found in market data file. "
+                "Expected tabs: %s. Available: %s. Skipping market data.",
+                _MARKET_DASHBOARD_TABS, wb.sheetnames,
+            )
+            return ""
 
     if data_rows == 0:
         log.warning(
@@ -2270,8 +2327,36 @@ def _find_table_target(slide, table_name: str, row_label: str,
                     )
                     return shape, row_head, cell, 2
 
-    # Pass 3 REMOVED — too dangerous. Previously matched any cell in any
-    # column, causing silent wrong-cell updates for common values.
+    # Pass 3: Search ALL columns for old_value (for side-by-side comp tables
+    # where the subject property column is col 2, 3, or 4).
+    # Only enabled when old_value is "specific enough" to avoid false matches:
+    # at least 4 chars, or contains a dollar sign/percent, or looks like a
+    # unit type pattern like "4BR / 4BA (53)".
+    is_specific = (
+        len(old_value) >= 4
+        or "$" in old_value
+        or "%" in old_value
+        or re.search(r"\dBR\s*/\s*\d", old_value)
+    )
+    if is_specific:
+        for group in ordered_groups:
+            for shape in group:
+                for row in shape.table.rows:
+                    for ci, cell in enumerate(row.cells):
+                        if ci == col_idx:
+                            continue  # already checked in Pass 2
+                        cell_text = cell.text or ""
+                        matched = old_value in cell_text
+                        if not matched and norm_old != old_value:
+                            matched = norm_old in _normalize_unicode(cell_text)
+                        if matched:
+                            row_head = row.cells[0].text.strip() if row.cells else ""
+                            log.warning(
+                                "Table match degraded to Pass 3 (cross-column): "
+                                "expected col %d, matched col %d for '%s' in row '%s'",
+                                col_idx, ci, old_value, row_head,
+                            )
+                            return shape, row_head, cell, 3
 
     return None, diagnostic_row, diagnostic_cell, 0
 
