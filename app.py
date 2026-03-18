@@ -927,6 +927,32 @@ def render_new_run_tab() -> None:
             _breakdown = " · ".join(f"{v} {k}" for k, v in sorted(_type_counts.items()))
             st.caption(f"Breakdown: {_breakdown}")
 
+        # Before vs After change report (branded)
+        if _changes:
+            from app_helpers import build_change_report_html
+
+            with st.expander("Before vs After Report", expanded=True):
+                _report_html = build_change_report_html(
+                    _changes,
+                    manifest=st.session_state.get("manifest"),
+                )
+                st.markdown(_report_html, unsafe_allow_html=True)
+
+                # Download as standalone HTML
+                _full_html = (
+                    '<!DOCTYPE html><html><head><meta charset="utf-8">'
+                    '<title>Before vs After Report</title>'
+                    '<style>body{background:#2b2825;padding:24px;}</style>'
+                    '</head><body>' + _report_html + '</body></html>'
+                )
+                st.download_button(
+                    "Download report (HTML)",
+                    _full_html.encode("utf-8"),
+                    file_name="before_vs_after_report.html",
+                    mime="text/html",
+                    use_container_width=True,
+                )
+
         download_cols = st.columns(3)
         download_cols[0].download_button(
             "Download updated memo",

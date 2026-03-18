@@ -690,7 +690,11 @@ def extract_memo_content(memo_path: str, cfg: dict) -> str:
 
             # Charts (embedded Excel chart objects)
             if shape.has_chart:
-                chart = shape.chart
+                try:
+                    chart = shape.chart
+                except (KeyError, AttributeError):
+                    lines.append(f"    Chart: (relationship broken — skipped)")
+                    continue
                 chart_type_name = str(chart.chart_type) if chart.chart_type else "UNKNOWN"
                 lines.append(f"    Chart type: {chart_type_name}")
 
