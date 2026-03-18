@@ -12,16 +12,28 @@ def extract_supplemental(source: str, source_type: str) -> str:
 
     Args:
         source: File path or URL.
-        source_type: One of "pdf", "url", "excel", "csv".
+        source_type: One of "pdf", "url", "excel", "csv", "text".
+            Unknown types fall back to plain-text read when the source is a
+            local file with a .txt extension.
 
     Returns:
         Plain text representation of the source data.
     """
+    import os
+
+    # Auto-detect plain-text files regardless of the declared type so that
+    # .txt files aren't accidentally opened as Excel or PDF.
+    if source_type not in ("url",) and isinstance(source, str) and os.path.isfile(source):
+        ext = os.path.splitext(source)[1].lower()
+        if ext == ".txt":
+            source_type = "text"
+
     extractors = {
         "pdf": _extract_pdf,
         "url": _extract_url,
         "excel": _extract_excel,
         "csv": _extract_csv,
+        "text": _extract_text,
     }
     extractor = extractors.get(source_type)
     if extractor is None:
@@ -87,6 +99,18 @@ def _extract_excel(path: str) -> str:
             parts.append("")
     wb.close()
     return "\n".join(parts)
+
+
+def _extract_text(path: str) -> str:
+    """Read a plain-text file and return its contents."""
+    for enc in ("utf-8-sig", "utf-8", "latin-1"):
+        try:
+            with open(path, encoding=enc) as f:
+                return f.read()
+        except UnicodeDecodeError:
+            continue
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return f.read()
 
 
 def _extract_csv(path: str) -> str:

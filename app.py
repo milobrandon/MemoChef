@@ -214,7 +214,7 @@ def _queue_item_from_inputs(
         supp_name = supplemental_file.name
         supp_bytes = supplemental_file.getvalue()
         ext = Path(supp_name).suffix.lower()
-        supp_type = {".pdf": "pdf", ".xlsx": "excel", ".xlsm": "excel", ".csv": "csv"}.get(ext, "excel")
+        supp_type = {".pdf": "pdf", ".xlsx": "excel", ".xlsm": "excel", ".csv": "csv", ".txt": "text"}.get(ext, "excel")
     elif supplemental_url:
         supp_name = supplemental_url
         supp_type = "url"
