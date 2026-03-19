@@ -615,7 +615,7 @@ def render_new_run_tab() -> None:
     market_data_file = upload_cols[3].file_uploader("Market data (Beta)", type=["xlsx", "xlsm"], key="market_upload")
 
     # Per-source directives — tell Claude how to use each source
-    with st.expander("Directions for Claude (per source)", expanded=False):
+    with st.expander("Directions for Claude (per source) (Beta)", expanded=False):
         st.caption(
             "Give Claude specific instructions for each source. "
             "E.g., 'Only update revenue section' or 'Ignore occupancy data'."
@@ -650,25 +650,25 @@ def render_new_run_tab() -> None:
     # Supplemental data for slide insertion
     supp_cols = st.columns([2, 2, 3])
     supplemental_file = supp_cols[0].file_uploader(
-        "Supplemental data",
+        "Supplemental data (Beta)",
         type=["pdf", "xlsx", "xlsm", "csv"],
         key="supplemental_upload",
         help="Upload additional data to generate a new slide (PDF, Excel, or CSV)",
     )
     supplemental_url = supp_cols[1].text_input(
-        "Or paste a URL",
+        "Or paste a URL (Beta)",
         key="supplemental_url",
         placeholder="https://...",
     )
     supplemental_brief = supp_cols[2].text_area(
-        "Brief (optional)",
+        "Brief (optional) (Beta)",
         key="supplemental_brief",
         placeholder="e.g., Show student affluence trends for this market",
         height=80,
     )
 
     # Comp property URLs for rent scraping
-    with st.expander("Comp property URLs (rent scraping)"):
+    with st.expander("Comp property URLs (rent scraping) (Beta)"):
         comp_url_count = st.number_input(
             "Number of comp URLs", min_value=0, max_value=10, value=0, key="comp_url_count",
         )
@@ -683,11 +683,11 @@ def render_new_run_tab() -> None:
             if cu_url.strip():
                 comp_url_inputs.append({"url": cu_url.strip(), "label": cu_label.strip(), "guidance": cu_guidance.strip()})
 
-    st.markdown("**Comp Slide Builder**")
-    auto_comp = st.checkbox("Auto-generate comp slide", value=False, key="auto_comp")
-    comp_csv = None
-    if auto_comp:
-        comp_csv = st.file_uploader("Comp data (CSV)", type=["csv"], key="comp_csv")
+    with st.expander("Comp Slide Builder (Beta)"):
+        auto_comp = st.checkbox("Auto-generate comp slide", value=False, key="auto_comp")
+        comp_csv = None
+        if auto_comp:
+            comp_csv = st.file_uploader("Comp data (CSV)", type=["csv"], key="comp_csv")
 
     rename_cols = st.columns(2)
     property_name = rename_cols[0].text_input(
