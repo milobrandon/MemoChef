@@ -2219,6 +2219,11 @@ def _normalize_for_match(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip()).lower()
 
 
+def _normalize_ws(text: str) -> str:
+    """Normalize all whitespace (including newlines from multi-paragraph cells) to single spaces."""
+    return re.sub(r"\s+", " ", (text or "").strip())
+
+
 def _strip_to_core(text: str) -> str:
     """
     Strip a label down to its alphanumeric core for bedroom-type matching.
@@ -2287,8 +2292,10 @@ def _find_table_target(slide, table_name: str, row_label: str,
     diagnostic_cell = None
 
     norm_old = _normalize_unicode(old_value)
+    # Whitespace-normalized old_value for multi-paragraph cell matching
+    ws_old = _normalize_ws(old_value)
 
-    # Pass 1: row_label match + old_value at col_idx (exact, then Unicode-normalized)
+    # Pass 1: row_label match + old_value at col_idx (exact, then Unicode/ws-normalized)
     for group in ordered_groups:
         for shape in group:
             for row in shape.table.rows:
@@ -2300,7 +2307,8 @@ def _find_table_target(slide, table_name: str, row_label: str,
 
                 cell = row.cells[col_idx]
                 cell_text = cell.text or ""
-                if old_value in cell_text:
+                ws_cell = _normalize_ws(cell_text)
+                if old_value in cell_text or ws_old in ws_cell:
                     return shape, row_head, cell, 1
 
                 # Unicode-normalized fallback within Pass 1
@@ -2319,7 +2327,8 @@ def _find_table_target(slide, table_name: str, row_label: str,
                     continue
                 cell = row.cells[col_idx]
                 cell_text = cell.text or ""
-                matched = old_value in cell_text
+                ws_cell = _normalize_ws(cell_text)
+                matched = old_value in cell_text or ws_old in ws_cell
                 if not matched and norm_old != old_value:
                     matched = norm_old in _normalize_unicode(cell_text)
                 if matched:
@@ -2334,13 +2343,14 @@ def _find_table_target(slide, table_name: str, row_label: str,
     # Pass 3: Search ALL columns for old_value (for side-by-side comp tables
     # where the subject property column is col 2, 3, or 4).
     # Only enabled when old_value is "specific enough" to avoid false matches:
-    # at least 4 chars, or contains a dollar sign/percent, or looks like a
-    # unit type pattern like "4BR / 4BA (53)".
+    # at least 4 chars, contains a dollar sign/percent, looks like a unit type
+    # pattern like "4BR / 4BA (53)", or is a pure integer >= 2 digits (e.g. "141").
     is_specific = (
         len(old_value) >= 4
         or "$" in old_value
         or "%" in old_value
         or re.search(r"\dBR\s*/\s*\d", old_value)
+        or re.match(r"^\d{2,}$", old_value.replace(",", "").strip())
     )
     if is_specific:
         for group in ordered_groups:
@@ -2350,7 +2360,8 @@ def _find_table_target(slide, table_name: str, row_label: str,
                         if ci == col_idx:
                             continue  # already checked in Pass 2
                         cell_text = cell.text or ""
-                        matched = old_value in cell_text
+                        ws_cell = _normalize_ws(cell_text)
+                        matched = old_value in cell_text or ws_old in ws_cell
                         if not matched and norm_old != old_value:
                             matched = norm_old in _normalize_unicode(cell_text)
                         if matched:
@@ -2630,7 +2641,18 @@ def apply_updates(memo_path: str, mappings: dict, dry_run: bool = False) -> list
             changes.append(change_record)
             continue
 
-        if matched_row_label is not None:
+        # Check if the update was already applied (cell already has new_val)
+        already_applied = new_val and cell_or_text and (
+            new_val in (cell_or_text or "")
+            or _normalize_ws(new_val) in _normalize_ws(cell_or_text or "")
+        )
+        if already_applied:
+            log.info(
+                "Table update ALREADY APPLIED: page %d, '%s' already present "
+                "(skipping '%s' -> '%s')",
+                page, new_val, old_val, new_val,
+            )
+        elif matched_row_label is not None:
             log.warning(
                 "Table update NOT FOUND: page %d, '%s' -> '%s' "
                 "(closest row '%s' col %d has '%s')",

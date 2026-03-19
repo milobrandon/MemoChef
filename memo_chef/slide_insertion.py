@@ -182,6 +182,45 @@ def find_template_slide(
     return best_idx if best_score >= 10 else None
 
 
+_SLIDE_LAYOUT_RELTYPE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout"
+)
+# Namespace for r:embed / r:link / r:id attributes
+_R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
+
+def _copy_slide_rels(src_slide, dst_slide) -> dict:
+    """Copy non-layout part relationships from src_slide to dst_slide.
+
+    Returns a mapping of old rId -> new rId so XML elements can be patched.
+    Picture shapes embed images via r:embed rIds; without copying those
+    relationships the images are missing on the cloned slide.
+    """
+    rId_map: dict[str, str] = {}
+    for rId, rel in src_slide.part.rels.items():
+        if rel.reltype == _SLIDE_LAYOUT_RELTYPE:
+            continue  # layout relationship is already set on the new slide
+        try:
+            new_rId = dst_slide.part.relate_to(rel.target_part, rel.reltype)
+            if new_rId != rId:
+                rId_map[rId] = new_rId
+        except Exception as exc:
+            log.debug("clone_slide: could not copy relationship %s: %s", rId, exc)
+    return rId_map
+
+
+def _patch_rids(element, rId_map: dict) -> None:
+    """Recursively replace r:embed / r:link / r:id attribute values per rId_map."""
+    if not rId_map:
+        return
+    for attr in (f"{{{_R_NS}}}embed", f"{{{_R_NS}}}link", f"{{{_R_NS}}}id"):
+        old = element.get(attr)
+        if old and old in rId_map:
+            element.set(attr, rId_map[old])
+    for child in element:
+        _patch_rids(child, rId_map)
+
+
 def clone_slide(prs: Presentation, template_idx: int):
     """Deep-copy a slide and append it to the presentation. Returns the new slide."""
     template_slide = prs.slides[template_idx]
@@ -194,9 +233,14 @@ def clone_slide(prs: Presentation, template_idx: int):
         sp = shape._element
         sp.getparent().remove(sp)
 
-    # Copy shapes from template
+    # Copy part relationships (images, charts, etc.) before copying XML elements
+    rId_map = _copy_slide_rels(template_slide, new_slide)
+
+    # Copy shapes from template, patching any rId references that changed
     for shape in template_slide.shapes:
         el = copy.deepcopy(shape._element)
+        if rId_map:
+            _patch_rids(el, rId_map)
         new_slide.shapes._spTree.append(el)
 
     return new_slide

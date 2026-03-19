@@ -37,10 +37,14 @@ metric in the memo that should be updated with new values from the proforma.
 
 5. **Competitive set side-by-side tables (column-oriented)** - Tables
    where each COLUMN is a property and rows are metrics (unit size, beds,
-   market rent per unit type).  The subject property is ALWAYS the
-   leftmost data column.  Update EVERY cell in that column - header
-   metrics (units, beds, parking, ratios) AND each unit-type sub-section
-   (unit size, bed count, market rent).
+   market rent per unit type).  **To find the subject property column:**
+   look at the table header row and find the column whose header matches
+   the property name from the proforma (or is labeled "Subject Property").
+   Do NOT assume it is always the leftmost data column — it may be in
+   column 2, 3, 4, or later depending on how many comp properties appear
+   to its left.  Update EVERY cell in that column - header metrics
+   (units, beds, parking, ratios) AND each unit-type sub-section (unit
+   size, bed count, market rent).
    - **Unit mix source:** Use the unit mix near the TOP of the Assumptions
      tab (the detailed breakdown), NOT the unit mix summary.
    - **Bed count per unit type:** The "bed count" (or "# of beds" / "#
@@ -50,6 +54,12 @@ metric in the memo that should be updated with new values from the proforma.
      proforma's detailed unit mix breakdown (units × beds-per-unit for
      that type, or the explicit bed count column if present).  Never use
      the property-wide total beds here.
+   - **Unit-type row parentheticals:** In notation like "4BR/4BA (212)",
+     the number in parentheses is the TOTAL BED COUNT for that unit type
+     at the subject property (unit_count × beds_per_unit, e.g. 53 units ×
+     4 beds = 212).  Do NOT put the raw unit count there; compute beds.
+     The separate "# of beds" / "Bed Count" row (if present) also shows
+     this same per-type bed count.
    - **Row matching:** Place each proforma unit type in the row whose
      bedroom label matches (e.g. a "1BR" proforma unit goes in the "1BR"
      row).  If the table has multiple rows for one bedroom type (e.g. two
@@ -210,7 +220,15 @@ metric in the memo that should be updated with new values from the proforma.
     - Do NOT modify the subject property column using comp data — the subject
       column is updated only from the proforma.
 
-23. **Table structure changes** — When a source directive explicitly requests
+23. **Do NOT emit table_updates for text placeholder shapes** — Shapes named
+   "Content Placeholder", "Text Placeholder", or similar are text boxes, NOT
+   tables.  Any metric you find inside such a shape must be emitted as a
+   `text_updates` entry (using `old_text` / `new_text`), never as a
+   `table_updates` entry (which requires a real table shape with rows and
+   columns).  Using `table_name: "Content Placeholder"` in a table_update
+   will always fail because no such table exists.
+
+24. **Table structure changes** — When a source directive explicitly requests
    table restructuring (e.g. "add a column for Year 3 projections",
    "remove the old pipeline row", "reorder unit types alphabetically"),
    emit `table_structure_updates` entries.  Do NOT restructure tables

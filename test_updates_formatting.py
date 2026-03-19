@@ -69,6 +69,12 @@ def test_apply_branding(sample_pptx):
     assert header_run.font.name == "Pragmatica Bold"
     assert body_run.font.name == "Pragmatica Book"
 
+    # Subheader (bold run in non-title shape) should get Pragmatica Bold
+    sub_box = next(s for s in prs.slides[0].shapes if s.name == "SubheaderBox")
+    sub_runs = sub_box.text_frame.paragraphs[0].runs
+    assert sub_runs[0].font.name == "Pragmatica Bold"  # bold subheader
+    assert sub_runs[1].font.name == "Pragmatica Book"  # non-bold body
+
 
 def test_normalize_layout(layout_test_pptx):
     cfg = {
