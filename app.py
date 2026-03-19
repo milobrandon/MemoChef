@@ -191,12 +191,7 @@ def _queue_item_from_inputs(
     proforma_file,
     schedule_file,
     market_data_file,
-    supplemental_file=None,
-    supplemental_url: str = "",
-    supplemental_brief: str = "",
     comp_urls: list[dict] | None = None,
-    auto_generate_comp_slide: bool = False,
-    comp_csv_file=None,
     property_name: str,
     property_rename_to: str = "",
     dry_run: bool,
@@ -206,19 +201,6 @@ def _queue_item_from_inputs(
     use_batch_api: bool = False,
     source_directives: list[dict] | None = None,
 ) -> dict:
-    # Determine supplemental source type
-    supp_name = None
-    supp_bytes = None
-    supp_type = None
-    if supplemental_file:
-        supp_name = supplemental_file.name
-        supp_bytes = supplemental_file.getvalue()
-        ext = Path(supp_name).suffix.lower()
-        supp_type = {".pdf": "pdf", ".xlsx": "excel", ".xlsm": "excel", ".csv": "csv", ".txt": "text"}.get(ext, "excel")
-    elif supplemental_url:
-        supp_name = supplemental_url
-        supp_type = "url"
-
     job_id = uuid.uuid4().hex
     staging = get_job_staging_dir(job_id)
 
@@ -242,18 +224,6 @@ def _queue_item_from_inputs(
         with open(market_data_path, "wb") as f:
             f.write(market_data_file.getvalue())
 
-    supp_path = None
-    if supp_bytes:
-        supp_path = str(staging / supp_name)
-        with open(supp_path, "wb") as f:
-            f.write(supp_bytes)
-
-    comp_csv_path = None
-    if comp_csv_file:
-        comp_csv_path = str(staging / comp_csv_file.name)
-        with open(comp_csv_path, "wb") as f:
-            f.write(comp_csv_file.getvalue())
-
     return {
         "job_id": job_id,
         "memo_name": memo_file.name,
@@ -264,15 +234,9 @@ def _queue_item_from_inputs(
         "schedule_path": schedule_path,
         "market_data_name": market_data_file.name if market_data_file else None,
         "market_data_path": market_data_path,
-        "supplemental_name": supp_name,
-        "supplemental_path": supp_path,
-        "supplemental_type": supp_type,
-        "supplemental_brief": supplemental_brief or None,
         "property_name": property_name or None,
         "property_rename_to": property_rename_to or None,
         "comp_urls": comp_urls or [],
-        "auto_generate_comp_slide": auto_generate_comp_slide,
-        "comp_csv_path": comp_csv_path,
         "dry_run": dry_run,
         "skip_validation": skip_validation,
         "use_batch_api": use_batch_api,
@@ -365,23 +329,7 @@ def _execute_job(
         with open(market_data_path, "wb") as handle:
             handle.write(job["market_data_bytes"])
 
-    supplemental_path = None
-    supplemental_type = job.get("supplemental_type")
-    if supplemental_type == "url":
-        supplemental_path = job.get("supplemental_name")  # URL string
-    elif job.get("supplemental_path") and os.path.isfile(job["supplemental_path"]):
-        supplemental_path = job["supplemental_path"]
-    elif job.get("supplemental_bytes"):
-        ext = os.path.splitext(job["supplemental_name"])[1] if job.get("supplemental_name") else ".pdf"
-        supplemental_path = str(run_dir / f"input_supplemental{ext}")
-        with open(supplemental_path, "wb") as handle:
-            handle.write(job["supplemental_bytes"])
-
     comp_url_objects = [CompUrl(**cu) for cu in job.get("comp_urls", [])]
-
-    comp_csv_path = None
-    if job.get("comp_csv_path") and os.path.isfile(job["comp_csv_path"]):
-        comp_csv_path = job["comp_csv_path"]
 
     # Build source directives from job payload
     from memo_chef.models import SourceDirective
@@ -396,13 +344,8 @@ def _execute_job(
         proforma_path=proforma_path,
         schedule_path=schedule_path,
         market_data_path=market_data_path,
-        supplemental_path=supplemental_path,
-        supplemental_type=supplemental_type,
-        supplemental_brief=job.get("supplemental_brief"),
         comp_urls=comp_url_objects,
         source_directives=source_directives,
-        auto_generate_comp_slide=job.get("auto_generate_comp_slide", False),
-        comp_csv_path=comp_csv_path,
         output_dir=str(run_dir),
         api_key=api_key,
         config_path=os.path.join(os.path.dirname(__file__), "config.yaml"),
@@ -444,7 +387,6 @@ def _execute_job(
             input_tokens=counts.get("input_tokens", 0),
             output_tokens=counts.get("output_tokens", 0),
             estimated_cost_microdollars=counts.get("estimated_cost_microdollars", 0),
-            slides_inserted=counts.get("slides_inserted", 0),
             confidence_score=accuracy.get("confidence_score"),
             coverage_pct=accuracy.get("coverage_pct"),
             correction_rate_pct=accuracy.get("correction_rate_pct"),
@@ -633,39 +575,12 @@ def render_new_run_tab() -> None:
             placeholder="e.g., Focus on construction milestones only",
             height=68,
         )
-        directive_cols2 = st.columns(2)
-        market_data_directive = directive_cols2[0].text_area(
+        market_data_directive = st.text_area(
             "Market data directions",
             key="market_data_directive",
             placeholder="e.g., Use for rent trend charts only",
             height=68,
         )
-        supplemental_directive = directive_cols2[1].text_area(
-            "Supplemental data directions",
-            key="supplemental_directive",
-            placeholder="e.g., Generate a market summary slide from this data",
-            height=68,
-        )
-
-    # Supplemental data for slide insertion
-    supp_cols = st.columns([2, 2, 3])
-    supplemental_file = supp_cols[0].file_uploader(
-        "Supplemental data (Beta)",
-        type=["pdf", "xlsx", "xlsm", "csv"],
-        key="supplemental_upload",
-        help="Upload additional data to generate a new slide (PDF, Excel, or CSV)",
-    )
-    supplemental_url = supp_cols[1].text_input(
-        "Or paste a URL (Beta)",
-        key="supplemental_url",
-        placeholder="https://...",
-    )
-    supplemental_brief = supp_cols[2].text_area(
-        "Brief (optional) (Beta)",
-        key="supplemental_brief",
-        placeholder="e.g., Show student affluence trends for this market",
-        height=80,
-    )
 
     # Comp property URLs for rent scraping
     with st.expander("Comp property URLs (rent scraping) (Beta)"):
@@ -682,12 +597,6 @@ def render_new_run_tab() -> None:
             )
             if cu_url.strip():
                 comp_url_inputs.append({"url": cu_url.strip(), "label": cu_label.strip(), "guidance": cu_guidance.strip()})
-
-    with st.expander("Comp Slide Builder (Beta)"):
-        auto_comp = st.checkbox("Auto-generate comp slide", value=False, key="auto_comp")
-        comp_csv = None
-        if auto_comp:
-            comp_csv = st.file_uploader("Comp data (CSV)", type=["csv"], key="comp_csv")
 
     rename_cols = st.columns(2)
     property_name = rename_cols[0].text_input(
@@ -821,11 +730,6 @@ def render_new_run_tab() -> None:
             "source_id": "market_data", "source_type": "market_data",
             "directive": market_data_directive.strip(), "scope": "both",
         })
-    if supplemental_directive.strip():
-        _ui_directives.append({
-            "source_id": "supplemental", "source_type": "supplemental",
-            "directive": supplemental_directive.strip(), "scope": "both",
-        })
     # Comp URL guidance is already captured in comp_url_inputs — add as directives too
     for cu in comp_url_inputs:
         if cu.get("guidance", "").strip():
@@ -847,12 +751,7 @@ def render_new_run_tab() -> None:
             proforma_file=proforma_file,
             schedule_file=schedule_file,
             market_data_file=market_data_file,
-            supplemental_file=supplemental_file,
-            supplemental_url=supplemental_url,
-            supplemental_brief=supplemental_brief,
             comp_urls=comp_url_inputs,
-            auto_generate_comp_slide=auto_comp,
-            comp_csv_file=comp_csv,
             property_name=property_name,
             property_rename_to=property_rename_to,
             dry_run=dry_run,
@@ -874,12 +773,7 @@ def render_new_run_tab() -> None:
             proforma_file=proforma_file,
             schedule_file=schedule_file,
             market_data_file=market_data_file,
-            supplemental_file=supplemental_file,
-            supplemental_url=supplemental_url,
-            supplemental_brief=supplemental_brief,
             comp_urls=comp_url_inputs,
-            auto_generate_comp_slide=auto_comp,
-            comp_csv_file=comp_csv,
             property_name=property_name,
             property_rename_to=property_rename_to,
             dry_run=dry_run,
@@ -903,19 +797,13 @@ def render_new_run_tab() -> None:
             )
         st.success("Artifacts are ready for review and download.")
         _manifest_counts = st.session_state.get("manifest", {}).get("counts", {})
-        _slides_generated = (
-            _manifest_counts.get("slides_inserted", 0)
-            + _manifest_counts.get("comp_slides_inserted", 0)
-            + _manifest_counts.get("ai_slides_generated", 0)
-        )
-        metric_cols = st.columns(6)
+        metric_cols = st.columns(5)
         metric_cols[0].metric("Applied changes", st.session_state["n_changes"])
         metric_cols[1].metric("Rejected", st.session_state["n_rejected"])
         metric_cols[2].metric("Needs review", st.session_state["n_missed"])
-        metric_cols[3].metric("Slides generated", _slides_generated or "—")
-        metric_cols[4].metric("Warnings", len(st.session_state.get("warnings", [])))
+        metric_cols[3].metric("Warnings", len(st.session_state.get("warnings", [])))
         _cost_usd = _manifest_counts.get("estimated_cost_microdollars", 0) / 1_000_000
-        metric_cols[5].metric("Est. API cost", f"${_cost_usd:.4f}" if _cost_usd else "—")
+        metric_cols[4].metric("Est. API cost", f"${_cost_usd:.4f}" if _cost_usd else "—")
 
         # Change type breakdown
         _changes = st.session_state.get("changes", [])
@@ -1013,7 +901,7 @@ def render_history_tab() -> None:
         detail_cols[3].metric("Warnings", len(details["warnings"]))
         conf = details.get("confidence_score")
         detail_cols[4].metric("Confidence", f"{conf:.0f}/100" if conf is not None else "—")
-        detail_cols[5].metric("Slides inserted", details.get("slides_inserted", 0))
+        detail_cols[5].metric("Duration", f"{details.get('duration_seconds', 0):.1f}s")
         if details["warnings"]:
             with st.expander("Run warnings"):
                 for warning in details["warnings"]:
@@ -1026,7 +914,7 @@ def render_history_tab() -> None:
                 acc_cols[1].metric("Coverage", f"{cov:.1f}%" if cov is not None else "—")
                 corr = details.get("correction_rate_pct")
                 acc_cols[2].metric("Correction rate", f"{corr:.1f}%" if corr is not None else "—")
-                acc_cols[3].metric("Slides inserted", details.get("slides_inserted", 0))
+                acc_cols[3].metric("Duration", f"{details.get('duration_seconds', 0):.1f}s")
         with st.form("approval_form"):
             approval_status = st.selectbox(
                 "Approval decision",

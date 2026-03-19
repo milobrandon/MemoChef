@@ -993,18 +993,6 @@ def _execute_job_headless(job: dict, api_key: str) -> bool:
             with open(market_data_path, "wb") as f:
                 f.write(payload["market_data_bytes"])
 
-        supplemental_path = None
-        supplemental_type = payload.get("supplemental_type")
-        if supplemental_type == "url":
-            supplemental_path = payload.get("supplemental_name")
-        elif payload.get("supplemental_path") and os.path.isfile(payload["supplemental_path"]):
-            supplemental_path = payload["supplemental_path"]
-        elif payload.get("supplemental_bytes"):
-            ext = os.path.splitext(payload["supplemental_name"])[1] if payload.get("supplemental_name") else ".pdf"
-            supplemental_path = str(run_dir / f"input_supplemental{ext}")
-            with open(supplemental_path, "wb") as f:
-                f.write(payload["supplemental_bytes"])
-
         comp_url_objects = [CompUrl(**cu) for cu in payload.get("comp_urls", [])]
 
         config_profile_name = payload.get("config_profile_name", "")
@@ -1028,9 +1016,6 @@ def _execute_job_headless(job: dict, api_key: str) -> bool:
             proforma_path=proforma_path,
             schedule_path=schedule_path,
             market_data_path=market_data_path,
-            supplemental_path=supplemental_path,
-            supplemental_type=supplemental_type,
-            supplemental_brief=payload.get("supplemental_brief"),
             comp_urls=comp_url_objects,
             source_directives=source_directives,
             output_dir=str(run_dir),

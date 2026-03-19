@@ -21,36 +21,6 @@ class CompUrl(BaseModel):
     guidance: str = ""
 
 
-class UnitMixEntry(BaseModel):
-    unit_type: str
-    beds: int | None = None
-    baths: int | None = None
-    sf: int | None = None
-    rent: float | None = None
-    rent_per_sf: float | None = None
-
-
-class CompProperty(BaseModel):
-    name: str
-    address: str | None = None
-    distance_mi: float | None = None
-    unit_mix: list[UnitMixEntry] = Field(default_factory=list)
-    total_units: int | None = None
-    occupancy_pct: float | None = None
-    year_built: int | None = None
-    concessions: str | None = None
-    source: str  # "url", "realpage", "csv", "manual"
-    source_detail: str = ""
-
-
-class CompSlideRequest(BaseModel):
-    subject_property: CompProperty
-    comps: list[CompProperty]
-    sort_by: str = "distance"
-    max_comps: int = 6
-    include_narrative: bool = True
-
-
 class StageUpdate(BaseModel):
     key: str
     label: str
@@ -69,15 +39,7 @@ class RunRequest(BaseModel):
     property_rename_to: str | None = None
     schedule_path: str | None = None
     market_data_path: str | None = None
-    supplemental_path: str | None = None
-    supplemental_type: str | None = None  # "pdf", "url", "excel", "csv"
-    supplemental_brief: str | None = None
     comp_urls: list[CompUrl] = Field(default_factory=list)
-    comp_csv_path: str | None = None
-    comp_manual_entries: list[dict] | None = None
-    auto_generate_comp_slide: bool = False
-    comp_max_comps: int = 6
-    comp_sort_by: str = "distance"
     source_directives: list[SourceDirective] = Field(default_factory=list)
     dry_run: bool = False
     skip_validation: bool = False
@@ -141,34 +103,3 @@ class RunResult(BaseModel):
     log_lines: list[str] = Field(default_factory=list)
 
 
-class SlideContent(BaseModel):
-    """Content specification for a single slide to generate."""
-    title: str
-    section: str  # target memo section name
-    insert_after_slide: int  # 1-based slide number
-    content_type: str  # "table_and_narrative", "chart", "table", "narrative_only"
-    source_refs: list[str] = Field(default_factory=list)  # e.g. ["supplemental:demographics.pdf"]
-    visual_type: str | None = None  # "bar_chart", "line_chart", "pie_chart", "table"
-    visual_data: dict = Field(default_factory=dict)  # categories, series, title
-    narrative: str = ""
-    rationale: str = ""
-
-
-class SlidePlan(BaseModel):
-    """Claude-generated plan for slides to create."""
-    slides_to_generate: list[SlideContent] = Field(default_factory=list)
-
-
-class DeckProfile(BaseModel):
-    """Profile of an existing memo deck's structure and style."""
-    sections: list[dict] = Field(default_factory=list)  # from detect_memo_sections
-    total_slides: int = 0
-    has_charts: bool = False
-    has_tables: bool = False
-    slide_layouts_used: list[str] = Field(default_factory=list)
-    visual_types_present: list[str] = Field(default_factory=list)  # "chart", "table", "image"
-    # Dominant formatting extracted from existing slides
-    title_font_name: str | None = None
-    title_font_size_pt: float | None = None
-    body_font_name: str | None = None
-    body_font_size_pt: float | None = None
