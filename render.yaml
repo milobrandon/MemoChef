@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: memochef
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: bash start.sh
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.3"
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: CREDITS_DATABASE_URL
+        sync: false
+      - key: USER_BRANDON_HASH
+        sync: false
