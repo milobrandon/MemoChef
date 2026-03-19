@@ -224,7 +224,7 @@ def build_and_insert_slides(
 
     prs = Presentation(memo_path)
     sections = deck_profile.sections
-    inserted = 0
+    inserted_positions: list[int] = []
 
     # Sort by insert position so earlier inserts don't shift later positions
     sorted_slides = sorted(
@@ -237,9 +237,11 @@ def build_and_insert_slides(
             new_slide = _build_single_slide(prs, slide_spec, sections, deck_profile)
             if new_slide is not None:
                 # Adjust for previously inserted slides
-                target_idx = slide_spec.insert_after_slide - 1 + inserted
+                base_idx = slide_spec.insert_after_slide - 1
+                offset = sum(1 for p in inserted_positions if p <= base_idx)
+                target_idx = base_idx + offset
                 insert_slide_at_position(prs, new_slide, target_idx)
-                inserted += 1
+                inserted_positions.append(target_idx)
                 log.info(
                     "Inserted slide '%s' after position %d",
                     slide_spec.title,
@@ -248,11 +250,11 @@ def build_and_insert_slides(
         except Exception as e:
             log.error("Failed to build slide '%s': %s", slide_spec.title, e)
 
-    if inserted > 0:
+    if inserted_positions:
         prs.save(memo_path)
-        log.info("Saved memo with %d new slides", inserted)
+        log.info("Saved memo with %d new slides", len(inserted_positions))
 
-    return inserted
+    return len(inserted_positions)
 
 
 def _build_single_slide(

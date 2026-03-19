@@ -406,7 +406,7 @@ def _mapping_with_batch_api(
     results = submit_and_poll_batch(client, requests, poll_interval=15)
 
     # Merge results in order
-    mappings: dict = {"table_updates": [], "text_updates": [], "row_inserts": [], "narrative_updates": []}
+    mappings: dict = {"table_updates": [], "text_updates": [], "row_inserts": [], "narrative_updates": [], "table_structure_updates": []}
     for i in range(len(memo_chunks)):
         cid = f"mapping-chunk-{i}"
         batch_result = results.get(cid, {"table_updates": [], "text_updates": [], "row_inserts": []})
@@ -549,7 +549,7 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                 override = yaml.safe_load(f) or {}
             cfg = _deep_merge(cfg, override)
         _raw_client = anthropic.Anthropic(
-            api_key=request.api_key,
+            api_key=request.api_key.get_secret_value(),
             max_retries=5,
             timeout=900.0,
         )
@@ -686,8 +686,18 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                     stage="validation",
                 )
 
-                # Correction retry — DISABLED (duplicative with validation
-                # corrections and adds API cost without clear benefit)
+                if cfg.get("features", {}).get("correction_retry_enabled", False):
+                    validated = _correction_retry(
+                        client=client,
+                        validated=validated,
+                        proforma_data=proforma_data,
+                        memo_content=memo_content,
+                        cfg=cfg,
+                        property_name=effective_property_name,
+                        source_directives=directives_dicts,
+                        checkpoint=checkpoint,
+                        stage="correction_retry",
+                    )
 
             unvalidated_pages = validated.get("_unvalidated_pages", [])
             if unvalidated_pages:
@@ -920,11 +930,13 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                     int(layout_summary.get("table_font_size_normalized", 0)),
                 )
 
-            # Auto-split — DISABLED (creates broken slides with orphaned
-            # content and broken chart relationships. Needs production hardening.)
             overflow_count = layout_summary.get("overflow_slides_detected", 0)
-            if overflow_count > 0:
-                log.info("Content density: %d slides exceed threshold (split disabled)", overflow_count)
+            if overflow_count > 0 and cfg.get("features", {}).get("auto_split_enabled", False):
+                from memo_chef.slide_generator import split_overflowed_slides
+                split_count = split_overflowed_slides(out_path, overflow_count)
+                checkpoint.set_count("slides_auto_split", split_count)
+            elif overflow_count > 0:
+                log.info("Content density: %d slides exceed threshold (auto_split_enabled=false)", overflow_count)
 
         # --- Final QA sign-off (single pass, report only) ---
         if not request.dry_run and not request.skip_validation:
