@@ -513,7 +513,7 @@ def check_password() -> bool:
         username = cols[0].text_input("Username")
         password = cols[1].text_input("Password", type="password")
         cols[2].markdown("<div style='height: 1.8rem'></div>", unsafe_allow_html=True)
-        submitted = cols[2].form_submit_button("Sign in", type="primary", use_container_width=True)
+        submitted = cols[2].form_submit_button("Sign in", type="primary", width="stretch")
 
     if submitted:
         user_cfg = users.get(username)
@@ -565,7 +565,7 @@ with st.sidebar:
     st.divider()
     st.caption("Platform")
     st.write("Reviewable automation, typed configuration, queueing, and traceable outputs.")
-    if st.button("Sign out", use_container_width=True):
+    if st.button("Sign out", width="stretch"):
         for key in list(st.session_state.keys()):
             del st.session_state[key]
         st.rerun()
@@ -785,7 +785,7 @@ def render_new_run_tab() -> None:
         height=80,
     )
     profile_cols = st.columns([1, 3])
-    if profile_cols[0].button("Save profile", use_container_width=True):
+    if profile_cols[0].button("Save profile", width="stretch"):
         if not save_profile_name.strip():
             st.error("Enter a profile name before saving.")
         else:
@@ -840,7 +840,7 @@ def render_new_run_tab() -> None:
         f"Generate draft ({remaining} credits left)" if remaining > 0 else "No credits remaining",
         type="primary",
         disabled=action_disabled,
-        use_container_width=True,
+        width="stretch",
     ):
         job = _queue_item_from_inputs(
             memo_file=memo_file,
@@ -867,7 +867,7 @@ def render_new_run_tab() -> None:
     if action_cols[1].button(
         "Add to queue",
         disabled=action_disabled,
-        use_container_width=True,
+        width="stretch",
     ):
         job = _queue_item_from_inputs(
             memo_file=memo_file,
@@ -950,7 +950,7 @@ def render_new_run_tab() -> None:
                     _full_html.encode("utf-8"),
                     file_name="before_vs_after_report.html",
                     mime="text/html",
-                    use_container_width=True,
+                    width="stretch",
                 )
 
         download_cols = st.columns(3)
@@ -959,21 +959,21 @@ def render_new_run_tab() -> None:
             st.session_state["memo_bytes"],
             file_name=st.session_state["filename"],
             mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            use_container_width=True,
+            width="stretch",
         )
         download_cols[1].download_button(
             "Download change log",
             st.session_state["log_bytes"],
             file_name="CHANGE_LOG.md",
             mime="text/markdown",
-            use_container_width=True,
+            width="stretch",
         )
         download_cols[2].download_button(
             "Download run manifest",
             st.session_state["manifest_bytes"],
             file_name="run_manifest.json",
             mime="application/json",
-            use_container_width=True,
+            width="stretch",
         )
 
         warnings = st.session_state.get("warnings", [])
@@ -998,7 +998,7 @@ def render_history_tab() -> None:
     if not rows:
         st.info("No completed or recorded runs yet.")
         return
-    st.dataframe(rows, use_container_width=True, hide_index=True)
+    st.dataframe(rows, width="stretch", hide_index=True)
 
     st.divider()
     st.markdown("#### Approval workflow")
@@ -1053,7 +1053,7 @@ def render_history_tab() -> None:
                     open(memo_path, "rb").read(),
                     file_name=os.path.basename(memo_path),
                     mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                    use_container_width=True,
+                    width="stretch",
                 )
             if log_path and os.path.exists(log_path):
                 action_cols[1].download_button(
@@ -1061,7 +1061,7 @@ def render_history_tab() -> None:
                     open(log_path, "rb").read(),
                     file_name=os.path.basename(log_path),
                     mime="text/markdown",
-                    use_container_width=True,
+                    width="stretch",
                 )
             if manifest_path and os.path.exists(manifest_path):
                 action_cols[2].download_button(
@@ -1069,9 +1069,9 @@ def render_history_tab() -> None:
                     open(manifest_path, "rb").read(),
                     file_name=os.path.basename(manifest_path),
                     mime="application/json",
-                    use_container_width=True,
+                    width="stretch",
                 )
-            if action_cols[3].button("Requeue from history", use_container_width=True):
+            if action_cols[3].button("Requeue from history", width="stretch"):
                 input_memo_path = artifact_paths.get("input_memo")
                 input_proforma_path = artifact_paths.get("input_proforma")
                 if input_memo_path and input_proforma_path and os.path.exists(input_memo_path) and os.path.exists(input_proforma_path):
@@ -1120,7 +1120,7 @@ def render_operations_tab() -> None:
                 }
                 for item in queue
             ]
-            st.dataframe(queue_rows, use_container_width=True, hide_index=True)
+            st.dataframe(queue_rows, width="stretch", hide_index=True)
             n_queued = sum(1 for item in queue if item["status"] == "queued")
             n_running = sum(1 for item in queue if item["status"] == "running")
             if n_running:
@@ -1128,7 +1128,7 @@ def render_operations_tab() -> None:
             elif n_queued:
                 st.caption(f"{n_queued} queued job(s) will auto-start within ~10 seconds.")
             queue_cols = st.columns(4)
-            if queue_cols[0].button("Refresh status", type="primary", use_container_width=True):
+            if queue_cols[0].button("Refresh status", type="primary", width="stretch"):
                 st.rerun()
             selected_job_id = queue_cols[1].selectbox(
                 "Job",
@@ -1136,11 +1136,11 @@ def render_operations_tab() -> None:
                 key="ops_job_select",
                 label_visibility="collapsed",
             )
-            if queue_cols[2].button("Delete selected job", use_container_width=True):
+            if queue_cols[2].button("Delete selected job", width="stretch"):
                 delete_job(selected_job_id)
                 st.info(f"Deleted job `{selected_job_id}`.")
                 st.rerun()
-            if queue_cols[3].button("Retry failed job", use_container_width=True):
+            if queue_cols[3].button("Retry failed job", width="stretch"):
                 failed_job = get_job(selected_job_id)
                 if failed_job and failed_job["status"] == "failed":
                     update_job_status(selected_job_id, "queued", error_message=None)
@@ -1152,12 +1152,12 @@ def render_operations_tab() -> None:
 
     with ops_tabs[1]:
         health_rows = get_platform_health()
-        st.dataframe(health_rows, use_container_width=True, hide_index=True)
+        st.dataframe(health_rows, width="stretch", hide_index=True)
 
     with ops_tabs[2]:
         profiles = get_profiles(None if role == "admin" else username)
         if profiles:
-            st.dataframe(profiles, use_container_width=True, hide_index=True)
+            st.dataframe(profiles, width="stretch", hide_index=True)
         else:
             st.info("No saved profiles yet.")
 
@@ -1182,7 +1182,7 @@ def render_admin_tab() -> None:
                 "Remaining": remaining_count,
             }
         )
-    st.dataframe(rows, use_container_width=True, hide_index=True)
+    st.dataframe(rows, width="stretch", hide_index=True)
 
     admin_tabs = st.tabs(["Invite user", "Add user", "Edit user", "Delete user", "Reset credits", "Invitations", "Recent activity"])
 
@@ -1298,7 +1298,7 @@ def render_admin_tab() -> None:
                     "Invited by": inv["invited_by"],
                     "Sent": inv["created_at"].strftime("%Y-%m-%d %H:%M") if inv["created_at"] else "",
                 })
-            st.dataframe(inv_rows, use_container_width=True, hide_index=True)
+            st.dataframe(inv_rows, width="stretch", hide_index=True)
 
     with admin_tabs[6]:
         try:
@@ -1306,7 +1306,7 @@ def render_admin_tab() -> None:
         except Exception as err:
             st.warning(f"Recent activity is unavailable: {err}")
         else:
-            st.dataframe(runs, use_container_width=True, hide_index=True)
+            st.dataframe(runs, width="stretch", hide_index=True)
 
 
 def render_how_to_tab() -> None:
