@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 
 class SourceDirective(BaseModel):
@@ -62,7 +62,7 @@ class RunRequest(BaseModel):
     memo_path: str
     proforma_path: str
     output_dir: str
-    api_key: str
+    api_key: SecretStr
     config_path: str
     run_id: str
     property_name: str | None = None
