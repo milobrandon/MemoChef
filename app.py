@@ -33,6 +33,7 @@ from app_services import (
     get_recent_runs,
     get_run_artifact_paths,
     get_run_storage_dir,
+    cleanup_old_artifacts,
     get_run_details,
     get_user_credits,
     get_users,
@@ -306,6 +307,7 @@ def _execute_job(
     queue_total: int | None = None,
 ) -> bool:
     _clear_run_state()
+    cleanup_old_artifacts(max_age_seconds=3600)
     api_key = _get_api_key()
     if not api_key:
         st.error("`ANTHROPIC_API_KEY` is not configured in Streamlit secrets.")

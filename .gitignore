@@ -12,6 +12,7 @@ htmlcov/
 
 # Output artifacts
 output/
+run_artifacts/
 *.bak
 
 # Uploaded data files
