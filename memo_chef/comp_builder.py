@@ -225,10 +225,5 @@ def _build_comp_slide_from_scratch(
 
     for s in memo_sections:
         if "comp" in s["name"].lower() or "competitive" in s["name"].lower():
-            # Remove the sldId entry that add_slide appended, so
-            # insert_slide_at_position won't create a duplicate.
-            sld_id_list = prs.presentation.sldIdLst
-            sld_id_entry = list(sld_id_list)[-1]
-            sld_id_list.remove(sld_id_entry)
             insert_slide_at_position(prs, slide, s["end_page"] - 1)
             break

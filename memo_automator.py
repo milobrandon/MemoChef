@@ -237,14 +237,6 @@ class ClaudeConfig(BaseModel):
         return self
 
 
-class FeatureFlags(BaseModel):
-    """Runtime feature toggles. All default to False (current behavior)."""
-    model_config = ConfigDict(extra="forbid")
-    auto_split_enabled: bool = False
-    footer_normalization_enabled: bool = False
-    correction_retry_enabled: bool = False
-
-
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     proforma: ProformaConfig = Field(default_factory=ProformaConfig)
@@ -253,7 +245,6 @@ class AppConfig(BaseModel):
     branding: BrandingConfig = Field(default_factory=BrandingConfig)
     layout: LayoutConfig = Field(default_factory=LayoutConfig)
     claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
-    features: FeatureFlags = Field(default_factory=FeatureFlags)
 
 
 def _format_validation_error(e: dict) -> str:
@@ -815,7 +806,7 @@ def run_final_review(
         user_text = f"## Updated Memo Content (final state)\n{memo_content}"
         if attempt > 1:
             user_text += (
-                f"\n\n## NOTE: This is review round {attempt}. Previous critical fixes "
+                "\n\n## NOTE: This is review round {attempt}. Previous critical fixes "
                 "have been applied. Re-evaluate the memo from scratch."
             )
 
@@ -3510,8 +3501,7 @@ def normalize_layout(memo_path: str, cfg: dict) -> dict:
             except Exception:
                 pass  # some shapes don't support auto_size
 
-    if cfg.get("features", {}).get("footer_normalization_enabled", False):
-        log.info("Footer normalization enabled (not yet implemented)")
+    # 1g. Footer normalization — DISABLED (was stomping on slide titles)
     summary["footer_fixes"] = 0
 
     # ------------------------------------------------------------------

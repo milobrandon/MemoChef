@@ -28,8 +28,8 @@ python -m playwright install chromium
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MEMO_CHEF_URL` | `http://localhost:8501` | Streamlit app URL |
-| `MEMO_CHEF_USER` | *(required)* | Login username |
-| `MEMO_CHEF_PASS` | *(required)* | Login password |
+| `MEMO_CHEF_USER` | `brandon` | Login username |
+| `MEMO_CHEF_PASS` | `MemoChef2026` | Login password |
 | `HEADED` | (unset) | Set to `1` to watch the browser |
 
 #### What's Tested

@@ -24,18 +24,8 @@ pw = pytest.importorskip("playwright.sync_api")
 
 
 APP_URL = os.environ.get("MEMO_CHEF_URL", "http://localhost:8501")
-USERNAME = os.environ.get("MEMO_CHEF_USER")
-if not USERNAME:
-    raise RuntimeError(
-        "MEMO_CHEF_USER environment variable is required. "
-        "Set it before running Playwright tests."
-    )
-PASSWORD = os.environ.get("MEMO_CHEF_PASS")
-if not PASSWORD:
-    raise RuntimeError(
-        "MEMO_CHEF_PASS environment variable is required. "
-        "Set it before running Playwright tests."
-    )
+USERNAME = os.environ.get("MEMO_CHEF_USER", "brandon")
+PASSWORD = os.environ.get("MEMO_CHEF_PASS", "MemoChef2026")
 WAIT_HYDRATE = 4  # seconds for Streamlit to hydrate
 
 SANDBOX_DIR = Path(__file__).parent.parent / "a. Sandbox"
