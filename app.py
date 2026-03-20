@@ -613,7 +613,8 @@ def render_new_run_tab() -> None:
     upload_cols = st.columns(4)
     memo_file = upload_cols[0].file_uploader("Memo deck", type=["pptx"], key="memo_upload")
     proforma_file = upload_cols[1].file_uploader("Proforma", type=["xlsx", "xlsm"], key="proforma_upload")
-    schedule_file = upload_cols[2].file_uploader("Schedule (Beta)", type=["mpp"], key="schedule_upload")
+    upload_cols[2].file_uploader("Schedule (coming soon)", type=["mpp"], key="schedule_upload", disabled=True)
+    schedule_file = None
     market_data_file = upload_cols[3].file_uploader("Market data (Beta)", type=["xlsx", "xlsm"], key="market_upload")
 
     # Per-source directives — tell Claude how to use each source
@@ -630,10 +631,11 @@ def render_new_run_tab() -> None:
             height=68,
         )
         schedule_directive = directive_cols[1].text_area(
-            "Schedule directions",
+            "Schedule directions (coming soon)",
             key="schedule_directive",
             placeholder="e.g., Focus on construction milestones only",
             height=68,
+            disabled=True,
         )
         directive_cols2 = st.columns(2)
         market_data_directive = directive_cols2[0].text_area(

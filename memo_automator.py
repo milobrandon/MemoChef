@@ -521,57 +521,95 @@ def extract_market_data(market_data_path: str, cfg: dict) -> str:
     return market_text
 
 # ============================================================================
-# 4b. SCHEDULE DATA EXTRACTION  (mpxj via jpype)
+# 4b. SCHEDULE DATA EXTRACTION  (mpxj via subprocess — no JVM in-process)
 # ============================================================================
-def _ensure_jvm():
-    """Start the JVM once for mpxj access. No-op if already running."""
-    import jpype
-    if jpype.isJVMStarted():
-        return
+def _find_mpxj_jar() -> str | None:
+    """Locate the mpxj JAR bundled with the pip package."""
+    try:
+        import mpxj as _mpxj_mod
+        jar_dir = os.path.join(os.path.dirname(_mpxj_mod.__file__), "lib")
+        if os.path.isdir(jar_dir):
+            for f in os.listdir(jar_dir):
+                if f.startswith("mpxj") and f.endswith(".jar"):
+                    return os.path.join(jar_dir, f)
+    except ImportError:
+        pass
+    return None
 
-    # Auto-discover JAVA_HOME if not set
-    if not os.environ.get("JAVA_HOME"):
-        search_dirs = [
-            os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "Microsoft"),
-            os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "Java"),
-            os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "Eclipse Adoptium"),
-        ]
-        for search_dir in search_dirs:
-            if os.path.isdir(search_dir):
-                for entry in sorted(os.listdir(search_dir), reverse=True):
-                    if "jdk" in entry.lower():
-                        candidate = os.path.join(search_dir, entry)
-                        if os.path.isdir(candidate):
-                            os.environ["JAVA_HOME"] = candidate
-                            log.info("Auto-discovered JAVA_HOME: %s", candidate)
-                            break
-            if os.environ.get("JAVA_HOME"):
-                break
 
-    # Import mpxj for its classpath side effects before starting the JVM.
-    import mpxj  # noqa: F401
+def _export_mpp_to_json(schedule_path: str) -> list[dict]:
+    """Convert an .mpp file to a list of task dicts using mpxj's CLI via subprocess.
 
-    jpype.startJVM()
-    log.info("JVM started with classpath from mpxj")
+    Falls back to jpype if the subprocess approach is unavailable.
+    """
+    import json as _json
+    import subprocess
+    import tempfile
+
+    jar = _find_mpxj_jar()
+    if jar:
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            subprocess.run(
+                ["java", "-cp", jar,
+                 "net.sf.mpxj.sample.MpxjConvert",
+                 schedule_path, tmp_path],
+                check=True, capture_output=True, timeout=60,
+            )
+            with open(tmp_path, encoding="utf-8") as fh:
+                return _json.load(fh)
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
+            log.warning("mpxj subprocess conversion failed: %s", exc)
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    # Fallback: try jpype-based approach (works locally with Java + jpype1)
+    try:
+        import jpype
+        if not jpype.isJVMStarted():
+            import mpxj as _mpxj_mod  # noqa: F401
+            jpype.startJVM()
+        from java.io import File as JavaFile
+        reader = jpype.JClass("org.mpxj.reader.UniversalProjectReader")()
+        project = reader.read(JavaFile(schedule_path))
+        tasks = []
+        for task in project.getTasks():
+            name = str(task.getName()) if task.getName() else ""
+            outline_level = task.getOutlineLevel()
+            level = int(str(outline_level)) if outline_level is not None else 0
+            start = task.getStart()
+            finish = task.getFinish()
+            duration = task.getDuration()
+            is_milestone = bool(task.getMilestone()) if task.getMilestone() is not None else False
+            tasks.append({
+                "name": name,
+                "outline_level": level,
+                "start": str(start).split("T")[0] if start else None,
+                "finish": str(finish).split("T")[0] if finish else None,
+                "duration": str(duration) if duration else "0d",
+                "milestone": is_milestone,
+            })
+        return tasks
+    except ImportError:
+        raise RuntimeError(
+            "Schedule parsing requires Java. Install Java (JDK 11+) "
+            "and ensure 'java' is on your PATH, or install jpype1."
+        )
 
 
 def extract_schedule_data(schedule_path: str, cfg: dict) -> str:
     """
     Read a Microsoft Project (.mpp) schedule and return a hierarchical text
     representation of tasks with dates and durations.
-
-    Uses mpxj (via jpype) to parse the .mpp file.
     """
-    _ensure_jvm()
-
-    import jpype
-    from java.io import File as JavaFile
-
     max_tasks = cfg.get("schedule", {}).get("max_tasks", 500)
 
     log.info("Opening schedule: %s", schedule_path)
-    reader = jpype.JClass("org.mpxj.reader.UniversalProjectReader")()
-    project = reader.read(JavaFile(schedule_path))
+    tasks = _export_mpp_to_json(schedule_path)
 
     lines = []
     lines.append(f"\n{'='*70}")
@@ -579,37 +617,20 @@ def extract_schedule_data(schedule_path: str, cfg: dict) -> str:
     lines.append(f"{'='*70}")
 
     task_count = 0
-    for task in project.getTasks():
+    for t in tasks:
         if task_count >= max_tasks:
             lines.append(f"... (truncated at {max_tasks} tasks)")
             break
 
-        name = str(task.getName()) if task.getName() else ""
-        # Skip L0 unnamed separator tasks (grouping containers)
-        outline_level = task.getOutlineLevel()
-        if outline_level is not None:
-            level = int(str(outline_level))
-        else:
-            level = 0
+        name = t.get("name", "")
+        level = t.get("outline_level", 0)
         if level == 0 and not name.strip():
             continue
 
-        # Get dates and duration
-        start = task.getStart()
-        finish = task.getFinish()
-        duration = task.getDuration()
-
-        start_str = str(start).split("T")[0] if start else "N/A"
-        finish_str = str(finish).split("T")[0] if finish else "N/A"
-
-        if duration:
-            dur_str = str(duration)
-        else:
-            dur_str = "0d"
-
-        # Milestone detection
-        is_milestone = task.getMilestone() if task.getMilestone() is not None else False
-        milestone_tag = "  [MILESTONE]" if is_milestone else ""
+        start_str = t.get("start") or "N/A"
+        finish_str = t.get("finish") or "N/A"
+        dur_str = t.get("duration") or "0d"
+        milestone_tag = "  [MILESTONE]" if t.get("milestone") else ""
 
         indent = "  " * max(level - 1, 0)
         level_tag = f"[L{level}]"
