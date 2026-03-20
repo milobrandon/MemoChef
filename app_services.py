@@ -212,6 +212,37 @@ def get_run_storage_dir(run_id: str) -> Path:
     return path
 
 
+def cleanup_old_artifacts(max_age_seconds: int = 3600, keep_run_id: str | None = None) -> int:
+    """Remove run artifact directories older than *max_age_seconds*.
+
+    Skips the directory for *keep_run_id* (the current run) and any job
+    staging dirs.  Returns the number of directories removed.
+    """
+    import shutil
+
+    storage = get_storage_root()
+    if not storage.exists():
+        return 0
+    now = time.time()
+    removed = 0
+    for child in storage.iterdir():
+        if not child.is_dir():
+            continue
+        if keep_run_id and child.name == keep_run_id:
+            continue
+        # Skip job staging dirs — they are cleaned up separately
+        if child.name.startswith("job_"):
+            continue
+        try:
+            age = now - child.stat().st_mtime
+            if age > max_age_seconds:
+                shutil.rmtree(child, ignore_errors=True)
+                removed += 1
+        except OSError:
+            pass
+    return removed
+
+
 def ensure_users_seeded() -> None:
     try:
         secrets_users = dict(st.secrets["users"])
@@ -952,6 +983,7 @@ def _execute_job_headless(job: dict, api_key: str) -> bool:
     job_id = job["job_id"]
     payload = job["payload"]
     run_id = uuid.uuid4().hex
+    cleanup_old_artifacts(max_age_seconds=3600)
 
     try:
         # Use a worker-owned DB connection for status updates
