@@ -31,14 +31,14 @@ Return ONLY valid JSON (no markdown fences) matching this schema:
   "rejected": [
     {{
       "idx": <int, the index of the rejected entry>,
-      "type": "table" or "text",
+      "type": "table", "text", "row_insert", "narrative", or "structure",
       "reason": "<why it was rejected>"
     }}
   ],
   "corrections": [
     {{
       "idx": <int, the index of the entry to correct>,
-      "type": "table" or "text",
+      "type": "table", "text", "row_insert", "narrative", or "structure",
       "corrected_entry": {{ ... the full corrected entry ... }},
       "reason": "<what was wrong and how it was fixed>"
     }}

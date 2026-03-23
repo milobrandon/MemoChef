@@ -1591,6 +1591,8 @@ def validate_mappings(
     table_updates = mappings.get("table_updates", [])
     text_updates = mappings.get("text_updates", [])
     row_inserts = mappings.get("row_inserts", [])
+    narrative_updates = mappings.get("narrative_updates", [])
+    table_structure_updates = mappings.get("table_structure_updates", [])
     indexed_mappings = {
         "table_updates": [
             {**entry, "idx": i} for i, entry in enumerate(table_updates)
@@ -1600,6 +1602,12 @@ def validate_mappings(
         ],
         "row_inserts": [
             {**entry, "idx": i} for i, entry in enumerate(row_inserts)
+        ],
+        "narrative_updates": [
+            {**entry, "idx": i} for i, entry in enumerate(narrative_updates)
+        ],
+        "table_structure_updates": [
+            {**entry, "idx": i} for i, entry in enumerate(table_structure_updates)
         ],
     }
 
@@ -1636,11 +1644,21 @@ def validate_mappings(
                     e for e in indexed_mappings["row_inserts"]
                     if e.get("page") in chunk_pages
                 ],
+                "narrative_updates": [
+                    e for e in indexed_mappings["narrative_updates"]
+                    if e.get("page") in chunk_pages
+                ],
+                "table_structure_updates": [
+                    e for e in indexed_mappings["table_structure_updates"]
+                    if e.get("page") in chunk_pages
+                ],
             }
 
             n_entries = (len(chunk_indexed["table_updates"])
                          + len(chunk_indexed["text_updates"])
-                         + len(chunk_indexed["row_inserts"]))
+                         + len(chunk_indexed["row_inserts"])
+                         + len(chunk_indexed["narrative_updates"])
+                         + len(chunk_indexed["table_structure_updates"]))
             if n_entries == 0:
                 log.info("Validation batch %d/%d: no mappings for pages %s - skipping",
                          ci, len(memo_chunks), sorted(chunk_pages))
@@ -1688,10 +1706,20 @@ def validate_mappings(
                             e for e in chunk_indexed["row_inserts"]
                             if e.get("page") in sub_pages
                         ],
+                        "narrative_updates": [
+                            e for e in chunk_indexed["narrative_updates"]
+                            if e.get("page") in sub_pages
+                        ],
+                        "table_structure_updates": [
+                            e for e in chunk_indexed["table_structure_updates"]
+                            if e.get("page") in sub_pages
+                        ],
                     }
                     n_sub = (len(sub_indexed["table_updates"])
                              + len(sub_indexed["text_updates"])
-                             + len(sub_indexed["row_inserts"]))
+                             + len(sub_indexed["row_inserts"])
+                             + len(sub_indexed["narrative_updates"])
+                             + len(sub_indexed["table_structure_updates"]))
                     if n_sub == 0:
                         continue
                     if last_api_call > 0:
@@ -1742,9 +1770,13 @@ def validate_mappings(
     rejected_table_idxs = set()
     rejected_text_idxs = set()
     rejected_row_insert_idxs = set()
+    rejected_narrative_idxs = set()
+    rejected_structure_idxs = set()
     correction_table = {}
     correction_text = {}
     correction_row_insert = {}
+    correction_narrative = {}
+    correction_structure = {}
 
     for rej in result.get("rejected", []):
         idx = rej.get("idx")
@@ -1753,6 +1785,10 @@ def validate_mappings(
                 rejected_text_idxs.add(idx)
             elif rej.get("type") == "row_insert":
                 rejected_row_insert_idxs.add(idx)
+            elif rej.get("type") == "narrative":
+                rejected_narrative_idxs.add(idx)
+            elif rej.get("type") == "structure":
+                rejected_structure_idxs.add(idx)
             else:
                 rejected_table_idxs.add(idx)
 
@@ -1763,6 +1799,10 @@ def validate_mappings(
                 correction_text[idx] = cor["corrected_entry"]
             elif cor.get("type") == "row_insert":
                 correction_row_insert[idx] = cor["corrected_entry"]
+            elif cor.get("type") == "narrative":
+                correction_narrative[idx] = cor["corrected_entry"]
+            elif cor.get("type") == "structure":
+                correction_structure[idx] = cor["corrected_entry"]
             else:
                 correction_table[idx] = cor["corrected_entry"]
 
@@ -1793,12 +1833,31 @@ def validate_mappings(
         else:
             valid_row_inserts.append(entry)
 
+    valid_narrative = []
+    for i, entry in enumerate(narrative_updates):
+        if i in rejected_narrative_idxs:
+            continue
+        if i in correction_narrative:
+            valid_narrative.append(correction_narrative[i])
+        else:
+            valid_narrative.append(entry)
+
+    valid_structure = []
+    for i, entry in enumerate(table_structure_updates):
+        if i in rejected_structure_idxs:
+            continue
+        if i in correction_structure:
+            valid_structure.append(correction_structure[i])
+        else:
+            valid_structure.append(entry)
+
     n_rejected = len(result.get("rejected", []))
     n_corrections = len(result.get("corrections", []))
     n_missed = len(result.get("missed", []))
+    n_passed = (len(valid_table) + len(valid_text) + len(valid_row_inserts)
+                + len(valid_narrative) + len(valid_structure))
     log.info("Validation: %d passed, %d rejected, %d corrected, %d missed",
-             len(valid_table) + len(valid_text) + len(valid_row_inserts),
-             n_rejected, n_corrections, n_missed)
+             n_passed, n_rejected, n_corrections, n_missed)
 
     if n_rejected > 0:
         for rej in result["rejected"]:
@@ -1823,6 +1882,10 @@ def validate_mappings(
             original = text_updates[idx]
         elif entry_type == "row_insert" and idx is not None and idx < len(row_inserts):
             original = row_inserts[idx]
+        elif entry_type == "narrative" and idx is not None and idx < len(narrative_updates):
+            original = narrative_updates[idx]
+        elif entry_type == "structure" and idx is not None and idx < len(table_structure_updates):
+            original = table_structure_updates[idx]
         elif idx is not None and idx < len(table_updates):
             original = table_updates[idx]
         rejected_entries.append({
@@ -1834,6 +1897,8 @@ def validate_mappings(
         "table_updates": valid_table,
         "text_updates": valid_text,
         "row_inserts": valid_row_inserts,
+        "narrative_updates": valid_narrative,
+        "table_structure_updates": valid_structure,
         "rejected": rejected_entries,
         "missed": result.get("missed", []),
     }
