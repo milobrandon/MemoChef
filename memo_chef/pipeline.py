@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable
 
 import anthropic
+import httpx
 import yaml
 
 from memo_automator import (
@@ -551,7 +552,7 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
         _raw_client = anthropic.Anthropic(
             api_key=request.api_key,
             max_retries=5,
-            timeout=900.0,
+            timeout=httpx.Timeout(900.0, read=300.0),
         )
         client = TokenTracker(_raw_client)
 

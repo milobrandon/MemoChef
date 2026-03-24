@@ -25,6 +25,7 @@ Usage
 # IMPORTS
 # ============================================================================
 import argparse
+import concurrent.futures
 import errno
 import json
 import logging
@@ -1134,12 +1135,30 @@ def _parse_json_response(raw: str) -> dict | None:
     return None
 
 
+_STREAM_TIMEOUT = 600  # seconds — max time to wait for a streaming response
+
+
 def _create_message(client: anthropic.Anthropic, **api_kwargs):
     """Call the Claude API using streaming to avoid the SDK timeout for large
     max_tokens values.  Returns a full Message object identical to what
-    ``client.messages.create()`` would return."""
-    with client.messages.stream(**api_kwargs) as stream:
-        return stream.get_final_message()
+    ``client.messages.create()`` would return.
+
+    Wraps the stream in a thread-pool timeout so a stalled connection cannot
+    hang the pipeline indefinitely.
+    """
+
+    def _stream():
+        with client.messages.stream(**api_kwargs) as stream:
+            return stream.get_final_message()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(_stream)
+        try:
+            return future.result(timeout=_STREAM_TIMEOUT)
+        except concurrent.futures.TimeoutError:
+            raise anthropic.APITimeoutError(
+                request=None,  # type: ignore[arg-type]
+            )
 
 
 def build_mapping_batch_requests(
