@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Literal
 
 import anthropic
+import httpx
 import openpyxl
 import yaml
 from dotenv import load_dotenv
@@ -1135,7 +1136,7 @@ def _parse_json_response(raw: str) -> dict | None:
     return None
 
 
-_STREAM_TIMEOUT = 600  # seconds — max time to wait for a streaming response
+_STREAM_TIMEOUT = 300  # seconds — max wall-clock time for a single streaming call
 
 
 def _create_message(client: anthropic.Anthropic, **api_kwargs):
@@ -1143,22 +1144,29 @@ def _create_message(client: anthropic.Anthropic, **api_kwargs):
     max_tokens values.  Returns a full Message object identical to what
     ``client.messages.create()`` would return.
 
-    Wraps the stream in a thread-pool timeout so a stalled connection cannot
-    hang the pipeline indefinitely.
+    Wraps the stream in a thread-pool future with a hard timeout.  On timeout
+    the pool is shut down with ``wait=False`` so the main thread is never
+    blocked by ``ThreadPoolExecutor.__exit__`` (which calls
+    ``shutdown(wait=True)`` and would defeat the timeout).
     """
 
     def _stream():
         with client.messages.stream(**api_kwargs) as stream:
             return stream.get_final_message()
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(_stream)
-        try:
-            return future.result(timeout=_STREAM_TIMEOUT)
-        except concurrent.futures.TimeoutError:
-            raise anthropic.APITimeoutError(
-                request=None,  # type: ignore[arg-type]
-            )
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(_stream)
+    try:
+        result = future.result(timeout=_STREAM_TIMEOUT)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise anthropic.APITimeoutError(
+            request=None,  # type: ignore[arg-type]
+        )
+    else:
+        pool.shutdown(wait=False)
+        return result
 
 
 def build_mapping_batch_requests(
@@ -3883,8 +3891,8 @@ def main():
                  cfg["claude"]["model"], cfg["claude"]["validation_model"])
         client = anthropic.Anthropic(
             api_key=api_key,
-            max_retries=5,
-            timeout=900.0,  # 15 min; needed for large batches and Opus thinking
+            max_retries=1,
+            timeout=httpx.Timeout(300.0, read=120.0),
         )
         run_meta = {"steps": {}, "mapping_api_calls": 0, "validation_api_calls": 0}
         run_started = time.time()

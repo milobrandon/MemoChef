@@ -136,8 +136,38 @@ def _cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
     return round((input_tokens * rate_in + output_tokens * rate_out) / 1_000_000, 6)
 
 
+class _TrackedStream:
+    """Wraps an Anthropic MessageStream to track tokens on completion."""
+
+    def __init__(self, raw_stream, tracker: "TokenTracker", kwargs: dict):
+        self._raw = raw_stream
+        self._tracker = tracker
+        self._kwargs = kwargs
+
+    def __enter__(self):
+        self._raw.__enter__()
+        return self
+
+    def __exit__(self, *args):
+        return self._raw.__exit__(*args)
+
+    def get_final_message(self):
+        msg = self._raw.get_final_message()
+        if hasattr(msg, "usage"):
+            self._tracker.input_tokens += msg.usage.input_tokens
+            self._tracker.output_tokens += msg.usage.output_tokens
+            model = self._kwargs.get("model", "")
+            self._tracker.estimated_cost_usd += _cost_usd(
+                model, msg.usage.input_tokens, msg.usage.output_tokens,
+            )
+        return msg
+
+    def __getattr__(self, name: str):
+        return getattr(self._raw, name)
+
+
 class _MessagesProxy:
-    """Intercepts messages.create to accumulate token usage.
+    """Intercepts messages.create and messages.stream to accumulate token usage.
 
     Forwards all other attribute access to the real messages object so
     that code using client.messages.batches (etc.) still works.
@@ -152,6 +182,15 @@ class _MessagesProxy:
 
     def create(self, *args, **kwargs):
         response = self._real_messages.create(*args, **kwargs)
+        self._track(response, kwargs)
+        return response
+
+    def stream(self, *args, **kwargs):
+        """Return a wrapper that tracks tokens when the stream completes."""
+        raw_stream = self._real_messages.stream(*args, **kwargs)
+        return _TrackedStream(raw_stream, self._tracker, kwargs)
+
+    def _track(self, response, kwargs):
         if hasattr(response, "usage"):
             self._tracker.input_tokens += response.usage.input_tokens
             self._tracker.output_tokens += response.usage.output_tokens
@@ -159,7 +198,6 @@ class _MessagesProxy:
             self._tracker.estimated_cost_usd += _cost_usd(
                 model, response.usage.input_tokens, response.usage.output_tokens
             )
-        return response
 
 
 class TokenTracker:
@@ -205,6 +243,8 @@ def _retry(
     jitter: float = 0.25,
     checkpoint: CheckpointManager | None = None,
     stage: str = "",
+    callback: StageCallback = None,
+    retry_percent: int | None = None,
     **kwargs,
 ):
     attempt = 0
@@ -218,6 +258,9 @@ def _retry(
             wait_seconds = base_delay * (2 ** (attempt - 1)) + random.uniform(0, jitter)
             if checkpoint is not None:
                 checkpoint.add_warning(stage, f"Retrying after API error: {err}")
+            if callback is not None and retry_percent is not None:
+                _emit(callback, stage, f"Retry {attempt}/{retries}",
+                      retry_percent, f"API error, retrying in {wait_seconds:.0f}s")
             time.sleep(wait_seconds)
 
 
@@ -246,6 +289,8 @@ def _mapping_with_batching(
             source_directives=source_directives,
             checkpoint=checkpoint,
             stage="mapping",
+            callback=callback,
+            retry_percent=52,
         )
         mappings.pop("_truncated", None)
         return mappings
@@ -271,6 +316,8 @@ def _mapping_with_batching(
             source_directives=source_directives,
             checkpoint=checkpoint,
             stage="mapping",
+            callback=callback,
+            retry_percent=percent,
         )
         if batch.pop("_truncated", False):
             covered_pages = {
@@ -284,10 +331,13 @@ def _mapping_with_batching(
             mappings["narrative_updates"].extend(batch.get("narrative_updates", []))
             mappings["table_structure_updates"].extend(batch.get("table_structure_updates", []))
             sub_chunks = chunk_memo_by_pages(chunk, pages_per_chunk=1)
-            for sub_chunk in sub_chunks:
+            for sub_idx, sub_chunk in enumerate(sub_chunks, start=1):
                 sub_pages = set(int(match) for match in re.findall(r"PAGE (\d+)", sub_chunk))
                 if sub_pages and sub_pages.issubset(covered_pages):
                     continue
+                _emit(callback, "mapping",
+                      f"Generate mappings ({index}/{len(memo_chunks)}, sub {sub_idx}/{len(sub_chunks)})",
+                      percent)
                 wait_seconds = rate_limit_interval - (time.time() - last_api_call)
                 if wait_seconds > 0:
                     time.sleep(wait_seconds)
@@ -302,6 +352,8 @@ def _mapping_with_batching(
                     source_directives=source_directives,
                     checkpoint=checkpoint,
                     stage="mapping",
+                    callback=callback,
+                    retry_percent=percent,
                 )
                 sub_batch.pop("_truncated", None)
                 mappings["table_updates"].extend(sub_batch.get("table_updates", []))
@@ -407,7 +459,7 @@ def _mapping_with_batch_api(
     results = submit_and_poll_batch(client, requests, poll_interval=15)
 
     # Merge results in order
-    mappings: dict = {"table_updates": [], "text_updates": [], "row_inserts": [], "narrative_updates": []}
+    mappings: dict = {"table_updates": [], "text_updates": [], "row_inserts": [], "narrative_updates": [], "table_structure_updates": []}
     for i in range(len(memo_chunks)):
         cid = f"mapping-chunk-{i}"
         batch_result = results.get(cid, {"table_updates": [], "text_updates": [], "row_inserts": []})
@@ -551,8 +603,8 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
             cfg = _deep_merge(cfg, override)
         _raw_client = anthropic.Anthropic(
             api_key=request.api_key,
-            max_retries=5,
-            timeout=httpx.Timeout(900.0, read=300.0),
+            max_retries=1,
+            timeout=httpx.Timeout(300.0, read=120.0),
         )
         client = TokenTracker(_raw_client)
 
@@ -685,6 +737,8 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                     source_directives=directives_dicts,
                     checkpoint=checkpoint,
                     stage="validation",
+                    callback=callback,
+                    retry_percent=72,
                 )
 
                 # Correction retry — DISABLED (duplicative with validation
