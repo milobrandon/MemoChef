@@ -1288,11 +1288,77 @@ def render_admin_tab() -> None:
 
     with admin_tabs[6]:
         try:
-            runs = get_recent_runs(None, limit=30)
+            runs = get_recent_runs(None, limit=200)
         except Exception as err:
             st.warning(f"Recent activity is unavailable: {err}")
+            runs = []
+        if not runs:
+            st.info("No recorded runs yet.")
         else:
             st.dataframe(runs, width="stretch", hide_index=True)
+            st.divider()
+            st.markdown("#### Download run logs")
+            run_labels = [
+                f"{r['Run ID'][:8]}… — {r['User']} — {r['Property'] or r['Memo']} ({r['Created']})"
+                for r in runs
+            ]
+            selected_idx = st.selectbox(
+                "Select a run",
+                range(len(run_labels)),
+                format_func=lambda i: run_labels[i],
+                key="admin_run_select",
+            )
+            selected_run_id = runs[selected_idx]["Run ID"]
+            dl_cols = st.columns(3)
+
+            # Try file-based artifacts first, fall back to DB
+            artifact_paths = get_run_artifact_paths(selected_run_id)
+            log_path = artifact_paths.get("change_log")
+            manifest_path = artifact_paths.get("run_manifest")
+            details = None
+
+            if log_path and os.path.exists(log_path):
+                dl_cols[0].download_button(
+                    "Download change log",
+                    open(log_path, "rb").read(),
+                    file_name=f"{selected_run_id}_change_log{os.path.splitext(log_path)[1]}",
+                    mime="text/markdown",
+                    key="admin_dl_log",
+                )
+            else:
+                details = get_run_details(selected_run_id)
+                if details and details.get("change_log_html"):
+                    dl_cols[0].download_button(
+                        "Download change log",
+                        details["change_log_html"].encode("utf-8"),
+                        file_name=f"{selected_run_id}_change_log.md",
+                        mime="text/markdown",
+                        key="admin_dl_log",
+                    )
+                else:
+                    dl_cols[0].caption("No change log available")
+
+            if manifest_path and os.path.exists(manifest_path):
+                dl_cols[1].download_button(
+                    "Download manifest",
+                    open(manifest_path, "rb").read(),
+                    file_name=f"{selected_run_id}_manifest.json",
+                    mime="application/json",
+                    key="admin_dl_manifest",
+                )
+            else:
+                if details is None:
+                    details = get_run_details(selected_run_id)
+                if details and details.get("run_manifest_json"):
+                    dl_cols[1].download_button(
+                        "Download manifest",
+                        details["run_manifest_json"].encode("utf-8"),
+                        file_name=f"{selected_run_id}_manifest.json",
+                        mime="application/json",
+                        key="admin_dl_manifest",
+                    )
+                else:
+                    dl_cols[1].caption("No manifest available")
 
 
 def render_how_to_tab() -> None:
