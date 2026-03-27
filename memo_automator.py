@@ -209,6 +209,14 @@ class ScheduleConfig(BaseModel):
     max_tasks: int = Field(default=500, ge=0)
 
 
+class MarketDataConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_rows_per_tab: int = Field(default=250, ge=0)
+    max_cols_per_tab: int = Field(default=20, ge=0)
+    keyword_threshold: int = Field(default=2, ge=0)
+    include_all_tabs: bool = False
+
+
 class BrandingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     theme_path: str = ""
@@ -244,6 +252,7 @@ class AppConfig(BaseModel):
     proforma: ProformaConfig = Field(default_factory=ProformaConfig)
     memo: MemoConfig = Field(default_factory=MemoConfig)
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
+    market_data: MarketDataConfig = Field(default_factory=MarketDataConfig)
     branding: BrandingConfig = Field(default_factory=BrandingConfig)
     layout: LayoutConfig = Field(default_factory=LayoutConfig)
     claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
