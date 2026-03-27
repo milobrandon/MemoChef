@@ -1896,6 +1896,139 @@ def validate_mappings(
 
 
 # ============================================================================
+# 7b. CLAUDE API - MARKET DATA MAPPING & VALIDATION
+# ============================================================================
+MARKET_MAPPING_PROMPT = _load_prompt_template("market_mapping_v1.txt")
+MARKET_VALIDATION_PROMPT = _load_prompt_template("market_validation_v1.txt")
+
+_EMPTY_MARKET_UPDATE_SET = {
+    "market_data_updates": [],
+    "unmatched_memo_metrics": [],
+    "unmatched_workbook_tabs": [],
+    "warnings": [],
+}
+
+
+def get_market_data_mappings(
+    client,
+    market_data: str,
+    memo_content: str,
+    cfg: dict,
+    source_directives: list[dict] | None = None,
+) -> dict:
+    """
+    Send memo content + market workbook data to Claude and receive a structured
+    JSON describing all market data updates (chart, narrative, table).
+
+    Returns an empty update set if market_data is blank (no-op).
+    """
+    if not market_data.strip():
+        return dict(_EMPTY_MARKET_UPDATE_SET)
+
+    model = cfg["claude"]["model"]
+    max_tokens = cfg["claude"]["max_tokens"]
+    temperature = cfg["claude"]["temperature"]
+
+    directives_section = format_source_directives(
+        [d for d in (source_directives or []) if d.get("source_type") == "market_data"],
+        scope="mapping",
+    )
+
+    system_text = MARKET_MAPPING_PROMPT.format(
+        source_directives_section=directives_section,
+        memo_content="(see user message below)",
+        market_data=market_data,
+    )
+    user_text = f"## Memo Content (all slides)\n{memo_content}"
+
+    log.info(
+        "Market mapping: calling Claude (model=%s, prompt=%d chars)",
+        model, len(system_text) + len(user_text),
+    )
+
+    message = _create_message(
+        client,
+        model=model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": user_text}],
+    )
+
+    raw = next((b.text for b in message.content if b.type == "text"), "")
+    log.info("Market mapping response: %d chars, stop_reason=%s", len(raw), message.stop_reason)
+
+    # Strip markdown fences if present
+    raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
+    raw = re.sub(r"\s*```$", "", raw)
+
+    try:
+        result = json.loads(raw)
+        result.setdefault("warnings", [])
+        return result
+    except json.JSONDecodeError as e:
+        log.warning("Market mapping JSON parse failed: %s. Raw: %s", e, raw[:200])
+        return dict(_EMPTY_MARKET_UPDATE_SET)
+
+
+def validate_market_data_mappings(
+    client,
+    update_set: dict,
+    memo_content: str,
+    cfg: dict,
+    source_directives: list[dict] | None = None,
+) -> dict:
+    """
+    QA pass for market data updates. Returns a cleaned update set with
+    uncertain matches dropped and a warnings list added.
+    """
+    if not update_set.get("market_data_updates"):
+        return update_set
+
+    model = cfg["claude"].get("validation_model", cfg["claude"]["model"])
+    max_tokens = cfg["claude"]["max_tokens"]
+    temperature = cfg["claude"]["temperature"]
+
+    directives_section = format_source_directives(
+        [d for d in (source_directives or []) if d.get("source_type") == "market_data"],
+        scope="mapping",
+    )
+
+    system_text = MARKET_VALIDATION_PROMPT.format(
+        source_directives_section=directives_section,
+        memo_content=memo_content,
+        proposed_updates="(see user message below)",
+    )
+    user_text = "## Proposed Market Data Updates\n" + json.dumps(update_set, indent=2)
+
+    log.info(
+        "Market validation: calling Claude (model=%s, prompt=%d chars)",
+        model, len(system_text) + len(user_text),
+    )
+
+    message = _create_message(
+        client,
+        model=model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": user_text}],
+    )
+
+    raw = next((b.text for b in message.content if b.type == "text"), "")
+    raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
+    raw = re.sub(r"\s*```$", "", raw)
+
+    try:
+        result = json.loads(raw)
+        result.setdefault("warnings", [])
+        return result
+    except json.JSONDecodeError as e:
+        log.warning("Market validation JSON parse failed: %s. Returning original.", e)
+        return update_set
+
+
+# ============================================================================
 # 8a. FORMAT VALIDATION (detect style mismatches)
 # ============================================================================
 

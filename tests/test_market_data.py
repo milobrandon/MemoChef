@@ -2,6 +2,7 @@
 
 import os
 import sys
+from unittest.mock import MagicMock
 
 import openpyxl
 import pytest
@@ -16,7 +17,7 @@ from memo_automator import (
 
 from memo_chef.models import (
     MarketChartUpdate, MarketNarrativeUpdate,
-    MarketTableCellUpdate, MarketTableUpdate, MarketDataUpdateSet,
+    MarketTableUpdate, MarketDataUpdateSet,
 )
 
 
@@ -292,3 +293,92 @@ class TestDynamicExtractMarketData:
         result = extract_market_data(path, cfg)
         assert "TAB: Occupancy Trend" in result
         os.remove(path)
+
+
+class TestGetMarketDataMappings:
+    """Tests for get_market_data_mappings() — mocks Anthropic."""
+
+    def _make_client(self, response_text: str):
+        client = MagicMock()
+        msg = MagicMock()
+        msg.content = [MagicMock(type="text", text=response_text)]
+        msg.stop_reason = "end_turn"
+        msg.usage = MagicMock(
+            input_tokens=100, output_tokens=50,
+            cache_read_input_tokens=0, cache_creation_input_tokens=0,
+        )
+        client.messages.stream.return_value.__enter__ = lambda s, *a: s
+        client.messages.stream.return_value.__exit__ = MagicMock(return_value=False)
+        client.messages.stream.return_value.get_final_message = lambda: msg
+        return client
+
+    def test_returns_update_set_on_valid_json(self):
+        from memo_automator import get_market_data_mappings
+        response = '{"market_data_updates":[],"unmatched_memo_metrics":[],"unmatched_workbook_tabs":[]}'
+        client = self._make_client(response)
+        cfg = {"claude": {"model": "claude-sonnet-4-6", "max_tokens": 8192, "temperature": 0}}
+        result = get_market_data_mappings(client, "market text", "memo text", cfg)
+        assert result["market_data_updates"] == []
+
+    def test_returns_empty_on_empty_market_data(self):
+        from memo_automator import get_market_data_mappings
+        cfg = {"claude": {"model": "claude-sonnet-4-6", "max_tokens": 8192, "temperature": 0}}
+        client = MagicMock()
+        result = get_market_data_mappings(client, "", "memo text", cfg)
+        assert result == {"market_data_updates": [], "unmatched_memo_metrics": [], "unmatched_workbook_tabs": [], "warnings": []}
+
+
+class TestValidateMarketDataMappings:
+    def test_returns_cleaned_update_set(self):
+        from memo_automator import validate_market_data_mappings
+        import json
+        update_set = {"market_data_updates": [], "unmatched_memo_metrics": [], "unmatched_workbook_tabs": [], "warnings": []}
+        response = json.dumps(update_set)
+        client = MagicMock()
+        msg = MagicMock()
+        msg.content = [MagicMock(type="text", text=response)]
+        msg.stop_reason = "end_turn"
+        msg.usage = MagicMock(
+            input_tokens=100, output_tokens=50,
+            cache_read_input_tokens=0, cache_creation_input_tokens=0,
+        )
+        client.messages.stream.return_value.__enter__ = lambda s, *a: s
+        client.messages.stream.return_value.__exit__ = MagicMock(return_value=False)
+        client.messages.stream.return_value.get_final_message = lambda: msg
+        cfg = {"claude": {"model": "claude-sonnet-4-6", "validation_model": "claude-sonnet-4-6", "max_tokens": 8192, "temperature": 0}}
+        result = validate_market_data_mappings(client, update_set, "memo text", cfg)
+        assert "market_data_updates" in result
+
+    def test_calls_api_when_updates_present(self):
+        from memo_automator import validate_market_data_mappings
+        import json
+        update_set = {
+            "market_data_updates": [
+                {"type": "chart_update", "page": 3, "series": [], "source": "x", "reasoning": "y", "confidence": "high"}
+            ],
+            "unmatched_memo_metrics": [],
+            "unmatched_workbook_tabs": [],
+            "warnings": [],
+        }
+        cleaned = {
+            "market_data_updates": [],  # validator dropped the low-confidence match
+            "unmatched_memo_metrics": [],
+            "unmatched_workbook_tabs": [],
+            "warnings": ["chart_update on p3 dropped: confidence low"],
+        }
+        client = MagicMock()
+        msg = MagicMock()
+        msg.content = [MagicMock(type="text", text=json.dumps(cleaned))]
+        msg.stop_reason = "end_turn"
+        msg.usage = MagicMock(
+            input_tokens=100, output_tokens=50,
+            cache_read_input_tokens=0, cache_creation_input_tokens=0,
+        )
+        client.messages.stream.return_value.__enter__ = lambda s, *a: s
+        client.messages.stream.return_value.__exit__ = MagicMock(return_value=False)
+        client.messages.stream.return_value.get_final_message = lambda: msg
+        cfg = {"claude": {"model": "claude-sonnet-4-6", "max_tokens": 8192, "temperature": 0}}
+        result = validate_market_data_mappings(client, update_set, "memo text", cfg)
+        # The API was called; it returned the cleaned set
+        assert result["market_data_updates"] == []
+        assert result["warnings"] == ["chart_update on p3 dropped: confidence low"]
