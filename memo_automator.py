@@ -38,7 +38,7 @@ import zipfile
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import anthropic
 import httpx
@@ -47,8 +47,10 @@ import yaml
 from dotenv import load_dotenv
 from openpyxl.utils.exceptions import InvalidFileException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from lxml import etree
 from pptx import Presentation
 from pptx.exc import PackageNotFoundError
+from pptx.util import Pt
 
 # ============================================================================
 # LOGGING SETUP
@@ -675,7 +677,7 @@ def extract_memo_content(memo_path: str, cfg: dict) -> str:
                 try:
                     chart = shape.chart
                 except (KeyError, AttributeError):
-                    lines.append(f"    Chart: (relationship broken — skipped)")
+                    lines.append("    Chart: (relationship broken — skipped)")
                     continue
                 chart_type_name = str(chart.chart_type) if chart.chart_type else "UNKNOWN"
                 lines.append(f"    Chart type: {chart_type_name}")
@@ -2710,7 +2712,6 @@ def _reorder_table_rows(table, new_order: list[str]):
     if len(rows) < 2:
         return
 
-    header_tr = rows[0]
     data_rows = rows[1:]
 
     # Build label -> row element map
@@ -3240,6 +3241,298 @@ def _apply_chart_updates(memo_path: str, chart_updates: list, dry_run: bool = Fa
         log.info("Chart updates saved: %d changes.", len(changes))
 
     return changes
+
+
+def _apply_market_chart_update(prs, update: dict) -> list[dict]:
+    """
+    Apply a single market data chart update dict to an open Presentation object.
+
+    Handles: series value updates, category (x-axis) label updates,
+    add_series, remove_series. Returns list of change records.
+    """
+    page = update.get("page", 1)
+    chart_name = update.get("chart_name") or ""
+    chart_title = update.get("chart_title") or ""
+    source = update.get("source", "")
+    changes = []
+
+    _C = "http://schemas.openxmlformats.org/drawingml/2006/chart"
+    ns = {"c": _C}
+
+    try:
+        slide = prs.slides[page - 1]
+    except IndexError:
+        log.warning("Market chart update SKIPPED: page %d does not exist", page)
+        return []
+
+    # Find target chart (same logic as existing _apply_chart_updates)
+    target_chart = None
+    target_shape = None
+    for shape in slide.shapes:
+        if not shape.has_chart:
+            continue
+        name_match = chart_name and _loose_match(chart_name, shape.name)
+        title_match = False
+        if shape.chart.has_title and shape.chart.chart_title:
+            try:
+                ct = shape.chart.chart_title.text_frame.text.strip()
+                title_match = chart_title and _loose_match(chart_title, ct)
+            except Exception:
+                pass
+        if name_match or title_match:
+            target_chart = shape.chart
+            target_shape = shape
+            break
+
+    if target_chart is None:
+        chart_shapes = [s for s in slide.shapes if s.has_chart]
+        if len(chart_shapes) == 1:
+            target_chart = chart_shapes[0].chart
+            target_shape = chart_shapes[0]
+        else:
+            log.warning("Market chart NOT FOUND: page=%d name='%s'", page, chart_name)
+            return []
+
+    chart_el = target_chart._element
+
+    # 1. Update series values
+    for ser_upd in update.get("series", []):
+        s_name = ser_upd.get("name", "")
+        new_values = ser_upd.get("new_values", [])
+        old_values = ser_upd.get("old_values", [])
+        for ser_el in chart_el.findall(f".//{{{_C}}}ser"):
+            tx_vals = ser_el.findall(f".//{{{_C}}}tx//{{{_C}}}v")
+            ser_label = tx_vals[0].text if tx_vals else ""
+            if not _loose_match(s_name, ser_label):
+                continue
+            num_cache = ser_el.find(f".//{{{_C}}}numRef/{{{_C}}}numCache", ns)
+            if num_cache is None:
+                num_cache = ser_el.find(f".//{{{_C}}}numLit", ns)
+            if num_cache is None:
+                continue
+            pts = num_cache.findall(f"{{{_C}}}pt", ns)
+            for i, pt in enumerate(pts):
+                if i < len(new_values):
+                    v_el = pt.find(f"{{{_C}}}v", ns)
+                    if v_el is not None:
+                        v_el.text = str(new_values[i])
+            changes.append({
+                "page": page, "type": "chart",
+                "location": f"{target_shape.name} / series '{s_name}'",
+                "old": str(old_values[:3]),
+                "new": str(new_values[:3]),
+                "source": source,
+            })
+            break
+
+    # 2. Update categories (x-axis labels)
+    new_cats = update.get("categories")
+    if new_cats:
+        for ser_el in chart_el.findall(f".//{{{_C}}}ser"):
+            str_cache = ser_el.find(f".//{{{_C}}}cat//{{{_C}}}strCache", ns)
+            if str_cache is None:
+                continue
+            for pt in str_cache.findall(f"{{{_C}}}pt", ns):
+                str_cache.remove(pt)
+            pt_count = str_cache.find(f"{{{_C}}}ptCount", ns)
+            if pt_count is not None:
+                pt_count.set("val", str(len(new_cats)))
+            for idx, cat in enumerate(new_cats):
+                pt_el = etree.SubElement(str_cache, f"{{{_C}}}pt")
+                pt_el.set("idx", str(idx))
+                v_el = etree.SubElement(pt_el, f"{{{_C}}}v")
+                v_el.text = str(cat)
+            changes.append({
+                "page": page, "type": "chart",
+                "location": f"{target_shape.name} / categories",
+                "old": "previous categories",
+                "new": str(new_cats[:5]),
+                "source": source,
+            })
+            break  # categories shared across series; only patch once
+
+    # 3. Add new series (clone last existing series)
+    existing_sers = chart_el.findall(f".//{{{_C}}}ser")
+    for add_ser in update.get("add_series", []):
+        if not existing_sers:
+            log.warning("Cannot add series — no existing series to clone on page %d", page)
+            continue
+        new_ser = deepcopy(existing_sers[-1])
+        new_idx = len(existing_sers)
+        for el in new_ser.findall(f"{{{_C}}}idx"):
+            el.set("val", str(new_idx))
+        for el in new_ser.findall(f"{{{_C}}}order"):
+            el.set("val", str(new_idx))
+        # Set series name
+        for v_el in new_ser.findall(f".//{{{_C}}}tx//{{{_C}}}v"):
+            v_el.text = add_ser.get("name", f"Series {new_idx}")
+        # Set values
+        num_cache = new_ser.find(f".//{{{_C}}}numRef/{{{_C}}}numCache", ns)
+        if num_cache is None:
+            num_cache = new_ser.find(f".//{{{_C}}}numLit", ns)
+        if num_cache is not None:
+            for pt in num_cache.findall(f"{{{_C}}}pt", ns):
+                num_cache.remove(pt)
+            vals = add_ser.get("values", [])
+            pt_count = num_cache.find(f"{{{_C}}}ptCount", ns)
+            if pt_count is not None:
+                pt_count.set("val", str(len(vals)))
+            for i, val in enumerate(vals):
+                pt_el = etree.SubElement(num_cache, f"{{{_C}}}pt")
+                pt_el.set("idx", str(i))
+                v_el = etree.SubElement(pt_el, f"{{{_C}}}v")
+                v_el.text = str(val) if val is not None else ""
+        parent = existing_sers[-1].getparent()
+        parent.insert(list(parent).index(existing_sers[-1]) + 1, new_ser)
+        existing_sers = chart_el.findall(f".//{{{_C}}}ser")  # refresh
+        changes.append({
+            "page": page, "type": "chart",
+            "location": f"{target_shape.name} / add series '{add_ser.get('name')}'",
+            "old": "", "new": str(add_ser.get("values", [])[:3]),
+            "source": source,
+        })
+
+    # 4. Remove series
+    for remove_name in update.get("remove_series", []):
+        for ser_el in chart_el.findall(f".//{{{_C}}}ser"):
+            tx_vals = ser_el.findall(f".//{{{_C}}}tx//{{{_C}}}v")
+            ser_label = tx_vals[0].text if tx_vals else ""
+            if _loose_match(remove_name, ser_label):
+                ser_el.getparent().remove(ser_el)
+                changes.append({
+                    "page": page, "type": "chart",
+                    "location": f"{target_shape.name} / remove series '{remove_name}'",
+                    "old": remove_name, "new": "",
+                    "source": source,
+                })
+                break
+
+    return changes
+
+
+def apply_market_updates(memo_path: str, update_set: dict, dry_run: bool = False) -> list[dict]:
+    """
+    Apply the full MarketDataUpdateSet to a PPTX file.
+
+    Handles chart_update (values, categories, add/remove series),
+    narrative_update (text replacement), and table_update (cell patching).
+    Saves the file in-place unless dry_run is True.
+
+    Returns a list of change records.
+    """
+    updates = update_set.get("market_data_updates", [])
+    if not updates:
+        return []
+
+    prs = _load_presentation(memo_path)
+    all_changes = []
+
+    # Group by type for logging
+    chart_upds = [u for u in updates if u.get("type") == "chart_update"]
+    narr_upds = [u for u in updates if u.get("type") == "narrative_update"]
+    tbl_upds = [u for u in updates if u.get("type") == "table_update"]
+
+    log.info(
+        "Applying market updates: %d chart, %d narrative, %d table",
+        len(chart_upds), len(narr_upds), len(tbl_upds),
+    )
+
+    # Chart updates
+    for upd in chart_upds:
+        if dry_run:
+            all_changes.append({
+                "page": upd.get("page"), "type": "chart",
+                "location": f"{upd.get('chart_name')} (dry run)",
+                "old": "", "new": "", "source": upd.get("source", ""),
+            })
+        else:
+            all_changes.extend(_apply_market_chart_update(prs, upd))
+
+    # Narrative updates — reuse _replace_in_para across all text frames
+    for upd in narr_upds:
+        page = upd.get("page", 1)
+        old_text = upd.get("old_text", "")
+        new_text = upd.get("new_text", "")
+        if not old_text or old_text == new_text:
+            continue
+        if dry_run:
+            all_changes.append({
+                "page": page, "type": "narrative",
+                "location": f"slide {page} narrative (dry run)",
+                "old": old_text[:80], "new": new_text[:80],
+                "source": upd.get("source", ""),
+            })
+            continue
+        try:
+            slide = prs.slides[page - 1]
+        except IndexError:
+            log.warning("Narrative update SKIPPED: page %d does not exist", page)
+            continue
+        replaced = False
+        for shape in slide.shapes:
+            if not shape.has_text_frame:
+                continue
+            for para in shape.text_frame.paragraphs:
+                if _replace_in_para(para, old_text, new_text):
+                    replaced = True
+                    break
+            if replaced:
+                break
+        if replaced:
+            all_changes.append({
+                "page": page, "type": "narrative",
+                "location": f"slide {page} narrative",
+                "old": old_text[:80], "new": new_text[:80],
+                "source": upd.get("source", ""),
+            })
+        else:
+            log.warning("Narrative update NOT APPLIED on page %d: '%s'", page, old_text[:60])
+
+    # Table updates — cell-based patching
+    for upd in tbl_upds:
+        page = upd.get("page", 1)
+        slide_table = upd.get("slide_table", "")
+        if dry_run:
+            all_changes.append({
+                "page": page, "type": "table",
+                "location": f"{slide_table} (dry run)",
+                "old": "", "new": "",
+                "source": upd.get("source", ""),
+            })
+            continue
+        try:
+            slide = prs.slides[page - 1]
+        except IndexError:
+            log.warning("Table update SKIPPED: page %d does not exist", page)
+            continue
+        for shape in slide.shapes:
+            if not shape.has_table:
+                continue
+            if slide_table and not _loose_match(slide_table, shape.name):
+                continue
+            tbl = shape.table
+            for cell_upd in upd.get("updates", []):
+                r, c = cell_upd.get("row", 0), cell_upd.get("col", 0)
+                old_val = cell_upd.get("old_value", "")
+                new_val = cell_upd.get("new_value", "")
+                if r >= len(tbl.rows) or c >= len(tbl.columns):
+                    continue
+                cell = tbl.cell(r, c)
+                for para in cell.text_frame.paragraphs:
+                    if _replace_in_para(para, old_val, new_val):
+                        all_changes.append({
+                            "page": page, "type": "table",
+                            "location": f"{shape.name} [{r},{c}]",
+                            "old": old_val, "new": new_val,
+                            "source": upd.get("source", ""),
+                        })
+                        break
+
+    if not dry_run and all_changes:
+        prs.save(memo_path)
+        log.info("Market updates saved: %d changes", len(all_changes))
+
+    return all_changes
 
 
 # ============================================================================
