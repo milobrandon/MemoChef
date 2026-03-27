@@ -383,28 +383,43 @@ def extract_proforma_data(proforma_path: str, cfg: dict) -> str:
 # ============================================================================
 # 4a. MARKET DATA EXTRACTION  (openpyxl, data_only=True)
 # ============================================================================
-_MARKET_DASHBOARD_TABS = [
-    "Tables",
-    "Comparison Graph",
-    "Uncaptured Demand Comparison",
-    "Rent Growth Comparison By Year",
-    "Occupancy Comparison By Year",
-    "Comp Set",
-]
+
+# Market keyword set used to score tabs for relevance.
+_MARKET_KEYWORDS = frozenset({
+    "rent", "occupancy", "comp", "supply", "demand", "absorption",
+    "vacancy", "cap rate", "market rate", "pipeline", "lease-up",
+    "submarket", "msa", "psf", "concession", "effective rent",
+    "gross rent", "net rent", "growth", "prelease",
+})
+
+
+def _score_tab_for_market_relevance(sheet_name: str, header_cells: list) -> int:
+    """Count how many market keywords appear in the tab name + column headers."""
+    text = (sheet_name + " " + " ".join(str(h) for h in header_cells if h)).lower()
+    return sum(1 for kw in _MARKET_KEYWORDS if kw in text)
 
 
 def extract_market_data(market_data_path: str, cfg: dict) -> str:
     """
-    Read the RealPage market data workbook and return a compact text
-    representation of the 6 dashboard tabs (ignoring back-end data tabs).
+    Read any Excel market workbook and return a compact text representation
+    of market-relevant tabs.
 
-    Uses data_only=True so formulas resolve to their cached values.
-    Returns empty string if no dashboard tabs are found (non-fatal).
+    Tab relevance is determined by keyword scoring against the tab name and
+    column headers. Tabs scoring at or above ``market_data.keyword_threshold``
+    (default 2) are included. Set ``market_data.include_all_tabs: true`` to
+    bypass scoring and include all tabs.
+
+    Returns empty string if the file is missing, unreadable, or contains no
+    relevant tabs.
     """
-    max_rows = cfg["proforma"]["max_rows_per_tab"]
-    max_cols = cfg["proforma"]["max_cols_per_tab"]
+    md_cfg = cfg.get("market_data", {})
+    pf_cfg = cfg.get("proforma", {})
+    max_rows = md_cfg.get("max_rows_per_tab", pf_cfg.get("max_rows_per_tab", 250))
+    max_cols = md_cfg.get("max_cols_per_tab", pf_cfg.get("max_cols_per_tab", 20))
+    threshold = md_cfg.get("keyword_threshold", 2)
+    include_all = md_cfg.get("include_all_tabs", False)
 
-    log.info("Opening market data (data_only): %s", market_data_path)
+    log.info("Opening market data workbook (data_only): %s", market_data_path)
     try:
         wb = openpyxl.load_workbook(market_data_path, data_only=True)
     except (InvalidFileException, zipfile.BadZipFile) as e:
@@ -416,120 +431,55 @@ def extract_market_data(market_data_path: str, cfg: dict) -> str:
     except FileNotFoundError:
         log.warning("Market data file not found: %s", market_data_path)
         return ""
-    log.info("Market data sheets: %s", wb.sheetnames)
 
-    lines = [
-        f"\n{'='*70}",
-        "MARKET DATA (from RealPage)",
-        f"{'='*70}",
-    ]
-    found_tabs = 0
-    data_rows = 0
-    for tab_name in _MARKET_DASHBOARD_TABS:
-        if tab_name not in wb.sheetnames:
-            log.warning("Market data tab '%s' not found - skipping", tab_name)
+    log.info("Market workbook sheets: %s", wb.sheetnames)
+    sections = []
+
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        end_row = ws.max_row if max_rows == 0 else min(ws.max_row or 0, max_rows)
+        end_col = ws.max_column if max_cols == 0 else min(ws.max_column or 0, max_cols)
+
+        if end_row == 0 or end_col == 0:
             continue
-        found_tabs += 1
-        ws = wb[tab_name]
-        lines.append(f"\n{'='*70}")
-        lines.append(f"TAB: {tab_name}")
-        lines.append(f"{'='*70}")
 
-        end_row = ws.max_row if max_rows == 0 else min(ws.max_row, max_rows)
-        end_col = ws.max_column if max_cols == 0 else min(ws.max_column, max_cols)
+        # Read first row as headers for scoring
+        header_row = next(
+            ws.iter_rows(min_row=1, max_row=1, max_col=end_col, values_only=True),
+            (),
+        )
+        headers = [str(c) if c is not None else "" for c in header_row]
 
-        for row in ws.iter_rows(
-            min_row=1, max_row=end_row, max_col=end_col, values_only=False
-        ):
-            row_data = []
-            for cell in row:
-                if cell.value is not None:
-                    row_data.append(str(cell.value))
+        score = _score_tab_for_market_relevance(sheet_name, headers)
+        if not include_all and score < threshold:
+            log.debug("Skipping tab '%s' (score=%d < threshold=%d)", sheet_name, score, threshold)
+            continue
+
+        log.info("Including tab '%s' (score=%d)", sheet_name, score)
+        lines = [
+            f"\n{'=' * 70}",
+            f"TAB: {sheet_name}",
+            f"{'=' * 70}",
+        ]
+        for row in ws.iter_rows(min_row=1, max_row=end_row, max_col=end_col, values_only=False):
+            row_data = [str(cell.value) for cell in row if cell.value is not None]
             if row_data:
                 lines.append(f"Row {row[0].row}:\t" + "\t".join(row_data))
-                data_rows += 1
+
+        sections.append("\n".join(lines))
 
     wb.close()
 
-    if found_tabs == 0:
-        # Fallback: scan ALL tabs for market-relevant data.
-        # Pick tabs whose names contain keywords like rent, sales, comp,
-        # pipeline, supply, demand, occupancy, market, land.
-        _market_keywords = [
-            "rent", "sale", "comp", "pipeline", "supply", "demand",
-            "occupancy", "market", "land", "prelease", "sbys", "side",
-            "growth", "rate", "unit mix", "taxes",
-        ]
-        fallback_tabs = []
-        for sn in wb.sheetnames:
-            sn_lower = sn.lower()
-            if any(kw in sn_lower for kw in _market_keywords):
-                fallback_tabs.append(sn)
-
-        if fallback_tabs:
-            log.info(
-                "No configured dashboard tabs matched. Falling back to %d "
-                "market-keyword tabs: %s",
-                len(fallback_tabs), fallback_tabs[:10],
-            )
-            # Re-open since wb was already used
-            wb2 = openpyxl.load_workbook(market_data_path, data_only=True)
-            # Prioritize tabs with rent/comp/market keywords and recent dates.
-            # Score each tab: high-value keywords + recency.
-            _high_value = ["rent", "sbys", "side", "comp", "sale", "market", "unit mix"]
-            def _tab_score(name: str) -> int:
-                nl = name.lower()
-                score = sum(2 for kw in _high_value if kw in nl)
-                # Bonus for recent dates (2026, 2025)
-                if "2026" in name:
-                    score += 3
-                elif "2025" in name:
-                    score += 1
-                return score
-            fallback_tabs.sort(key=_tab_score, reverse=True)
-            for tab_name in fallback_tabs[:4]:  # cap at 4 tabs
-                ws = wb2[tab_name]
-                found_tabs += 1
-                lines.append(f"\n{'='*70}")
-                lines.append(f"TAB: {tab_name}")
-                lines.append(f"{'='*70}")
-
-                end_row = ws.max_row if max_rows == 0 else min(ws.max_row, max_rows)
-                end_col = ws.max_column if max_cols == 0 else min(ws.max_column, max_cols)
-
-                for row in ws.iter_rows(
-                    min_row=1, max_row=end_row, max_col=end_col, values_only=False
-                ):
-                    row_data = []
-                    for cell in row:
-                        if cell.value is not None:
-                            row_data.append(str(cell.value))
-                    if row_data:
-                        lines.append(f"Row {row[0].row}:\t" + "\t".join(row_data))
-                        data_rows += 1
-            wb2.close()
-        else:
-            log.warning(
-                "No dashboard tabs found in market data file. "
-                "Expected tabs: %s. Available: %s. Skipping market data.",
-                _MARKET_DASHBOARD_TABS, wb.sheetnames,
-            )
-            return ""
-
-    if data_rows == 0:
-        log.warning(
-            "Market data extraction found no non-empty values. "
-            "If this workbook contains formulas, open it in Excel, let it "
-            "recalculate, save, and retry."
-        )
+    if not sections:
+        log.warning("No market-relevant tabs found in '%s'", market_data_path)
         return ""
 
-    market_text = "\n".join(lines)
-    log.info(
-        "Market data extraction complete (%d tabs, %d lines, %d chars)",
-        found_tabs, len(lines), len(market_text),
-    )
-    return market_text
+    header = [
+        f"\n{'=' * 70}",
+        "MARKET DATA (from workbook)",
+        f"{'=' * 70}",
+    ]
+    return "\n".join(header) + "\n" + "\n\n".join(sections)
 
 # ============================================================================
 # 4b. SCHEDULE DATA EXTRACTION  (mpxj via subprocess — no JVM in-process)
