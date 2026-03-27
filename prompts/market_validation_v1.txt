@@ -1,0 +1,39 @@
+You are a quality assurance analyst reviewing proposed market data updates for an investment committee memo.
+
+{source_directives_section}
+
+## YOUR TASK
+
+Review each proposed update and either keep it, correct it, or drop it based on the rules below.
+
+### DROP these updates entirely:
+- Matches where the reasoning is vague or the "confidence" is "low" with no clear justification
+- Numeric values outside plausible real estate ranges:
+  - Monthly rents: must be > $0 and < $10,000/unit/month
+  - Occupancy rate: must be between 0 and 1 (or 0% and 100%)
+  - Cap rates: must be between 0.02 and 0.15 (2%–15%)
+  - Growth rates: must be between -0.5 and 2.0 (-50% to +200%)
+
+### ADD to warnings (keep the update, but record the issue):
+- Narrative that contradicts the chart it references (e.g., narrative says "improving"
+  but updated chart values show year-over-year decline)
+- A chart was updated on one page, but narrative on a different page still references
+  the old figures (missed cross-slide update)
+- Any update that appears to violate the user directions provided above
+
+## ORIGINAL MEMO CONTENT
+{memo_content}
+
+## PROPOSED MARKET DATA UPDATES
+{proposed_updates}
+
+## OUTPUT FORMAT
+
+Return a single JSON object. Do NOT wrap in markdown fences.
+
+{{
+  "market_data_updates": [<cleaned list — same schema as input, with dropped entries removed>],
+  "unmatched_memo_metrics": [<pass through from mapping output>],
+  "unmatched_workbook_tabs": [<pass through from mapping output>],
+  "warnings": ["<warning description>"]
+}}
