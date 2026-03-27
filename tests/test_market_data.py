@@ -79,6 +79,19 @@ class TestMarketDataModels:
         assert s.market_data_updates == []
         assert s.warnings == []
 
+    def test_update_set_accessor_helpers(self):
+        s = MarketDataUpdateSet(
+            market_data_updates=[
+                {"type": "chart_update", "page": 3, "series": [], "source": "x", "reasoning": "y", "confidence": "high"},
+                {"type": "narrative_update", "page": 5, "old_text": "a", "new_text": "b", "source": "x", "reasoning": "y", "confidence": "high"},
+                {"type": "table_update", "page": 7, "slide_table": "T", "updates": [], "source": "x", "reasoning": "y", "confidence": "high"},
+            ]
+        )
+        assert len(s.chart_updates()) == 1
+        assert s.chart_updates()[0].page == 3
+        assert len(s.narrative_updates()) == 1
+        assert len(s.table_updates()) == 1
+
 
 @pytest.fixture
 def default_cfg():

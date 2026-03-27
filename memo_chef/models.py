@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging as _logging
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+_log = _logging.getLogger(__name__)
 
 
 class SourceDirective(BaseModel):
@@ -188,7 +192,7 @@ class ChartSeriesAdd(BaseModel):
 
 
 class MarketChartUpdate(BaseModel):
-    type: str = "chart_update"
+    type: Literal["chart_update"] = "chart_update"
     page: int
     chart_name: str | None = None
     chart_title: str | None = None
@@ -202,7 +206,7 @@ class MarketChartUpdate(BaseModel):
 
 
 class MarketNarrativeUpdate(BaseModel):
-    type: str = "narrative_update"
+    type: Literal["narrative_update"] = "narrative_update"
     page: int
     old_text: str
     new_text: str
@@ -212,14 +216,14 @@ class MarketNarrativeUpdate(BaseModel):
 
 
 class MarketTableCellUpdate(BaseModel):
-    row: int
-    col: int
+    row: int  # 0-based, matching python-pptx table indexing
+    col: int  # 0-based, matching python-pptx table indexing
     old_value: str
     new_value: str
 
 
 class MarketTableUpdate(BaseModel):
-    type: str = "table_update"
+    type: Literal["table_update"] = "table_update"
     page: int
     slide_table: str
     updates: list[MarketTableCellUpdate]
@@ -235,10 +239,34 @@ class MarketDataUpdateSet(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
     def chart_updates(self) -> list[MarketChartUpdate]:
-        return [MarketChartUpdate(**u) for u in self.market_data_updates if u.get("type") == "chart_update"]
+        results = []
+        for u in self.market_data_updates:
+            if u.get("type") != "chart_update":
+                continue
+            try:
+                results.append(MarketChartUpdate(**u))
+            except Exception as exc:
+                _log.warning("Skipping malformed chart_update: %s", exc)
+        return results
 
     def narrative_updates(self) -> list[MarketNarrativeUpdate]:
-        return [MarketNarrativeUpdate(**u) for u in self.market_data_updates if u.get("type") == "narrative_update"]
+        results = []
+        for u in self.market_data_updates:
+            if u.get("type") != "narrative_update":
+                continue
+            try:
+                results.append(MarketNarrativeUpdate(**u))
+            except Exception as exc:
+                _log.warning("Skipping malformed narrative_update: %s", exc)
+        return results
 
     def table_updates(self) -> list[MarketTableUpdate]:
-        return [MarketTableUpdate(**u) for u in self.market_data_updates if u.get("type") == "table_update"]
+        results = []
+        for u in self.market_data_updates:
+            if u.get("type") != "table_update":
+                continue
+            try:
+                results.append(MarketTableUpdate(**u))
+            except Exception as exc:
+                _log.warning("Skipping malformed table_update: %s", exc)
+        return results
