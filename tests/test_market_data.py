@@ -15,6 +15,70 @@ from memo_automator import (
     _MARKET_DASHBOARD_TABS,
 )
 
+from memo_chef.models import (
+    MarketChartUpdate, MarketNarrativeUpdate,
+    MarketTableCellUpdate, MarketTableUpdate, MarketDataUpdateSet,
+)
+
+
+class TestMarketDataModels:
+    def test_chart_update_validates(self):
+        u = MarketChartUpdate(
+            page=3,
+            chart_name="Rent Growth",
+            series=[{"name": "Market A", "new_values": [1200, 1350], "old_values": [1100, 1250]}],
+            categories=["2023", "2024"],
+            add_series=[{"name": "Market D", "values": [900, 950]}],
+            remove_series=["Market C"],
+            source="Rent Growth tab",
+            reasoning="Semantic match",
+            confidence="high",
+        )
+        assert u.type == "chart_update"
+        assert u.page == 3
+        assert u.confidence == "high"
+
+    def test_narrative_update_validates(self):
+        u = MarketNarrativeUpdate(
+            page=7,
+            old_text="Rents grew 5%",
+            new_text="Rents grew 12%",
+            source="Rent Growth tab",
+            reasoning="Updated figures",
+            confidence="high",
+        )
+        assert u.type == "narrative_update"
+
+    def test_table_update_validates(self):
+        u = MarketTableUpdate(
+            page=3,
+            slide_table="Market Summary",
+            updates=[{"row": 2, "col": 1, "old_value": "94%", "new_value": "96%"}],
+            source="Tables tab",
+            reasoning="Occupancy updated",
+            confidence="medium",
+        )
+        assert u.type == "table_update"
+        assert u.updates[0].row == 2
+
+    def test_update_set_validates_mixed(self):
+        s = MarketDataUpdateSet(
+            market_data_updates=[
+                {"type": "chart_update", "page": 3, "series": [], "source": "x", "reasoning": "y", "confidence": "high"},
+                {"type": "narrative_update", "page": 5, "old_text": "a", "new_text": "b", "source": "x", "reasoning": "y", "confidence": "high"},
+            ],
+            unmatched_memo_metrics=["Absorption chart p9"],
+            unmatched_workbook_tabs=["Backend"],
+            warnings=["Low confidence match on p3"],
+        )
+        assert len(s.market_data_updates) == 2
+        assert s.warnings == ["Low confidence match on p3"]
+
+    def test_empty_update_set(self):
+        s = MarketDataUpdateSet()
+        assert s.market_data_updates == []
+        assert s.warnings == []
+
 
 @pytest.fixture
 def default_cfg():

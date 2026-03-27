@@ -172,3 +172,73 @@ class DeckProfile(BaseModel):
     title_font_size_pt: float | None = None
     body_font_name: str | None = None
     body_font_size_pt: float | None = None
+
+
+# ── Market Data Update Schema ─────────────────────────────────────────────────
+
+class ChartSeriesUpdate(BaseModel):
+    name: str
+    new_values: list[float | int | None]
+    old_values: list[float | int | None] = Field(default_factory=list)
+
+
+class ChartSeriesAdd(BaseModel):
+    name: str
+    values: list[float | int | None]
+
+
+class MarketChartUpdate(BaseModel):
+    type: str = "chart_update"
+    page: int
+    chart_name: str | None = None
+    chart_title: str | None = None
+    series: list[ChartSeriesUpdate] = Field(default_factory=list)
+    categories: list[str] | None = None
+    add_series: list[ChartSeriesAdd] = Field(default_factory=list)
+    remove_series: list[str] = Field(default_factory=list)
+    source: str
+    reasoning: str
+    confidence: str = "high"  # "high" | "medium" | "low"
+
+
+class MarketNarrativeUpdate(BaseModel):
+    type: str = "narrative_update"
+    page: int
+    old_text: str
+    new_text: str
+    source: str
+    reasoning: str
+    confidence: str = "high"
+
+
+class MarketTableCellUpdate(BaseModel):
+    row: int
+    col: int
+    old_value: str
+    new_value: str
+
+
+class MarketTableUpdate(BaseModel):
+    type: str = "table_update"
+    page: int
+    slide_table: str
+    updates: list[MarketTableCellUpdate]
+    source: str
+    reasoning: str
+    confidence: str = "high"
+
+
+class MarketDataUpdateSet(BaseModel):
+    market_data_updates: list[dict] = Field(default_factory=list)
+    unmatched_memo_metrics: list[str] = Field(default_factory=list)
+    unmatched_workbook_tabs: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+    def chart_updates(self) -> list[MarketChartUpdate]:
+        return [MarketChartUpdate(**u) for u in self.market_data_updates if u.get("type") == "chart_update"]
+
+    def narrative_updates(self) -> list[MarketNarrativeUpdate]:
+        return [MarketNarrativeUpdate(**u) for u in self.market_data_updates if u.get("type") == "narrative_update"]
+
+    def table_updates(self) -> list[MarketTableUpdate]:
+        return [MarketTableUpdate(**u) for u in self.market_data_updates if u.get("type") == "table_update"]
