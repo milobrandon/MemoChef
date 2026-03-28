@@ -53,24 +53,6 @@ def build_change_report_html(changes: list[dict], manifest: dict | None = None) 
     for c in changes:
         by_page[c.get("page", 0)].append(c)
 
-    # Type icons
-    type_icons = {
-        "table": "grid_on",
-        "text": "text_fields",
-        "narrative": "auto_stories",
-        "row_insert": "add_circle",
-        "table_structure": "build",
-        "chart": "bar_chart",
-    }
-    type_colors = {
-        "table": "#c1d100",     # lime green
-        "text": "#f7f1e3",      # beige
-        "narrative": "#a95818", # birch
-        "row_insert": "#16352e",# everest green
-        "table_structure": "#512213",  # brown
-        "chart": "#c1d100",     # lime green
-    }
-
     counts = manifest.get("counts", {}) if manifest else {}
     accuracy = manifest.get("accuracy", {}) if manifest else {}
 

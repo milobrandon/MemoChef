@@ -1,7 +1,7 @@
 """Tests for _create_message stream timeout and retry behaviour."""
 import time
 import unittest
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import anthropic
 
