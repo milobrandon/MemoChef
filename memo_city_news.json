@@ -1,0 +1,33 @@
+[
+  {
+    "version": "2.11",
+    "date": "2026-03-27",
+    "title": "Market Data Pipeline",
+    "bullets": [
+      "Claude now has a dedicated step just for market data — it reads your market workbook and updates charts, tables, and slide narrative separately from the proforma pass.",
+      "Works with any Excel format, not just RealPage — Claude figures out which tabs contain market data by reading the column headers.",
+      "Charts that don't match exactly (different markets, different time ranges) are adapted automatically — categories and series are updated alongside the numbers.",
+      "When Claude updates a rent chart on slide 5, it also finds and updates any related narrative on slide 7 or summary table on slide 3.",
+      "The 'Market data directions' field is now live — type instructions like 'Only update the rent growth chart' to guide what Claude touches."
+    ]
+  },
+  {
+    "version": "2.10",
+    "date": "2026-03-19",
+    "title": "Stream Timeout & Log Downloads",
+    "bullets": [
+      "Fixed a bug where runs would freeze at 68% and never finish.",
+      "Added a retry spinner so you can see when the app is recovering from a slow API response.",
+      "Admins can now download the full run log from the Recent Activity tab."
+    ]
+  },
+  {
+    "version": "2.9",
+    "date": "2026-02-15",
+    "title": "Before & After Report",
+    "bullets": [
+      "Every run now produces a branded Before vs. After change report showing exactly what changed and where.",
+      "API usage cut by ~60% — consistency check and final review passes are now disabled by default."
+    ]
+  }
+]
