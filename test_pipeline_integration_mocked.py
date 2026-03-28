@@ -14,6 +14,33 @@ from memo_automator import (
 )
 
 
+def _make_mock_anthropic_client():
+    """Minimal Anthropic client stub: always returns empty mapping JSON."""
+    from unittest.mock import MagicMock
+
+    client = MagicMock()
+    empty = {
+        "table_updates": [],
+        "text_updates": [],
+        "row_inserts": [],
+        "narrative_updates": [],
+        "table_structure_updates": [],
+    }
+    msg = MagicMock()
+    msg.content = [MagicMock(type="text", text=json.dumps(empty))]
+    msg.stop_reason = "end_turn"
+    msg.usage = MagicMock(
+        input_tokens=10,
+        output_tokens=10,
+        cache_read_input_tokens=0,
+        cache_creation_input_tokens=0,
+    )
+    client.messages.stream.return_value.__enter__ = lambda s, *a: s
+    client.messages.stream.return_value.__exit__ = MagicMock(return_value=False)
+    client.messages.stream.return_value.get_final_message = lambda: msg
+    return client
+
+
 class _FakeUsage:
     input_tokens = 100
     output_tokens = 50
@@ -209,3 +236,46 @@ class TestValidateMappingsCorrections:
         assert len(result["table_updates"]) == 1
         assert result["table_updates"][0]["new_value"] == "200"  # first kept
         assert len(result["text_updates"]) == 1  # text untouched
+
+
+class TestMarketDataPipelineStages:
+    """Market data stages are skipped when no market_data_path provided."""
+
+    def test_market_stages_skipped_without_path(self, tmp_path, monkeypatch):
+        """Pipeline runs to completion without market data; no market stages in manifest."""
+        import openpyxl
+        from pptx import Presentation
+
+        from memo_chef.models import RunRequest
+
+        memo = tmp_path / "memo.pptx"
+        proforma = tmp_path / "proforma.xlsx"
+        Presentation().save(str(memo))
+        wb = openpyxl.Workbook()
+        wb.active.title = "Executive Summary"
+        wb.active.append(["Item", "Value"])
+        wb.save(str(proforma))
+
+        request = RunRequest(
+            memo_path=str(memo),
+            proforma_path=str(proforma),
+            output_dir=str(tmp_path / "out"),
+            api_key="test-key",
+            config_path="config.yaml",
+            run_id="test-mkt-skip",
+            market_data_path=None,
+            dry_run=True,
+            skip_validation=True,
+        )
+
+        import anthropic
+
+        monkeypatch.setattr(anthropic, "Anthropic", lambda **kw: _make_mock_anthropic_client())
+
+        from memo_chef.pipeline import run_memo_pipeline
+
+        result = run_memo_pipeline(request)
+
+        assert "market_data_mapping" not in result.manifest.stages
+        assert "market_data_validation" not in result.manifest.stages
+        assert "apply_market_updates" not in result.manifest.stages

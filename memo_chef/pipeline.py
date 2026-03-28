@@ -18,6 +18,7 @@ import yaml
 from memo_automator import (
     _is_api_error,
     apply_branding,
+    apply_market_updates,
     apply_updates,
     build_mapping_batch_requests,
     chunk_memo_by_pages,
@@ -26,6 +27,7 @@ from memo_automator import (
     extract_memo_content,
     extract_proforma_data,
     extract_schedule_data,
+    get_market_data_mappings,
     get_metric_mappings,
     global_property_rename,
     load_config,
@@ -34,6 +36,7 @@ from memo_automator import (
     submit_and_poll_batch,
     validate_mapping_formats,
     validate_mappings,
+    validate_market_data_mappings,
     write_change_log,
 )
 
@@ -631,6 +634,7 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
             effective_property_name = request.property_rename_to.strip()
             checkpoint.manifest.property_rename_to = effective_property_name
 
+        market_data_text = ""
         _emit(callback, "extract_sources", "Extract source data", 12)
         with checkpoint.stage("extract_sources", "Extracting proforma, market, and schedule data"):
             proforma_data = extract_proforma_data(request.proforma_path, cfg)
@@ -647,16 +651,15 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                     checkpoint.set_output("schedule_extract", schedule_extract_path)
 
             if request.market_data_path:
-                market_data = extract_market_data(request.market_data_path, cfg)
-                if market_data:
-                    proforma_data += "\n\n" + market_data
+                market_data_text = extract_market_data(request.market_data_path, cfg)
+                if market_data_text:
                     market_extract_path = os.path.join(request.output_dir, "market_data_extract.txt")
-                    Path(market_extract_path).write_text(market_data, encoding="utf-8")
+                    Path(market_extract_path).write_text(market_data_text, encoding="utf-8")
                     checkpoint.set_output("market_data_extract", market_extract_path)
                 else:
                     checkpoint.add_warning(
                         "extract_sources",
-                        "Market data file loaded but no dashboard tabs were extracted.",
+                        "Market data file loaded but no relevant tabs were extracted.",
                     )
 
         if request.comp_urls:
@@ -760,6 +763,65 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
         with checkpoint.stage("apply", "Applying text, table, and chart updates"):
             changes = apply_updates(request.memo_path, validated, dry_run=request.dry_run)
             checkpoint.set_count("changes", len(changes))
+
+        # --- Market data pipeline stages (4-6) ---
+        # Skipped automatically when no market_data_path is provided.
+        if request.market_data_path and market_data_text and not request.dry_run:
+            # Stage 4: Market data mapping
+            _emit(callback, "market_data_mapping", "Map market data", 87)
+            with checkpoint.stage("market_data_mapping", "Claude mapping market workbook to memo"):
+                market_update_set = _retry(
+                    get_market_data_mappings,
+                    client,
+                    market_data_text,
+                    memo_content,
+                    cfg,
+                    source_directives=directives_dicts,
+                    checkpoint=checkpoint,
+                    stage="market_data_mapping",
+                    callback=callback,
+                    retry_percent=87,
+                )
+                raw_market_path = os.path.join(request.output_dir, "market_mappings_raw.json")
+                _write_json(raw_market_path, market_update_set)
+                checkpoint.set_output("market_mappings_raw", raw_market_path)
+                checkpoint.set_count(
+                    "market_updates_proposed",
+                    len(market_update_set.get("market_data_updates", [])),
+                )
+
+            # Stage 5: Market data validation
+            _emit(callback, "market_data_validation", "Validate market updates", 89)
+            with checkpoint.stage("market_data_validation", "QA market data updates"):
+                if request.skip_validation:
+                    validated_market = market_update_set
+                else:
+                    validated_market = _retry(
+                        validate_market_data_mappings,
+                        client,
+                        market_update_set,
+                        memo_content,
+                        cfg,
+                        source_directives=directives_dicts,
+                        checkpoint=checkpoint,
+                        stage="market_data_validation",
+                        callback=callback,
+                        retry_percent=89,
+                    )
+                for warning in validated_market.get("warnings", []):
+                    checkpoint.add_warning("market_data_validation", warning)
+                validated_market_path = os.path.join(request.output_dir, "market_mappings_validated.json")
+                _write_json(validated_market_path, validated_market)
+                checkpoint.set_output("market_mappings_validated", validated_market_path)
+
+            # Stage 6: Apply market updates
+            _emit(callback, "apply_market_updates", "Apply market updates", 91)
+            with checkpoint.stage("apply_market_updates", "Applying market data to deck"):
+                market_changes = apply_market_updates(
+                    request.memo_path, validated_market, dry_run=request.dry_run
+                )
+                checkpoint.set_count("market_changes", len(market_changes))
+                log.info("Market data applied: %d changes", len(market_changes))
 
         # --- Accuracy metrics ---
         from memo_chef.accuracy import compute_accuracy_metrics
