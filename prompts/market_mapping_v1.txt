@@ -8,20 +8,17 @@ You will receive:
 1. The full memo content (all slides, with page numbers, charts, tables, and text)
 2. Market workbook data (tabs extracted from the workbook, with tab names and rows)
 
-Complete these steps IN ORDER:
+Your response must be a single JSON object — no prose, no markdown, no explanation
+outside the JSON. Follow these internal reasoning steps before producing output:
 
-### Step 1 — Label each workbook tab
-Before anything else, label each tab with its semantic category. Examples:
-- "rent comps", "occupancy trend", "supply pipeline", "comp set", "submarket stats",
-  "rent growth by year", "absorption rate", "market summary"
+1. **Label each workbook tab** by its semantic category (rent comps, occupancy trend,
+   supply pipeline, comp set, submarket stats, rent growth by year, etc.)
+2. **Identify market metrics in the memo**: every chart, table, and narrative section
+   that references market data (rent growth, occupancy, comp properties, supply/demand,
+   enrollment, absorption, etc.) with its page number and shape name.
+3. **Match and generate updates**: for each memo metric, find the best matching
+   workbook tab using semantic similarity.
 
-### Step 2 — Identify market metrics in the memo
-List every chart, table, and narrative section that references market data
-(rent growth, occupancy rates, comp properties, supply/demand, absorption, etc.)
-with its page number and shape name.
-
-### Step 3 — Match and generate updates
-For each memo metric, find the best matching workbook tab using semantic similarity.
 Tab and chart names do NOT need to match exactly. Examples of valid matches:
 - "Florida" ≈ "UF" (abbreviation)
 - "Rent Growth by Market" ≈ "Rent Growth Comparison By Year" (synonym)
@@ -49,7 +46,8 @@ IMPORTANT RULES:
 
 ## OUTPUT FORMAT
 
-Return a single JSON object. Do NOT wrap in markdown fences.
+Your ENTIRE response must be valid JSON — nothing else. No markdown, no commentary,
+no preamble. Do NOT wrap in markdown fences. Start with {{ and end with }}.
 
 {{
   "market_data_updates": [

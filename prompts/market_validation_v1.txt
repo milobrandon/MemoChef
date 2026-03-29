@@ -29,7 +29,8 @@ Review each proposed update and either keep it, correct it, or drop it based on 
 
 ## OUTPUT FORMAT
 
-Return a single JSON object. Do NOT wrap in markdown fences.
+Your ENTIRE response must be valid JSON — nothing else. No markdown, no commentary,
+no preamble. Do NOT wrap in markdown fences. Start with {{ and end with }}.
 
 {{
   "market_data_updates": [<cleaned list — same schema as input, with dropped entries removed>],

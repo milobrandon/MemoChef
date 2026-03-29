@@ -148,14 +148,14 @@ class _TrackedStream:
         self._kwargs = kwargs
 
     def __enter__(self):
-        self._raw.__enter__()
+        self._entered = self._raw.__enter__()
         return self
 
     def __exit__(self, *args):
         return self._raw.__exit__(*args)
 
     def get_final_message(self):
-        msg = self._raw.get_final_message()
+        msg = self._entered.get_final_message()
         if hasattr(msg, "usage"):
             self._tracker.input_tokens += msg.usage.input_tokens
             self._tracker.output_tokens += msg.usage.output_tokens

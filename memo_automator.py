@@ -388,10 +388,11 @@ def extract_proforma_data(proforma_path: str, cfg: dict) -> str:
 
 # Market keyword set used to score tabs for relevance.
 _MARKET_KEYWORDS = frozenset({
-    "rent", "occupancy", "comp", "supply", "demand", "absorption",
-    "vacancy", "cap rate", "market rate", "pipeline", "lease-up",
-    "submarket", "msa", "psf", "concession", "effective rent",
-    "gross rent", "net rent", "growth", "prelease",
+    "rent", "occupancy", "comp", "competitive", "supply", "demand",
+    "absorption", "vacancy", "cap rate", "market rate", "pipeline",
+    "lease-up", "submarket", "msa", "psf", "concession",
+    "effective rent", "gross rent", "net rent", "growth", "prelease",
+    "enrollment", "beds", "housing", "delivery", "construction",
 })
 
 
@@ -1960,17 +1961,13 @@ def get_market_data_mappings(
     raw = next((b.text for b in message.content if b.type == "text"), "")
     log.info("Market mapping response: %d chars, stop_reason=%s", len(raw), message.stop_reason)
 
-    # Strip markdown fences if present
-    raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
-    raw = re.sub(r"\s*```$", "", raw)
-
-    try:
-        result = json.loads(raw)
+    result = _parse_json_response(raw)
+    if result is not None:
         result.setdefault("warnings", [])
         return result
-    except json.JSONDecodeError as e:
-        log.warning("Market mapping JSON parse failed: %s. Raw: %s", e, raw[:200])
-        return dict(_EMPTY_MARKET_UPDATE_SET)
+
+    log.warning("Market mapping JSON parse failed. Raw: %s", raw[:200])
+    return dict(_EMPTY_MARKET_UPDATE_SET)
 
 
 def validate_market_data_mappings(
@@ -2018,16 +2015,13 @@ def validate_market_data_mappings(
     )
 
     raw = next((b.text for b in message.content if b.type == "text"), "")
-    raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
-    raw = re.sub(r"\s*```$", "", raw)
-
-    try:
-        result = json.loads(raw)
+    result = _parse_json_response(raw)
+    if result is not None:
         result.setdefault("warnings", [])
         return result
-    except json.JSONDecodeError as e:
-        log.warning("Market validation JSON parse failed: %s. Returning original.", e)
-        return update_set
+
+    log.warning("Market validation JSON parse failed. Returning original.")
+    return update_set
 
 
 # ============================================================================
@@ -2396,7 +2390,8 @@ def _normalize_unicode(text: str) -> str:
 
 def _replace_in_shape(shape, old_text: str, new_text: str) -> bool:
     """Replace old_text in any text-frame shape, preserving formatting.
-    Falls back to Unicode-normalized matching if exact match fails."""
+    Falls back to Unicode-normalized matching if exact match fails,
+    then to field-aware diff replacement for paragraphs with <a:fld> elements."""
     if not shape.has_text_frame:
         return False
     # Pass 1: exact match
@@ -2418,6 +2413,35 @@ def _replace_in_shape(shape, old_text: str, new_text: str) -> bool:
         actual_old = para_text[idx:idx + len(norm_old)]
         if _replace_in_para(para, actual_old, new_text):
             return True
+    # Pass 3: field-aware — para.text includes <a:fld> content (e.g. slide
+    # numbers) that is NOT in para.runs.  Extract the diff between old_text
+    # and new_text and replace only the differing portion in the runs.
+    for para in shape.text_frame.paragraphs:
+        if old_text not in para.text:
+            continue
+        run_text = "".join(r.text for r in para.runs)
+        if old_text in run_text:
+            continue  # Pass 1/2 should have handled this
+        # Compute the unique differing portion between old and new
+        pfx = 0
+        for a, b in zip(old_text, new_text):
+            if a == b:
+                pfx += 1
+            else:
+                break
+        sfx = 0
+        for a, b in zip(reversed(old_text), reversed(new_text)):
+            if a == b:
+                sfx += 1
+            else:
+                break
+        old_end = len(old_text) - sfx if sfx else len(old_text)
+        new_end = len(new_text) - sfx if sfx else len(new_text)
+        old_diff = old_text[pfx:old_end]
+        new_diff = new_text[pfx:new_end]
+        if old_diff and old_diff in run_text:
+            if _replace_in_para(para, old_diff, new_diff):
+                return True
     return False
 
 
