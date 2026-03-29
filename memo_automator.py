@@ -2783,33 +2783,38 @@ def global_property_rename(memo_path: str, old_name: str, new_name: str) -> int:
             # --- Text frames (titles, narrative, text boxes) ---
             if shape.has_text_frame:
                 for para in shape.text_frame.paragraphs:
-                    if _replace_in_para(para, old_name, new_name):
+                    # Loop to catch multiple instances in separate runs
+                    while _replace_in_para(para, old_name, new_name):
                         count += 1
-                    else:
-                        # Try Unicode-normalized match
-                        norm_old = _normalize_unicode(old_name)
-                        norm_para = _normalize_unicode(para.text)
-                        if norm_old in norm_para:
-                            idx = norm_para.find(norm_old)
-                            actual_old = para.text[idx:idx + len(norm_old)]
-                            if _replace_in_para(para, actual_old, new_name):
-                                count += 1
+                    # Try Unicode-normalized match for any remaining
+                    norm_old = _normalize_unicode(old_name)
+                    norm_para = _normalize_unicode(para.text)
+                    while norm_old in norm_para:
+                        idx = norm_para.find(norm_old)
+                        actual_old = para.text[idx:idx + len(norm_old)]
+                        if _replace_in_para(para, actual_old, new_name):
+                            count += 1
+                            norm_para = _normalize_unicode(para.text)
+                        else:
+                            break
 
             # --- Table cells ---
             if shape.has_table:
                 for row in shape.table.rows:
                     for cell in row.cells:
                         for para in cell.text_frame.paragraphs:
-                            if _replace_in_para(para, old_name, new_name):
+                            while _replace_in_para(para, old_name, new_name):
                                 count += 1
-                            else:
-                                norm_old = _normalize_unicode(old_name)
-                                norm_para = _normalize_unicode(para.text)
-                                if norm_old in norm_para:
-                                    idx = norm_para.find(norm_old)
-                                    actual_old = para.text[idx:idx + len(norm_old)]
-                                    if _replace_in_para(para, actual_old, new_name):
-                                        count += 1
+                            norm_old = _normalize_unicode(old_name)
+                            norm_para = _normalize_unicode(para.text)
+                            while norm_old in norm_para:
+                                idx = norm_para.find(norm_old)
+                                actual_old = para.text[idx:idx + len(norm_old)]
+                                if _replace_in_para(para, actual_old, new_name):
+                                    count += 1
+                                    norm_para = _normalize_unicode(para.text)
+                                else:
+                                    break
 
     if count > 0:
         prs.save(memo_path)
@@ -3329,9 +3334,9 @@ def _apply_market_chart_update(prs, update: dict) -> list[dict]:
             ser_label = tx_vals[0].text if tx_vals else ""
             if not _loose_match(s_name, ser_label):
                 continue
-            num_cache = ser_el.find(f".//{{{_C}}}numRef/{{{_C}}}numCache", ns)
+            num_cache = ser_el.find(f"{{{_C}}}val/{{{_C}}}numRef/{{{_C}}}numCache", ns)
             if num_cache is None:
-                num_cache = ser_el.find(f".//{{{_C}}}numLit", ns)
+                num_cache = ser_el.find(f"{{{_C}}}val/{{{_C}}}numLit", ns)
             if num_cache is None:
                 continue
             pts = num_cache.findall(f"{{{_C}}}pt", ns)
@@ -3353,16 +3358,18 @@ def _apply_market_chart_update(prs, update: dict) -> list[dict]:
     new_cats = update.get("categories")
     if new_cats:
         for ser_el in chart_el.findall(f".//{{{_C}}}ser"):
-            str_cache = ser_el.find(f".//{{{_C}}}cat//{{{_C}}}strCache", ns)
-            if str_cache is None:
+            cat_cache = ser_el.find(f"{{{_C}}}cat/{{{_C}}}strRef/{{{_C}}}strCache", ns)
+            if cat_cache is None:
+                cat_cache = ser_el.find(f"{{{_C}}}cat/{{{_C}}}numRef/{{{_C}}}numCache", ns)
+            if cat_cache is None:
                 continue
-            for pt in str_cache.findall(f"{{{_C}}}pt", ns):
-                str_cache.remove(pt)
-            pt_count = str_cache.find(f"{{{_C}}}ptCount", ns)
+            for pt in cat_cache.findall(f"{{{_C}}}pt", ns):
+                cat_cache.remove(pt)
+            pt_count = cat_cache.find(f"{{{_C}}}ptCount", ns)
             if pt_count is not None:
                 pt_count.set("val", str(len(new_cats)))
             for idx, cat in enumerate(new_cats):
-                pt_el = etree.SubElement(str_cache, f"{{{_C}}}pt")
+                pt_el = etree.SubElement(cat_cache, f"{{{_C}}}pt")
                 pt_el.set("idx", str(idx))
                 v_el = etree.SubElement(pt_el, f"{{{_C}}}v")
                 v_el.text = str(cat)
@@ -3391,9 +3398,9 @@ def _apply_market_chart_update(prs, update: dict) -> list[dict]:
         for v_el in new_ser.findall(f".//{{{_C}}}tx//{{{_C}}}v"):
             v_el.text = add_ser.get("name", f"Series {new_idx}")
         # Set values
-        num_cache = new_ser.find(f".//{{{_C}}}numRef/{{{_C}}}numCache", ns)
+        num_cache = new_ser.find(f"{{{_C}}}val/{{{_C}}}numRef/{{{_C}}}numCache", ns)
         if num_cache is None:
-            num_cache = new_ser.find(f".//{{{_C}}}numLit", ns)
+            num_cache = new_ser.find(f"{{{_C}}}val/{{{_C}}}numLit", ns)
         if num_cache is not None:
             for pt in num_cache.findall(f"{{{_C}}}pt", ns):
                 num_cache.remove(pt)
@@ -3494,13 +3501,8 @@ def apply_market_updates(memo_path: str, update_set: dict, dry_run: bool = False
             continue
         replaced = False
         for shape in slide.shapes:
-            if not shape.has_text_frame:
-                continue
-            for para in shape.text_frame.paragraphs:
-                if _replace_in_para(para, old_text, new_text):
-                    replaced = True
-                    break
-            if replaced:
+            if _replace_in_shape(shape, old_text, new_text):
+                replaced = True
                 break
         if replaced:
             all_changes.append({

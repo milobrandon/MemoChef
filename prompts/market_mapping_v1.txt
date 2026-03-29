@@ -38,6 +38,20 @@ IMPORTANT RULES:
 - Include a "reasoning" field on every update explaining the match and any adaptation.
 - If a match is uncertain, include the update but set "confidence": "low".
 
+COMPLETENESS RULES:
+- **Full-row consistency**: When updating ANY column in a table row, update ALL columns
+  in that row that have corresponding workbook data. Never update demand figures
+  without also updating the enrollment figures in the same row. The table must be
+  internally consistent after updates.
+- **Narrative-heading coherence**: If updated data contradicts a section heading or
+  framing (e.g., heading says "Consistent Growth" but data now shows a decline),
+  generate a narrative_update to reword the heading to match the new data.
+- **Narrative-table coherence**: When you update a table, check if adjacent narrative
+  text on the same or nearby slides references the old data. If it does, generate a
+  narrative_update to keep the text consistent with the new table values. For example,
+  if a pipeline table now shows specific unit counts, a narrative saying "details
+  remain unclear" must be updated.
+
 ## MEMO CONTENT (all slides)
 {memo_content}
 
