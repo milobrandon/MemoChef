@@ -63,17 +63,62 @@ def test_apply_branding(sample_pptx):
     assert runs > 0
 
     prs = Presentation(sample_pptx)
-    table = _find_table(prs.slides[0])
-    header_run = table.cell(0, 0).text_frame.paragraphs[0].runs[0]
-    body_run = table.cell(1, 0).text_frame.paragraphs[0].runs[0]
-    assert header_run.font.name == "Pragmatica Bold"
-    assert body_run.font.name == "Pragmatica Book"
 
     # Subheader (bold run in non-title shape) should get Pragmatica Bold
     sub_box = next(s for s in prs.slides[0].shapes if s.name == "SubheaderBox")
     sub_runs = sub_box.text_frame.paragraphs[0].runs
     assert sub_runs[0].font.name == "Pragmatica Bold"  # bold subheader
     assert sub_runs[1].font.name == "Pragmatica Book"  # non-bold body
+
+
+def test_apply_branding_preserves_table_fonts(sample_pptx):
+    """apply_branding() must not change font family or size inside table cells."""
+    theme_path = os.path.join(os.path.dirname(__file__), "Subtext Brand Theme.thmx")
+    if not os.path.exists(theme_path):
+        pytest.skip("Theme file not found for branding test")
+
+    # Set distinctive fonts on table cells before branding
+    from pptx.util import Pt
+    prs_before = Presentation(sample_pptx)
+    table = _find_table(prs_before.slides[0])
+
+    header_run = table.cell(0, 0).text_frame.paragraphs[0].runs[0]
+    header_run.font.name = "Arial"
+    header_run.font.size = Pt(14)
+    header_run.font.bold = True
+
+    body_run = table.cell(1, 0).text_frame.paragraphs[0].runs[0]
+    body_run.font.name = "Calibri"
+    body_run.font.size = Pt(10)
+
+    prs_before.save(sample_pptx)
+
+    cfg = {
+        "branding": {
+            "heading_size_threshold": 18,
+            "color_distance_threshold": 80,
+        }
+    }
+    apply_branding(sample_pptx, theme_path, cfg)
+
+    prs_after = Presentation(sample_pptx)
+    table_after = _find_table(prs_after.slides[0])
+
+    header_run_after = table_after.cell(0, 0).text_frame.paragraphs[0].runs[0]
+    body_run_after = table_after.cell(1, 0).text_frame.paragraphs[0].runs[0]
+
+    assert header_run_after.font.name == "Arial", (
+        f"Header cell font should remain Arial, got {header_run_after.font.name!r}"
+    )
+    assert header_run_after.font.size == Pt(14), (
+        f"Header cell size should remain 14pt, got {header_run_after.font.size!r}"
+    )
+    assert body_run_after.font.name == "Calibri", (
+        f"Body cell font should remain Calibri, got {body_run_after.font.name!r}"
+    )
+    assert body_run_after.font.size == Pt(10), (
+        f"Body cell size should remain 10pt, got {body_run_after.font.size!r}"
+    )
 
 
 def test_normalize_layout(layout_test_pptx):

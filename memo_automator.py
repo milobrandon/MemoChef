@@ -3603,7 +3603,7 @@ def apply_branding(memo_path: str, theme_path: str, cfg: dict) -> int:
     """
     Apply Subtext branding to the entire memo:
     1. Replace the PPTX theme XML with the Subtext Brand Theme
-    2. Reformat all text runs to Pragmatica fonts
+    2. Reformat non-table text runs to Pragmatica fonts (table cells skipped)
     3. Remap hard-coded colors to nearest brand color
 
     Returns the number of text runs reformatted.
@@ -3664,25 +3664,7 @@ def apply_branding(memo_path: str, theme_path: str, cfg: dict) -> int:
                                       heading_font, body_font, color_threshold)
                         runs_reformatted += 1
 
-            # Process table cells (conservative: font only, preserve alignment & color)
-            if shape.has_table:
-                table = shape.table
-                for row_idx, row in enumerate(table.rows):
-                    for cell in row.cells:
-                        for para in cell.text_frame.paragraphs:
-                            for run in para.runs:
-                                # Determine heading from existing bold state or row 0
-                                is_cell_heading = (
-                                    row_idx == 0
-                                    or run.font.bold is True
-                                )
-                                _reformat_run(
-                                    run, is_cell_heading, heading_threshold,
-                                    heading_font, body_font,
-                                    color_threshold,
-                                    skip_color=True,  # tables use deliberate colors
-                                )
-                                runs_reformatted += 1
+            # Table cells: skip font changes entirely — preserve original font families and sizes.
 
     prs.save(memo_path)
     log.info("Branding applied: %d text runs reformatted", runs_reformatted)
