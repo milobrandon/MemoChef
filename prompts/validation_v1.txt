@@ -125,4 +125,11 @@ Additional domain rules to enforce:
   proposed changes comply with them. Reject any update that violates a user
   directive (e.g. updating a section the user said to skip, or using a source
   the user said to ignore).
+- **Column format inheritance** — For each table column in the proposed updates,
+  check whether values in the same column consistently use a formatting prefix
+  (e.g., "$") or suffix (e.g., "%"). If a proposed `new_value` omits a prefix
+  or suffix that every other cell in that column uses, emit a `correction`
+  entry that adds the missing prefix/suffix. Likewise, if an existing memo
+  value already violates the column formatting convention and is NOT being
+  updated by any proposed change, emit it as a `missed` entry.
 {property_name_section}

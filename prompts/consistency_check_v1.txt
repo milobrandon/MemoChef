@@ -40,6 +40,13 @@ Perform a line-by-line audit of the updated memo against the source data:
    the current numbers. Flag any narrative that references an old value or
    contradicts a table on the same page.
 
+**Do NOT report false positives.** Before adding any discrepancy to your
+output, compare your `expected` and `found` values character-by-character.
+If they are identical (same text, same formatting), do NOT include that item
+in the discrepancies array. Only report genuine mismatches where the values
+actually differ. A discrepancy where expected equals found is a bug in YOUR
+output, not a bug in the memo.
+
 CRITICAL: Return ONLY the raw JSON object below. Your entire response must
 be parseable as JSON. Start with {{ and end with }}.
 

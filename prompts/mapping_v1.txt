@@ -26,6 +26,12 @@ metric in the memo that should be updated with new values from the proforma.
    ratios (e.g. parking ratio, cost per bed/unit), per-bed or per-unit
    metrics, summed pipeline beds/units, and sensitivity-table outputs.
    Perform the arithmetic and emit updates for each derived value.
+   - **SF verification** — For every square footage value you emit (GSF, NSF,
+     amenity SF, leasing SF, retail SF, exterior SF), trace it to a specific
+     proforma row and include that row reference in the `source` field (e.g.
+     "Executive Summary Row 21: Amenity & Leasing SF"). If no proforma row
+     matches the SF value, do NOT emit the update — leave the memo's existing
+     value in place. Never propagate a memo value that has no proforma source.
 
 4. **Pipeline / comp summary tables (row-oriented)** - Tables where each
    ROW is a property (columns = metrics like units, beds, year, rent).
@@ -238,6 +244,12 @@ metric in the memo that should be updated with new values from the proforma.
    - `remove_row`: removes a row by its label
    - `reorder_rows`: reorders data rows to match a given label sequence
    **Never use table_structure_updates on side-by-side comp tables.**
+
+**UNIT vs BED COUNTS — FINAL CHECK:** Before emitting your JSON, review every
+unit mix update. Parenthetical numbers like "(84)" = total beds for that unit
+type (units × beds_per_unit). The separate "Units" or "# Units" column = raw
+unit count. The "# Beds" or "Bed Count" row = beds for that type. These are
+DIFFERENT numbers. Getting them backwards is a critical error.
 
 CRITICAL: Return ONLY the raw JSON object below. Do NOT include any analysis,
 reasoning, explanation, or commentary before or after the JSON. Your entire

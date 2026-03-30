@@ -39,6 +39,9 @@ not ship.
 
 ### 4. READABILITY
 - Narrative text is coherent and grammatically correct
+- Flag obvious typos and spelling errors (e.g., "on" instead of "one",
+  "teh" instead of "the", missing words, repeated words like "the the").
+  These are high-visibility errors in an IC-distributed document.
 - No contradictions between narrative and tables on the same page
 - Narrative accurately describes the current numbers (not old values)
 - Key metrics are easy to find and clearly labeled

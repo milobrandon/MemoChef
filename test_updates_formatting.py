@@ -3,7 +3,7 @@ import os
 
 import pytest
 from pptx import Presentation
-from pptx.util import Inches
+from pptx.util import Inches, Pt
 
 from memo_automator import _replace_in_para, apply_branding, apply_updates, normalize_layout
 
@@ -63,17 +63,62 @@ def test_apply_branding(sample_pptx):
     assert runs > 0
 
     prs = Presentation(sample_pptx)
-    table = _find_table(prs.slides[0])
-    header_run = table.cell(0, 0).text_frame.paragraphs[0].runs[0]
-    body_run = table.cell(1, 0).text_frame.paragraphs[0].runs[0]
-    assert header_run.font.name == "Pragmatica Bold"
-    assert body_run.font.name == "Pragmatica Book"
 
     # Subheader (bold run in non-title shape) should get Pragmatica Bold
     sub_box = next(s for s in prs.slides[0].shapes if s.name == "SubheaderBox")
     sub_runs = sub_box.text_frame.paragraphs[0].runs
     assert sub_runs[0].font.name == "Pragmatica Bold"  # bold subheader
     assert sub_runs[1].font.name == "Pragmatica Book"  # non-bold body
+
+
+def test_apply_branding_preserves_table_fonts(sample_pptx):
+    """apply_branding() must not change font family or size inside table cells."""
+    theme_path = os.path.join(os.path.dirname(__file__), "Subtext Brand Theme.thmx")
+    if not os.path.exists(theme_path):
+        pytest.skip("Theme file not found for branding test")
+
+    # Set distinctive fonts on table cells before branding
+    from pptx.util import Pt
+    prs_before = Presentation(sample_pptx)
+    table = _find_table(prs_before.slides[0])
+
+    header_run = table.cell(0, 0).text_frame.paragraphs[0].runs[0]
+    header_run.font.name = "Arial"
+    header_run.font.size = Pt(14)
+    header_run.font.bold = True
+
+    body_run = table.cell(1, 0).text_frame.paragraphs[0].runs[0]
+    body_run.font.name = "Calibri"
+    body_run.font.size = Pt(10)
+
+    prs_before.save(sample_pptx)
+
+    cfg = {
+        "branding": {
+            "heading_size_threshold": 18,
+            "color_distance_threshold": 80,
+        }
+    }
+    apply_branding(sample_pptx, theme_path, cfg)
+
+    prs_after = Presentation(sample_pptx)
+    table_after = _find_table(prs_after.slides[0])
+
+    header_run_after = table_after.cell(0, 0).text_frame.paragraphs[0].runs[0]
+    body_run_after = table_after.cell(1, 0).text_frame.paragraphs[0].runs[0]
+
+    assert header_run_after.font.name == "Arial", (
+        f"Header cell font should remain Arial, got {header_run_after.font.name!r}"
+    )
+    assert header_run_after.font.size == Pt(14), (
+        f"Header cell size should remain 14pt, got {header_run_after.font.size!r}"
+    )
+    assert body_run_after.font.name == "Calibri", (
+        f"Body cell font should remain Calibri, got {body_run_after.font.name!r}"
+    )
+    assert body_run_after.font.size == Pt(10), (
+        f"Body cell size should remain 10pt, got {body_run_after.font.size!r}"
+    )
 
 
 def test_normalize_layout(layout_test_pptx):
@@ -95,6 +140,83 @@ def test_normalize_layout(layout_test_pptx):
     off_margin = next(s for s in slide.shapes if s.name == "OffMargin")
     assert off_margin.left >= Inches(0.50)
     assert off_margin.top >= Inches(0.25)
+
+
+def test_normalize_layout_preserves_table_font_sizes(tmp_dir):
+    """normalize_layout() must not overwrite intentional per-cell table font sizes.
+
+    Simulates a dense comp table (like Knoxville pages 13/16) where header
+    cells are 12pt and body cells are intentionally smaller at 8pt.  The old
+    normalization code used a global dominant-size pass that treated the 8pt
+    body cells as the dominant and then normalised any body cell outside
+    ±0.5–4pt back to 8pt — which meant a mixed table with some 6pt rows would
+    have those rows overwritten.  We construct exactly that scenario here.
+    """
+    path = os.path.join(tmp_dir, "font_size_test.pptx")
+    prs = Presentation()
+
+    # Slide 0: cover (skipped by normalize_layout)
+    prs.slides.add_slide(prs.slide_layouts[5])
+
+    # Slide 1: content slide with a 6x2 table:
+    #   row 0 (header): 12pt
+    #   rows 1-3 (body majority): 8pt  -> dominant_table_size = 8.0
+    #   rows 4-5 (body minority): 6pt  -> diff = 2.0, within old 0.5<diff<4.0 window
+    slide = prs.slides.add_slide(prs.slide_layouts[5])
+    table_shape = slide.shapes.add_table(
+        6, 2, Inches(1.0), Inches(0.5), Inches(6.0), Inches(4.0)
+    )
+    table = table_shape.table
+
+    # Header row: 12pt
+    for col in range(2):
+        cell = table.cell(0, col)
+        cell.text = f"Header {col}"
+        run = cell.text_frame.paragraphs[0].runs[0]
+        run.font.size = Pt(12)
+
+    # Majority body rows: 8pt
+    for row in range(1, 4):
+        for col in range(2):
+            cell = table.cell(row, col)
+            cell.text = f"Cell {row},{col}"
+            run = cell.text_frame.paragraphs[0].runs[0]
+            run.font.size = Pt(8)
+
+    # Minority body rows: intentionally smaller at 6pt (dense comp rows)
+    for row in range(4, 6):
+        for col in range(2):
+            cell = table.cell(row, col)
+            cell.text = f"Small {row},{col}"
+            run = cell.text_frame.paragraphs[0].runs[0]
+            run.font.size = Pt(6)
+
+    prs.save(path)
+
+    cfg = {
+        "layout": {
+            "margin_left": 0.50,
+            "margin_right": 0.50,
+            "margin_top": 0.25,
+            "margin_bottom": 0.50,
+            "snap_tolerance": 0.05,
+        }
+    }
+    summary = normalize_layout(path, cfg)
+
+    assert summary["table_font_size_normalized"] == 0, (
+        f"Expected 0 font size normalizations, got {summary['table_font_size_normalized']}"
+    )
+
+    prs_after = Presentation(path)
+    after_table = next(
+        s.table for s in prs_after.slides[1].shapes if s.has_table
+    )
+    # The 6pt minority rows must remain 6pt, not be overwritten to 8pt
+    small_run = after_table.cell(4, 0).text_frame.paragraphs[0].runs[0]
+    assert small_run.font.size == Pt(6), (
+        f"Dense comp body cell font size should remain 6pt, got {small_run.font.size!r}"
+    )
 
 
 class TestReplaceInParaCrossRun:

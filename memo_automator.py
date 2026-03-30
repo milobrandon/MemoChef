@@ -3603,7 +3603,7 @@ def apply_branding(memo_path: str, theme_path: str, cfg: dict) -> int:
     """
     Apply Subtext branding to the entire memo:
     1. Replace the PPTX theme XML with the Subtext Brand Theme
-    2. Reformat all text runs to Pragmatica fonts
+    2. Reformat non-table text runs to Pragmatica fonts (table cells skipped)
     3. Remap hard-coded colors to nearest brand color
 
     Returns the number of text runs reformatted.
@@ -3664,25 +3664,7 @@ def apply_branding(memo_path: str, theme_path: str, cfg: dict) -> int:
                                       heading_font, body_font, color_threshold)
                         runs_reformatted += 1
 
-            # Process table cells (conservative: font only, preserve alignment & color)
-            if shape.has_table:
-                table = shape.table
-                for row_idx, row in enumerate(table.rows):
-                    for cell in row.cells:
-                        for para in cell.text_frame.paragraphs:
-                            for run in para.runs:
-                                # Determine heading from existing bold state or row 0
-                                is_cell_heading = (
-                                    row_idx == 0
-                                    or run.font.bold is True
-                                )
-                                _reformat_run(
-                                    run, is_cell_heading, heading_threshold,
-                                    heading_font, body_font,
-                                    color_threshold,
-                                    skip_color=True,  # tables use deliberate colors
-                                )
-                                runs_reformatted += 1
+            # Table cells: skip font changes entirely — preserve original font families and sizes.
 
     prs.save(memo_path)
     log.info("Branding applied: %d text runs reformatted", runs_reformatted)
@@ -4076,72 +4058,8 @@ def normalize_layout(memo_path: str, cfg: dict) -> dict:
             [idx + 1 for idx, _ in overflow_slides],
         )
 
-    # ------------------------------------------------------------------
-    # 1h. Cross-slide formatting consistency
-    # ------------------------------------------------------------------
-    # Detect the dominant font for body text and table cells, then
-    # normalize outliers to the dominant style.
-    from collections import defaultdict
-
-    body_font_usage: dict[str, int] = defaultdict(int)   # font_name -> count
-    body_size_usage: dict[float, int] = defaultdict(int)  # size_pt -> count
-    table_size_usage: dict[float, int] = defaultdict(int)
-
-    for slide in prs.slides:
-        for shape in slide.shapes:
-            if shape.has_text_frame:
-                for para in shape.text_frame.paragraphs:
-                    for run in para.runs:
-                        if run.font.name:
-                            body_font_usage[run.font.name] += 1
-                        if run.font.size:
-                            try:
-                                body_size_usage[round(run.font.size.pt, 1)] += 1
-                            except Exception:
-                                pass
-            if shape.has_table:
-                for row in shape.table.rows:
-                    for cell in row.cells:
-                        for para in cell.text_frame.paragraphs:
-                            for run in para.runs:
-                                if run.font.size:
-                                    try:
-                                        table_size_usage[round(run.font.size.pt, 1)] += 1
-                                    except Exception:
-                                        pass
-
-    # Find dominant table cell font size
-    dominant_table_size = None
-    if table_size_usage:
-        dominant_table_size = max(table_size_usage, key=table_size_usage.get)
-
-    # Normalize: if a table cell has a font size that's >2pt off the
-    # dominant size AND it's not a header row (>= 2pt larger), fix it.
-    format_fixes = 0
-    if dominant_table_size:
-        for slide in prs.slides:
-            for shape in slide.shapes:
-                if not shape.has_table:
-                    continue
-                for row_idx, row in enumerate(shape.table.rows):
-                    if row_idx == 0:
-                        continue  # skip header row
-                    for cell in row.cells:
-                        for para in cell.text_frame.paragraphs:
-                            for run in para.runs:
-                                if run.font.size:
-                                    try:
-                                        size = round(run.font.size.pt, 1)
-                                        diff = abs(size - dominant_table_size)
-                                        if 0.5 < diff < 4.0:  # outlier but not intentional header
-                                            run.font.size = Pt(dominant_table_size)
-                                            format_fixes += 1
-                                    except Exception:
-                                        pass
-
-    summary["table_font_size_normalized"] = format_fixes
-    if format_fixes > 0:
-        log.info("Normalized %d table cell font sizes to %.1fpt", format_fixes, dominant_table_size)
+    # Table font sizes: preserved as-is (analyst-set formatting is intentional)
+    summary["table_font_size_normalized"] = 0
 
     prs.save(memo_path)
     log.info("Layout normalized: %s", summary)
