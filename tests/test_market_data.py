@@ -2,6 +2,7 @@
 
 import os
 import sys
+from unittest.mock import MagicMock
 
 import openpyxl
 import pytest
@@ -12,8 +13,84 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from memo_automator import (
     extract_market_data,
     load_config,
-    _MARKET_DASHBOARD_TABS,
 )
+
+from memo_chef.models import (
+    MarketChartUpdate, MarketNarrativeUpdate,
+    MarketTableUpdate, MarketDataUpdateSet,
+)
+
+
+class TestMarketDataModels:
+    def test_chart_update_validates(self):
+        u = MarketChartUpdate(
+            page=3,
+            chart_name="Rent Growth",
+            series=[{"name": "Market A", "new_values": [1200, 1350], "old_values": [1100, 1250]}],
+            categories=["2023", "2024"],
+            add_series=[{"name": "Market D", "values": [900, 950]}],
+            remove_series=["Market C"],
+            source="Rent Growth tab",
+            reasoning="Semantic match",
+            confidence="high",
+        )
+        assert u.type == "chart_update"
+        assert u.page == 3
+        assert u.confidence == "high"
+
+    def test_narrative_update_validates(self):
+        u = MarketNarrativeUpdate(
+            page=7,
+            old_text="Rents grew 5%",
+            new_text="Rents grew 12%",
+            source="Rent Growth tab",
+            reasoning="Updated figures",
+            confidence="high",
+        )
+        assert u.type == "narrative_update"
+
+    def test_table_update_validates(self):
+        u = MarketTableUpdate(
+            page=3,
+            slide_table="Market Summary",
+            updates=[{"row": 2, "col": 1, "old_value": "94%", "new_value": "96%"}],
+            source="Tables tab",
+            reasoning="Occupancy updated",
+            confidence="medium",
+        )
+        assert u.type == "table_update"
+        assert u.updates[0].row == 2
+
+    def test_update_set_validates_mixed(self):
+        s = MarketDataUpdateSet(
+            market_data_updates=[
+                {"type": "chart_update", "page": 3, "series": [], "source": "x", "reasoning": "y", "confidence": "high"},
+                {"type": "narrative_update", "page": 5, "old_text": "a", "new_text": "b", "source": "x", "reasoning": "y", "confidence": "high"},
+            ],
+            unmatched_memo_metrics=["Absorption chart p9"],
+            unmatched_workbook_tabs=["Backend"],
+            warnings=["Low confidence match on p3"],
+        )
+        assert len(s.market_data_updates) == 2
+        assert s.warnings == ["Low confidence match on p3"]
+
+    def test_empty_update_set(self):
+        s = MarketDataUpdateSet()
+        assert s.market_data_updates == []
+        assert s.warnings == []
+
+    def test_update_set_accessor_helpers(self):
+        s = MarketDataUpdateSet(
+            market_data_updates=[
+                {"type": "chart_update", "page": 3, "series": [], "source": "x", "reasoning": "y", "confidence": "high"},
+                {"type": "narrative_update", "page": 5, "old_text": "a", "new_text": "b", "source": "x", "reasoning": "y", "confidence": "high"},
+                {"type": "table_update", "page": 7, "slide_table": "T", "updates": [], "source": "x", "reasoning": "y", "confidence": "high"},
+            ]
+        )
+        assert len(s.chart_updates()) == 1
+        assert s.chart_updates()[0].page == 3
+        assert len(s.narrative_updates()) == 1
+        assert len(s.table_updates()) == 1
 
 
 @pytest.fixture
@@ -24,23 +101,32 @@ def default_cfg():
     return load_config(config_path)
 
 
+_LEGACY_DASHBOARD_TABS = [
+    "Rent Comp Market",
+    "Occupancy Comparison By Year",
+    "Rent Growth Comparison By Year",
+    "Rent Comp Survey",
+    "Supply Demand Pipeline",
+]
+
+
 @pytest.fixture
 def market_data_workbook(tmp_path):
-    """Create a minimal market data workbook with dashboard tabs."""
+    """Create a minimal market data workbook with market-keyword tabs."""
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "Tables"
+    ws.title = _LEGACY_DASHBOARD_TABS[0]
     ws["A1"] = "IPEDS"
     ws["B1"] = 134130
     ws["A2"] = "University Name"
     ws["B2"] = "UF"
 
-    for tab_name in _MARKET_DASHBOARD_TABS[1:]:
+    for tab_name in _LEGACY_DASHBOARD_TABS[1:]:
         ws2 = wb.create_sheet(tab_name)
         ws2["A1"] = f"Header for {tab_name}"
         ws2["B1"] = 123.45
 
-    # Add a back-end tab (should be ignored)
+    # Add a back-end tab (should be ignored - no market keywords)
     ws3 = wb.create_sheet("PROPERTIES")
     ws3["A1"] = "This should not be extracted"
 
@@ -66,9 +152,9 @@ def empty_workbook(tmp_path):
 class TestExtractMarketData:
     def test_happy_path(self, market_data_workbook, default_cfg):
         result = extract_market_data(market_data_workbook, default_cfg)
-        assert "MARKET DATA (from RealPage)" in result
-        assert "TAB: Tables" in result
-        assert "TAB: Comp Set" in result
+        assert "MARKET DATA (from workbook)" in result
+        assert f"TAB: {_LEGACY_DASHBOARD_TABS[0]}" in result
+        assert f"TAB: {_LEGACY_DASHBOARD_TABS[3]}" in result
         assert "IPEDS" in result
         assert "134130" in result
 
@@ -79,7 +165,7 @@ class TestExtractMarketData:
 
     def test_all_dashboard_tabs_extracted(self, market_data_workbook, default_cfg):
         result = extract_market_data(market_data_workbook, default_cfg)
-        for tab in _MARKET_DASHBOARD_TABS:
+        for tab in _LEGACY_DASHBOARD_TABS:
             assert f"TAB: {tab}" in result
 
     def test_no_dashboard_tabs_returns_empty(self, empty_workbook, default_cfg):
@@ -100,18 +186,20 @@ class TestExtractMarketData:
     def test_partial_tabs(self, tmp_path, default_cfg):
         wb = openpyxl.Workbook()
         ws = wb.active
-        ws.title = "Tables"
+        ws.title = "Rent Comp Market"
         ws["A1"] = "Data"
-        ws2 = wb.create_sheet("Comp Set")
+        ws2 = wb.create_sheet("Occupancy Growth")
         ws2["A1"] = "Comps"
+        ws3 = wb.create_sheet("BACKEND_RAW")
+        ws3["A1"] = "Internal only"
         path = str(tmp_path / "partial.xlsx")
         wb.save(path)
         wb.close()
 
         result = extract_market_data(path, default_cfg)
-        assert "TAB: Tables" in result
-        assert "TAB: Comp Set" in result
-        assert "TAB: Comparison Graph" not in result
+        assert "TAB: Rent Comp Market" in result
+        assert "TAB: Occupancy Growth" in result
+        assert "TAB: BACKEND_RAW" not in result
 
     def test_output_format_rows(self, market_data_workbook, default_cfg):
         """Verify tab-delimited row format matches proforma pattern."""
@@ -129,9 +217,7 @@ class TestRealMarketDataFile:
     def test_real_file_extraction(self, default_cfg):
         result = extract_market_data(self.REAL_FILE, default_cfg)
         assert len(result) > 1000
-        assert "MARKET DATA (from RealPage)" in result
-        assert "TAB: Tables" in result
-        assert "TAB: Comp Set" in result
+        assert "MARKET DATA (from workbook)" in result
 
     @pytest.mark.skipif(
         not os.path.exists(REAL_FILE),
@@ -142,3 +228,157 @@ class TestRealMarketDataFile:
         result = extract_market_data(self.REAL_FILE, default_cfg)
         # Dashboard tabs should be well under 50K chars
         assert len(result) < 50000, f"Market data too large: {len(result)} chars"
+
+
+class TestDynamicExtractMarketData:
+    """Tests for the new keyword-scoring extractor."""
+
+    def _make_workbook(self, sheets: dict) -> str:
+        """Create a temp xlsx with given {tab_name: [[row], [row]]} data."""
+        import tempfile
+        wb = openpyxl.Workbook()
+        first = True
+        for name, rows in sheets.items():
+            if first:
+                ws = wb.active
+                ws.title = name
+                first = False
+            else:
+                ws = wb.create_sheet(name)
+            for row in rows:
+                ws.append(row)
+        path = tempfile.mktemp(suffix=".xlsx")
+        wb.save(path)
+        return path
+
+    def test_scores_rent_tab_above_threshold(self):
+        path = self._make_workbook({
+            "Rent Comparison": [["Market", "Rent", "Occupancy"], ["A", 1200, 0.95]],
+            "Backend Raw": [["id", "code"], [1, "X"]],
+        })
+        cfg = {"market_data": {"max_rows_per_tab": 50, "max_cols_per_tab": 10, "keyword_threshold": 2, "include_all_tabs": False}}
+        result = extract_market_data(path, cfg)
+        assert "Rent Comparison" in result
+        assert "Backend Raw" not in result
+        os.remove(path)
+
+    def test_include_all_tabs_bypasses_scoring(self):
+        path = self._make_workbook({
+            "XYZ": [["col1", "col2"], ["a", "b"]],
+        })
+        cfg = {"market_data": {"max_rows_per_tab": 50, "max_cols_per_tab": 10, "keyword_threshold": 2, "include_all_tabs": True}}
+        result = extract_market_data(path, cfg)
+        assert "XYZ" in result
+        os.remove(path)
+
+    def test_falls_back_to_proforma_config_if_no_market_data_section(self):
+        path = self._make_workbook({
+            "Comp Set": [["Name", "Rent"], ["A", 1200]],
+        })
+        cfg = {"proforma": {"max_rows_per_tab": 50, "max_cols_per_tab": 10},
+               "market_data": {"max_rows_per_tab": 50, "max_cols_per_tab": 10, "keyword_threshold": 1, "include_all_tabs": False}}
+        result = extract_market_data(path, cfg)
+        assert "Comp Set" in result
+        os.remove(path)
+
+    def test_missing_file_returns_empty(self):
+        cfg = {"market_data": {"max_rows_per_tab": 50, "max_cols_per_tab": 10, "keyword_threshold": 2, "include_all_tabs": False}}
+        assert extract_market_data("/no/such/file.xlsx", cfg) == ""
+
+    def test_tab_header_line_present(self):
+        path = self._make_workbook({
+            "Occupancy Trend": [["Year", "Occupancy"], [2023, 0.94], [2024, 0.96]],
+        })
+        cfg = {"market_data": {"max_rows_per_tab": 50, "max_cols_per_tab": 10, "keyword_threshold": 1, "include_all_tabs": False}}
+        result = extract_market_data(path, cfg)
+        assert "TAB: Occupancy Trend" in result
+        os.remove(path)
+
+
+class TestGetMarketDataMappings:
+    """Tests for get_market_data_mappings() — mocks Anthropic."""
+
+    def _make_client(self, response_text: str):
+        client = MagicMock()
+        msg = MagicMock()
+        msg.content = [MagicMock(type="text", text=response_text)]
+        msg.stop_reason = "end_turn"
+        msg.usage = MagicMock(
+            input_tokens=100, output_tokens=50,
+            cache_read_input_tokens=0, cache_creation_input_tokens=0,
+        )
+        client.messages.stream.return_value.__enter__ = lambda s, *a: s
+        client.messages.stream.return_value.__exit__ = MagicMock(return_value=False)
+        client.messages.stream.return_value.get_final_message = lambda: msg
+        return client
+
+    def test_returns_update_set_on_valid_json(self):
+        from memo_automator import get_market_data_mappings
+        response = '{"market_data_updates":[],"unmatched_memo_metrics":[],"unmatched_workbook_tabs":[]}'
+        client = self._make_client(response)
+        cfg = {"claude": {"model": "claude-sonnet-4-6", "max_tokens": 8192, "temperature": 0}}
+        result = get_market_data_mappings(client, "market text", "memo text", cfg)
+        assert result["market_data_updates"] == []
+
+    def test_returns_empty_on_empty_market_data(self):
+        from memo_automator import get_market_data_mappings
+        cfg = {"claude": {"model": "claude-sonnet-4-6", "max_tokens": 8192, "temperature": 0}}
+        client = MagicMock()
+        result = get_market_data_mappings(client, "", "memo text", cfg)
+        assert result == {"market_data_updates": [], "unmatched_memo_metrics": [], "unmatched_workbook_tabs": [], "warnings": []}
+
+
+class TestValidateMarketDataMappings:
+    def test_returns_cleaned_update_set(self):
+        from memo_automator import validate_market_data_mappings
+        import json
+        update_set = {"market_data_updates": [], "unmatched_memo_metrics": [], "unmatched_workbook_tabs": [], "warnings": []}
+        response = json.dumps(update_set)
+        client = MagicMock()
+        msg = MagicMock()
+        msg.content = [MagicMock(type="text", text=response)]
+        msg.stop_reason = "end_turn"
+        msg.usage = MagicMock(
+            input_tokens=100, output_tokens=50,
+            cache_read_input_tokens=0, cache_creation_input_tokens=0,
+        )
+        client.messages.stream.return_value.__enter__ = lambda s, *a: s
+        client.messages.stream.return_value.__exit__ = MagicMock(return_value=False)
+        client.messages.stream.return_value.get_final_message = lambda: msg
+        cfg = {"claude": {"model": "claude-sonnet-4-6", "validation_model": "claude-sonnet-4-6", "max_tokens": 8192, "temperature": 0}}
+        result = validate_market_data_mappings(client, update_set, "memo text", cfg)
+        assert "market_data_updates" in result
+
+    def test_calls_api_when_updates_present(self):
+        from memo_automator import validate_market_data_mappings
+        import json
+        update_set = {
+            "market_data_updates": [
+                {"type": "chart_update", "page": 3, "series": [], "source": "x", "reasoning": "y", "confidence": "high"}
+            ],
+            "unmatched_memo_metrics": [],
+            "unmatched_workbook_tabs": [],
+            "warnings": [],
+        }
+        cleaned = {
+            "market_data_updates": [],  # validator dropped the low-confidence match
+            "unmatched_memo_metrics": [],
+            "unmatched_workbook_tabs": [],
+            "warnings": ["chart_update on p3 dropped: confidence low"],
+        }
+        client = MagicMock()
+        msg = MagicMock()
+        msg.content = [MagicMock(type="text", text=json.dumps(cleaned))]
+        msg.stop_reason = "end_turn"
+        msg.usage = MagicMock(
+            input_tokens=100, output_tokens=50,
+            cache_read_input_tokens=0, cache_creation_input_tokens=0,
+        )
+        client.messages.stream.return_value.__enter__ = lambda s, *a: s
+        client.messages.stream.return_value.__exit__ = MagicMock(return_value=False)
+        client.messages.stream.return_value.get_final_message = lambda: msg
+        cfg = {"claude": {"model": "claude-sonnet-4-6", "max_tokens": 8192, "temperature": 0}}
+        result = validate_market_data_mappings(client, update_set, "memo text", cfg)
+        # The API was called; it returned the cleaned set
+        assert result["market_data_updates"] == []
+        assert result["warnings"] == ["chart_update on p3 dropped: confidence low"]

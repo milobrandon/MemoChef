@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import glob
+import json
 import os
 from pathlib import Path
 import time
@@ -610,6 +611,17 @@ def render_new_run_tab() -> None:
     )
     profile = profile_lookup.get(selected_profile, {})
 
+    # ── Memo City News ────────────────────────────────────────────────────────────
+    _news_path = Path(__file__).parent / "memo_city_news.json"
+    if _news_path.exists():
+        _news = json.loads(_news_path.read_text(encoding="utf-8"))
+        with st.expander("📰 Memo City News — What's new in the app", expanded=False):
+            for item in _news:
+                st.markdown(f"**v{item['version']} · {item['date']} — {item['title']}**")
+                for bullet in item["bullets"]:
+                    st.markdown(f"- {bullet}")
+                st.markdown("---")
+
     upload_cols = st.columns(4)
     memo_file = upload_cols[0].file_uploader("Memo deck", type=["pptx"], key="memo_upload")
     proforma_file = upload_cols[1].file_uploader("Proforma", type=["xlsx", "xlsm"], key="proforma_upload")
@@ -640,11 +652,10 @@ def render_new_run_tab() -> None:
         )
         directive_cols2 = st.columns(2)
         market_data_directive = directive_cols2[0].text_area(
-            "Market data directions (coming soon)",
+            "Market data directions",
             key="market_data_directive",
-            placeholder="e.g., Use for rent trend charts only",
+            placeholder="e.g., Only update rent growth charts. Do not touch occupancy slides.",
             height=68,
-            disabled=True,
         )
         supplemental_directive = directive_cols2[1].text_area(
             "Supplemental data directions (coming soon)",

@@ -84,3 +84,13 @@ class TestValidateConfig:
             f.write("claude:\n  model: claude-sonnet-4-6\nunknown_section:\n  x: 1\n")
         with pytest.raises(ValueError, match="unknown_section"):
             load_config(path)
+
+
+def test_market_data_config_defaults():
+    """config.yaml must parse with market_data section and correct defaults."""
+    cfg = load_config("config.yaml")
+    md = cfg.get("market_data", {})
+    assert md.get("max_rows_per_tab") == 250
+    assert md.get("max_cols_per_tab") == 20
+    assert md.get("keyword_threshold") == 2
+    assert md.get("include_all_tabs") is False

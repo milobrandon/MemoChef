@@ -48,6 +48,22 @@ claude:
 schedule:
   max_tasks: 500
 
+# --- Market data settings ---
+market_data:
+  # Maximum rows to read per tab (0 = read all rows).
+  max_rows_per_tab: 250
+
+  # Maximum columns to read per tab (0 = read all columns).
+  max_cols_per_tab: 20
+
+  # Minimum keyword hits for a tab to be included as a market data candidate.
+  # Increase to be more selective; set include_all_tabs: true to bypass.
+  keyword_threshold: 2
+
+  # If true, send all tabs regardless of keyword score.
+  # Use when the workbook has unusual tab names.
+  include_all_tabs: false
+
 # --- Layout normalization ---
 layout:
   margin_left: 0.50       # inches

@@ -38,7 +38,7 @@ import zipfile
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import anthropic
 import httpx
@@ -47,8 +47,10 @@ import yaml
 from dotenv import load_dotenv
 from openpyxl.utils.exceptions import InvalidFileException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from lxml import etree
 from pptx import Presentation
 from pptx.exc import PackageNotFoundError
+from pptx.util import Pt
 
 # ============================================================================
 # LOGGING SETUP
@@ -209,6 +211,14 @@ class ScheduleConfig(BaseModel):
     max_tasks: int = Field(default=500, ge=0)
 
 
+class MarketDataConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_rows_per_tab: int = Field(default=250, ge=0)
+    max_cols_per_tab: int = Field(default=20, ge=0)
+    keyword_threshold: int = Field(default=2, ge=0)
+    include_all_tabs: bool = False
+
+
 class BrandingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     theme_path: str = ""
@@ -244,6 +254,7 @@ class AppConfig(BaseModel):
     proforma: ProformaConfig = Field(default_factory=ProformaConfig)
     memo: MemoConfig = Field(default_factory=MemoConfig)
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
+    market_data: MarketDataConfig = Field(default_factory=MarketDataConfig)
     branding: BrandingConfig = Field(default_factory=BrandingConfig)
     layout: LayoutConfig = Field(default_factory=LayoutConfig)
     claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
@@ -374,28 +385,44 @@ def extract_proforma_data(proforma_path: str, cfg: dict) -> str:
 # ============================================================================
 # 4a. MARKET DATA EXTRACTION  (openpyxl, data_only=True)
 # ============================================================================
-_MARKET_DASHBOARD_TABS = [
-    "Tables",
-    "Comparison Graph",
-    "Uncaptured Demand Comparison",
-    "Rent Growth Comparison By Year",
-    "Occupancy Comparison By Year",
-    "Comp Set",
-]
+
+# Market keyword set used to score tabs for relevance.
+_MARKET_KEYWORDS = frozenset({
+    "rent", "occupancy", "comp", "competitive", "supply", "demand",
+    "absorption", "vacancy", "cap rate", "market rate", "pipeline",
+    "lease-up", "submarket", "msa", "psf", "concession",
+    "effective rent", "gross rent", "net rent", "growth", "prelease",
+    "enrollment", "beds", "housing", "delivery", "construction",
+})
+
+
+def _score_tab_for_market_relevance(sheet_name: str, header_cells: list) -> int:
+    """Count how many market keywords appear in the tab name + column headers."""
+    text = (sheet_name + " " + " ".join(str(h) for h in header_cells if h)).lower()
+    return sum(1 for kw in _MARKET_KEYWORDS if kw in text)
 
 
 def extract_market_data(market_data_path: str, cfg: dict) -> str:
     """
-    Read the RealPage market data workbook and return a compact text
-    representation of the 6 dashboard tabs (ignoring back-end data tabs).
+    Read any Excel market workbook and return a compact text representation
+    of market-relevant tabs.
 
-    Uses data_only=True so formulas resolve to their cached values.
-    Returns empty string if no dashboard tabs are found (non-fatal).
+    Tab relevance is determined by keyword scoring against the tab name and
+    column headers. Tabs scoring at or above ``market_data.keyword_threshold``
+    (default 2) are included. Set ``market_data.include_all_tabs: true`` to
+    bypass scoring and include all tabs.
+
+    Returns empty string if the file is missing, unreadable, or contains no
+    relevant tabs.
     """
-    max_rows = cfg["proforma"]["max_rows_per_tab"]
-    max_cols = cfg["proforma"]["max_cols_per_tab"]
+    md_cfg = cfg.get("market_data", {})
+    pf_cfg = cfg.get("proforma", {})
+    max_rows = md_cfg.get("max_rows_per_tab", pf_cfg.get("max_rows_per_tab", 250))
+    max_cols = md_cfg.get("max_cols_per_tab", pf_cfg.get("max_cols_per_tab", 20))
+    threshold = md_cfg.get("keyword_threshold", 2)
+    include_all = md_cfg.get("include_all_tabs", False)
 
-    log.info("Opening market data (data_only): %s", market_data_path)
+    log.info("Opening market data workbook (data_only): %s", market_data_path)
     try:
         wb = openpyxl.load_workbook(market_data_path, data_only=True)
     except (InvalidFileException, zipfile.BadZipFile) as e:
@@ -407,120 +434,55 @@ def extract_market_data(market_data_path: str, cfg: dict) -> str:
     except FileNotFoundError:
         log.warning("Market data file not found: %s", market_data_path)
         return ""
-    log.info("Market data sheets: %s", wb.sheetnames)
 
-    lines = [
-        f"\n{'='*70}",
-        "MARKET DATA (from RealPage)",
-        f"{'='*70}",
-    ]
-    found_tabs = 0
-    data_rows = 0
-    for tab_name in _MARKET_DASHBOARD_TABS:
-        if tab_name not in wb.sheetnames:
-            log.warning("Market data tab '%s' not found - skipping", tab_name)
+    log.info("Market workbook sheets: %s", wb.sheetnames)
+    sections = []
+
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        end_row = ws.max_row if max_rows == 0 else min(ws.max_row or 0, max_rows)
+        end_col = ws.max_column if max_cols == 0 else min(ws.max_column or 0, max_cols)
+
+        if end_row == 0 or end_col == 0:
             continue
-        found_tabs += 1
-        ws = wb[tab_name]
-        lines.append(f"\n{'='*70}")
-        lines.append(f"TAB: {tab_name}")
-        lines.append(f"{'='*70}")
 
-        end_row = ws.max_row if max_rows == 0 else min(ws.max_row, max_rows)
-        end_col = ws.max_column if max_cols == 0 else min(ws.max_column, max_cols)
+        # Read first row as headers for scoring
+        header_row = next(
+            ws.iter_rows(min_row=1, max_row=1, max_col=end_col, values_only=True),
+            (),
+        )
+        headers = [str(c) if c is not None else "" for c in header_row]
 
-        for row in ws.iter_rows(
-            min_row=1, max_row=end_row, max_col=end_col, values_only=False
-        ):
-            row_data = []
-            for cell in row:
-                if cell.value is not None:
-                    row_data.append(str(cell.value))
+        score = _score_tab_for_market_relevance(sheet_name, headers)
+        if not include_all and score < threshold:
+            log.debug("Skipping tab '%s' (score=%d < threshold=%d)", sheet_name, score, threshold)
+            continue
+
+        log.info("Including tab '%s' (score=%d)", sheet_name, score)
+        lines = [
+            f"\n{'=' * 70}",
+            f"TAB: {sheet_name}",
+            f"{'=' * 70}",
+        ]
+        for row in ws.iter_rows(min_row=1, max_row=end_row, max_col=end_col, values_only=False):
+            row_data = [str(cell.value) for cell in row if cell.value is not None]
             if row_data:
                 lines.append(f"Row {row[0].row}:\t" + "\t".join(row_data))
-                data_rows += 1
+
+        sections.append("\n".join(lines))
 
     wb.close()
 
-    if found_tabs == 0:
-        # Fallback: scan ALL tabs for market-relevant data.
-        # Pick tabs whose names contain keywords like rent, sales, comp,
-        # pipeline, supply, demand, occupancy, market, land.
-        _market_keywords = [
-            "rent", "sale", "comp", "pipeline", "supply", "demand",
-            "occupancy", "market", "land", "prelease", "sbys", "side",
-            "growth", "rate", "unit mix", "taxes",
-        ]
-        fallback_tabs = []
-        for sn in wb.sheetnames:
-            sn_lower = sn.lower()
-            if any(kw in sn_lower for kw in _market_keywords):
-                fallback_tabs.append(sn)
-
-        if fallback_tabs:
-            log.info(
-                "No configured dashboard tabs matched. Falling back to %d "
-                "market-keyword tabs: %s",
-                len(fallback_tabs), fallback_tabs[:10],
-            )
-            # Re-open since wb was already used
-            wb2 = openpyxl.load_workbook(market_data_path, data_only=True)
-            # Prioritize tabs with rent/comp/market keywords and recent dates.
-            # Score each tab: high-value keywords + recency.
-            _high_value = ["rent", "sbys", "side", "comp", "sale", "market", "unit mix"]
-            def _tab_score(name: str) -> int:
-                nl = name.lower()
-                score = sum(2 for kw in _high_value if kw in nl)
-                # Bonus for recent dates (2026, 2025)
-                if "2026" in name:
-                    score += 3
-                elif "2025" in name:
-                    score += 1
-                return score
-            fallback_tabs.sort(key=_tab_score, reverse=True)
-            for tab_name in fallback_tabs[:4]:  # cap at 4 tabs
-                ws = wb2[tab_name]
-                found_tabs += 1
-                lines.append(f"\n{'='*70}")
-                lines.append(f"TAB: {tab_name}")
-                lines.append(f"{'='*70}")
-
-                end_row = ws.max_row if max_rows == 0 else min(ws.max_row, max_rows)
-                end_col = ws.max_column if max_cols == 0 else min(ws.max_column, max_cols)
-
-                for row in ws.iter_rows(
-                    min_row=1, max_row=end_row, max_col=end_col, values_only=False
-                ):
-                    row_data = []
-                    for cell in row:
-                        if cell.value is not None:
-                            row_data.append(str(cell.value))
-                    if row_data:
-                        lines.append(f"Row {row[0].row}:\t" + "\t".join(row_data))
-                        data_rows += 1
-            wb2.close()
-        else:
-            log.warning(
-                "No dashboard tabs found in market data file. "
-                "Expected tabs: %s. Available: %s. Skipping market data.",
-                _MARKET_DASHBOARD_TABS, wb.sheetnames,
-            )
-            return ""
-
-    if data_rows == 0:
-        log.warning(
-            "Market data extraction found no non-empty values. "
-            "If this workbook contains formulas, open it in Excel, let it "
-            "recalculate, save, and retry."
-        )
+    if not sections:
+        log.warning("No market-relevant tabs found in '%s'", market_data_path)
         return ""
 
-    market_text = "\n".join(lines)
-    log.info(
-        "Market data extraction complete (%d tabs, %d lines, %d chars)",
-        found_tabs, len(lines), len(market_text),
-    )
-    return market_text
+    header = [
+        f"\n{'=' * 70}",
+        "MARKET DATA (from workbook)",
+        f"{'=' * 70}",
+    ]
+    return "\n".join(header) + "\n" + "\n\n".join(sections)
 
 # ============================================================================
 # 4b. SCHEDULE DATA EXTRACTION  (mpxj via subprocess — no JVM in-process)
@@ -716,7 +678,7 @@ def extract_memo_content(memo_path: str, cfg: dict) -> str:
                 try:
                     chart = shape.chart
                 except (KeyError, AttributeError):
-                    lines.append(f"    Chart: (relationship broken — skipped)")
+                    lines.append("    Chart: (relationship broken — skipped)")
                     continue
                 chart_type_name = str(chart.chart_type) if chart.chart_type else "UNKNOWN"
                 lines.append(f"    Chart type: {chart_type_name}")
@@ -1937,6 +1899,132 @@ def validate_mappings(
 
 
 # ============================================================================
+# 7b. CLAUDE API - MARKET DATA MAPPING & VALIDATION
+# ============================================================================
+MARKET_MAPPING_PROMPT = _load_prompt_template("market_mapping_v1.txt")
+MARKET_VALIDATION_PROMPT = _load_prompt_template("market_validation_v1.txt")
+
+_EMPTY_MARKET_UPDATE_SET = {
+    "market_data_updates": [],
+    "unmatched_memo_metrics": [],
+    "unmatched_workbook_tabs": [],
+    "warnings": [],
+}
+
+
+def get_market_data_mappings(
+    client,
+    market_data: str,
+    memo_content: str,
+    cfg: dict,
+    source_directives: list[dict] | None = None,
+) -> dict:
+    """
+    Send memo content + market workbook data to Claude and receive a structured
+    JSON describing all market data updates (chart, narrative, table).
+
+    Returns an empty update set if market_data is blank (no-op).
+    """
+    if not market_data.strip():
+        return dict(_EMPTY_MARKET_UPDATE_SET)
+
+    model = cfg["claude"]["model"]
+    max_tokens = cfg["claude"]["max_tokens"]
+    temperature = cfg["claude"]["temperature"]
+
+    directives_section = format_source_directives(
+        [d for d in (source_directives or []) if d.get("source_type") == "market_data"],
+        scope="mapping",
+    )
+
+    system_text = MARKET_MAPPING_PROMPT.format(
+        source_directives_section=directives_section,
+        memo_content="(see user message below)",
+        market_data=market_data,
+    )
+    user_text = f"## Memo Content (all slides)\n{memo_content}"
+
+    log.info(
+        "Market mapping: calling Claude (model=%s, prompt=%d chars)",
+        model, len(system_text) + len(user_text),
+    )
+
+    message = _create_message(
+        client,
+        model=model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": user_text}],
+    )
+
+    raw = next((b.text for b in message.content if b.type == "text"), "")
+    log.info("Market mapping response: %d chars, stop_reason=%s", len(raw), message.stop_reason)
+
+    result = _parse_json_response(raw)
+    if result is not None:
+        result.setdefault("warnings", [])
+        return result
+
+    log.warning("Market mapping JSON parse failed. Raw: %s", raw[:200])
+    return dict(_EMPTY_MARKET_UPDATE_SET)
+
+
+def validate_market_data_mappings(
+    client,
+    update_set: dict,
+    memo_content: str,
+    cfg: dict,
+    source_directives: list[dict] | None = None,
+) -> dict:
+    """
+    QA pass for market data updates. Returns a cleaned update set with
+    uncertain matches dropped and a warnings list added.
+    """
+    if not update_set.get("market_data_updates"):
+        return update_set
+
+    model = cfg["claude"].get("validation_model", cfg["claude"]["model"])
+    max_tokens = cfg["claude"]["max_tokens"]
+    temperature = cfg["claude"]["temperature"]
+
+    directives_section = format_source_directives(
+        [d for d in (source_directives or []) if d.get("source_type") == "market_data"],
+        scope="mapping",
+    )
+
+    system_text = MARKET_VALIDATION_PROMPT.format(
+        source_directives_section=directives_section,
+        memo_content=memo_content,
+        proposed_updates="(see user message below)",
+    )
+    user_text = "## Proposed Market Data Updates\n" + json.dumps(update_set, indent=2)
+
+    log.info(
+        "Market validation: calling Claude (model=%s, prompt=%d chars)",
+        model, len(system_text) + len(user_text),
+    )
+
+    message = _create_message(
+        client,
+        model=model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": user_text}],
+    )
+
+    raw = next((b.text for b in message.content if b.type == "text"), "")
+    result = _parse_json_response(raw)
+    if result is not None:
+        result.setdefault("warnings", [])
+        return result
+
+    log.warning("Market validation JSON parse failed. Returning original.")
+    return update_set
+
+
+# ============================================================================
 # 8a. FORMAT VALIDATION (detect style mismatches)
 # ============================================================================
 
@@ -2302,7 +2390,8 @@ def _normalize_unicode(text: str) -> str:
 
 def _replace_in_shape(shape, old_text: str, new_text: str) -> bool:
     """Replace old_text in any text-frame shape, preserving formatting.
-    Falls back to Unicode-normalized matching if exact match fails."""
+    Falls back to Unicode-normalized matching if exact match fails,
+    then to field-aware diff replacement for paragraphs with <a:fld> elements."""
     if not shape.has_text_frame:
         return False
     # Pass 1: exact match
@@ -2324,6 +2413,35 @@ def _replace_in_shape(shape, old_text: str, new_text: str) -> bool:
         actual_old = para_text[idx:idx + len(norm_old)]
         if _replace_in_para(para, actual_old, new_text):
             return True
+    # Pass 3: field-aware — para.text includes <a:fld> content (e.g. slide
+    # numbers) that is NOT in para.runs.  Extract the diff between old_text
+    # and new_text and replace only the differing portion in the runs.
+    for para in shape.text_frame.paragraphs:
+        if old_text not in para.text:
+            continue
+        run_text = "".join(r.text for r in para.runs)
+        if old_text in run_text:
+            continue  # Pass 1/2 should have handled this
+        # Compute the unique differing portion between old and new
+        pfx = 0
+        for a, b in zip(old_text, new_text):
+            if a == b:
+                pfx += 1
+            else:
+                break
+        sfx = 0
+        for a, b in zip(reversed(old_text), reversed(new_text)):
+            if a == b:
+                sfx += 1
+            else:
+                break
+        old_end = len(old_text) - sfx if sfx else len(old_text)
+        new_end = len(new_text) - sfx if sfx else len(new_text)
+        old_diff = old_text[pfx:old_end]
+        new_diff = new_text[pfx:new_end]
+        if old_diff and old_diff in run_text:
+            if _replace_in_para(para, old_diff, new_diff):
+                return True
     return False
 
 
@@ -2618,7 +2736,6 @@ def _reorder_table_rows(table, new_order: list[str]):
     if len(rows) < 2:
         return
 
-    header_tr = rows[0]
     data_rows = rows[1:]
 
     # Build label -> row element map
@@ -2666,33 +2783,38 @@ def global_property_rename(memo_path: str, old_name: str, new_name: str) -> int:
             # --- Text frames (titles, narrative, text boxes) ---
             if shape.has_text_frame:
                 for para in shape.text_frame.paragraphs:
-                    if _replace_in_para(para, old_name, new_name):
+                    # Loop to catch multiple instances in separate runs
+                    while _replace_in_para(para, old_name, new_name):
                         count += 1
-                    else:
-                        # Try Unicode-normalized match
-                        norm_old = _normalize_unicode(old_name)
-                        norm_para = _normalize_unicode(para.text)
-                        if norm_old in norm_para:
-                            idx = norm_para.find(norm_old)
-                            actual_old = para.text[idx:idx + len(norm_old)]
-                            if _replace_in_para(para, actual_old, new_name):
-                                count += 1
+                    # Try Unicode-normalized match for any remaining
+                    norm_old = _normalize_unicode(old_name)
+                    norm_para = _normalize_unicode(para.text)
+                    while norm_old in norm_para:
+                        idx = norm_para.find(norm_old)
+                        actual_old = para.text[idx:idx + len(norm_old)]
+                        if _replace_in_para(para, actual_old, new_name):
+                            count += 1
+                            norm_para = _normalize_unicode(para.text)
+                        else:
+                            break
 
             # --- Table cells ---
             if shape.has_table:
                 for row in shape.table.rows:
                     for cell in row.cells:
                         for para in cell.text_frame.paragraphs:
-                            if _replace_in_para(para, old_name, new_name):
+                            while _replace_in_para(para, old_name, new_name):
                                 count += 1
-                            else:
-                                norm_old = _normalize_unicode(old_name)
-                                norm_para = _normalize_unicode(para.text)
-                                if norm_old in norm_para:
-                                    idx = norm_para.find(norm_old)
-                                    actual_old = para.text[idx:idx + len(norm_old)]
-                                    if _replace_in_para(para, actual_old, new_name):
-                                        count += 1
+                            norm_old = _normalize_unicode(old_name)
+                            norm_para = _normalize_unicode(para.text)
+                            while norm_old in norm_para:
+                                idx = norm_para.find(norm_old)
+                                actual_old = para.text[idx:idx + len(norm_old)]
+                                if _replace_in_para(para, actual_old, new_name):
+                                    count += 1
+                                    norm_para = _normalize_unicode(para.text)
+                                else:
+                                    break
 
     if count > 0:
         prs.save(memo_path)
@@ -3148,6 +3270,295 @@ def _apply_chart_updates(memo_path: str, chart_updates: list, dry_run: bool = Fa
         log.info("Chart updates saved: %d changes.", len(changes))
 
     return changes
+
+
+def _apply_market_chart_update(prs, update: dict) -> list[dict]:
+    """
+    Apply a single market data chart update dict to an open Presentation object.
+
+    Handles: series value updates, category (x-axis) label updates,
+    add_series, remove_series. Returns list of change records.
+    """
+    page = update.get("page", 1)
+    chart_name = update.get("chart_name") or ""
+    chart_title = update.get("chart_title") or ""
+    source = update.get("source", "")
+    changes = []
+
+    _C = "http://schemas.openxmlformats.org/drawingml/2006/chart"
+    ns = {"c": _C}
+
+    try:
+        slide = prs.slides[page - 1]
+    except IndexError:
+        log.warning("Market chart update SKIPPED: page %d does not exist", page)
+        return []
+
+    # Find target chart (same logic as existing _apply_chart_updates)
+    target_chart = None
+    target_shape = None
+    for shape in slide.shapes:
+        if not shape.has_chart:
+            continue
+        name_match = chart_name and _loose_match(chart_name, shape.name)
+        title_match = False
+        if shape.chart.has_title and shape.chart.chart_title:
+            try:
+                ct = shape.chart.chart_title.text_frame.text.strip()
+                title_match = chart_title and _loose_match(chart_title, ct)
+            except Exception:
+                pass
+        if name_match or title_match:
+            target_chart = shape.chart
+            target_shape = shape
+            break
+
+    if target_chart is None:
+        chart_shapes = [s for s in slide.shapes if s.has_chart]
+        if len(chart_shapes) == 1:
+            target_chart = chart_shapes[0].chart
+            target_shape = chart_shapes[0]
+        else:
+            log.warning("Market chart NOT FOUND: page=%d name='%s'", page, chart_name)
+            return []
+
+    chart_el = target_chart._element
+
+    # 1. Update series values
+    for ser_upd in update.get("series", []):
+        s_name = ser_upd.get("name", "")
+        new_values = ser_upd.get("new_values", [])
+        old_values = ser_upd.get("old_values", [])
+        for ser_el in chart_el.findall(f".//{{{_C}}}ser"):
+            tx_vals = ser_el.findall(f".//{{{_C}}}tx//{{{_C}}}v")
+            ser_label = tx_vals[0].text if tx_vals else ""
+            if not _loose_match(s_name, ser_label):
+                continue
+            num_cache = ser_el.find(f"{{{_C}}}val/{{{_C}}}numRef/{{{_C}}}numCache", ns)
+            if num_cache is None:
+                num_cache = ser_el.find(f"{{{_C}}}val/{{{_C}}}numLit", ns)
+            if num_cache is None:
+                continue
+            pts = num_cache.findall(f"{{{_C}}}pt", ns)
+            for i, pt in enumerate(pts):
+                if i < len(new_values):
+                    v_el = pt.find(f"{{{_C}}}v", ns)
+                    if v_el is not None:
+                        v_el.text = str(new_values[i])
+            changes.append({
+                "page": page, "type": "chart",
+                "location": f"{target_shape.name} / series '{s_name}'",
+                "old": str(old_values[:3]),
+                "new": str(new_values[:3]),
+                "source": source,
+            })
+            break
+
+    # 2. Update categories (x-axis labels)
+    new_cats = update.get("categories")
+    if new_cats:
+        for ser_el in chart_el.findall(f".//{{{_C}}}ser"):
+            cat_cache = ser_el.find(f"{{{_C}}}cat/{{{_C}}}strRef/{{{_C}}}strCache", ns)
+            if cat_cache is None:
+                cat_cache = ser_el.find(f"{{{_C}}}cat/{{{_C}}}numRef/{{{_C}}}numCache", ns)
+            if cat_cache is None:
+                continue
+            for pt in cat_cache.findall(f"{{{_C}}}pt", ns):
+                cat_cache.remove(pt)
+            pt_count = cat_cache.find(f"{{{_C}}}ptCount", ns)
+            if pt_count is not None:
+                pt_count.set("val", str(len(new_cats)))
+            for idx, cat in enumerate(new_cats):
+                pt_el = etree.SubElement(cat_cache, f"{{{_C}}}pt")
+                pt_el.set("idx", str(idx))
+                v_el = etree.SubElement(pt_el, f"{{{_C}}}v")
+                v_el.text = str(cat)
+            changes.append({
+                "page": page, "type": "chart",
+                "location": f"{target_shape.name} / categories",
+                "old": "previous categories",
+                "new": str(new_cats[:5]),
+                "source": source,
+            })
+            break  # categories shared across series; only patch once
+
+    # 3. Add new series (clone last existing series)
+    existing_sers = chart_el.findall(f".//{{{_C}}}ser")
+    for add_ser in update.get("add_series", []):
+        if not existing_sers:
+            log.warning("Cannot add series — no existing series to clone on page %d", page)
+            continue
+        new_ser = deepcopy(existing_sers[-1])
+        new_idx = len(existing_sers)
+        for el in new_ser.findall(f"{{{_C}}}idx"):
+            el.set("val", str(new_idx))
+        for el in new_ser.findall(f"{{{_C}}}order"):
+            el.set("val", str(new_idx))
+        # Set series name
+        for v_el in new_ser.findall(f".//{{{_C}}}tx//{{{_C}}}v"):
+            v_el.text = add_ser.get("name", f"Series {new_idx}")
+        # Set values
+        num_cache = new_ser.find(f"{{{_C}}}val/{{{_C}}}numRef/{{{_C}}}numCache", ns)
+        if num_cache is None:
+            num_cache = new_ser.find(f"{{{_C}}}val/{{{_C}}}numLit", ns)
+        if num_cache is not None:
+            for pt in num_cache.findall(f"{{{_C}}}pt", ns):
+                num_cache.remove(pt)
+            vals = add_ser.get("values", [])
+            pt_count = num_cache.find(f"{{{_C}}}ptCount", ns)
+            if pt_count is not None:
+                pt_count.set("val", str(len(vals)))
+            for i, val in enumerate(vals):
+                pt_el = etree.SubElement(num_cache, f"{{{_C}}}pt")
+                pt_el.set("idx", str(i))
+                v_el = etree.SubElement(pt_el, f"{{{_C}}}v")
+                v_el.text = str(val) if val is not None else ""
+        parent = existing_sers[-1].getparent()
+        parent.insert(list(parent).index(existing_sers[-1]) + 1, new_ser)
+        existing_sers = chart_el.findall(f".//{{{_C}}}ser")  # refresh
+        changes.append({
+            "page": page, "type": "chart",
+            "location": f"{target_shape.name} / add series '{add_ser.get('name')}'",
+            "old": "", "new": str(add_ser.get("values", [])[:3]),
+            "source": source,
+        })
+
+    # 4. Remove series
+    for remove_name in update.get("remove_series", []):
+        for ser_el in chart_el.findall(f".//{{{_C}}}ser"):
+            tx_vals = ser_el.findall(f".//{{{_C}}}tx//{{{_C}}}v")
+            ser_label = tx_vals[0].text if tx_vals else ""
+            if _loose_match(remove_name, ser_label):
+                ser_el.getparent().remove(ser_el)
+                changes.append({
+                    "page": page, "type": "chart",
+                    "location": f"{target_shape.name} / remove series '{remove_name}'",
+                    "old": remove_name, "new": "",
+                    "source": source,
+                })
+                break
+
+    return changes
+
+
+def apply_market_updates(memo_path: str, update_set: dict, dry_run: bool = False) -> list[dict]:
+    """
+    Apply the full MarketDataUpdateSet to a PPTX file.
+
+    Handles chart_update (values, categories, add/remove series),
+    narrative_update (text replacement), and table_update (cell patching).
+    Saves the file in-place unless dry_run is True.
+
+    Returns a list of change records.
+    """
+    updates = update_set.get("market_data_updates", [])
+    if not updates:
+        return []
+
+    prs = _load_presentation(memo_path)
+    all_changes = []
+
+    # Group by type for logging
+    chart_upds = [u for u in updates if u.get("type") == "chart_update"]
+    narr_upds = [u for u in updates if u.get("type") == "narrative_update"]
+    tbl_upds = [u for u in updates if u.get("type") == "table_update"]
+
+    log.info(
+        "Applying market updates: %d chart, %d narrative, %d table",
+        len(chart_upds), len(narr_upds), len(tbl_upds),
+    )
+
+    # Chart updates
+    for upd in chart_upds:
+        if dry_run:
+            all_changes.append({
+                "page": upd.get("page"), "type": "chart",
+                "location": f"{upd.get('chart_name')} (dry run)",
+                "old": "", "new": "", "source": upd.get("source", ""),
+            })
+        else:
+            all_changes.extend(_apply_market_chart_update(prs, upd))
+
+    # Narrative updates — reuse _replace_in_para across all text frames
+    for upd in narr_upds:
+        page = upd.get("page", 1)
+        old_text = upd.get("old_text", "")
+        new_text = upd.get("new_text", "")
+        if not old_text or old_text == new_text:
+            continue
+        if dry_run:
+            all_changes.append({
+                "page": page, "type": "narrative",
+                "location": f"slide {page} narrative (dry run)",
+                "old": old_text[:80], "new": new_text[:80],
+                "source": upd.get("source", ""),
+            })
+            continue
+        try:
+            slide = prs.slides[page - 1]
+        except IndexError:
+            log.warning("Narrative update SKIPPED: page %d does not exist", page)
+            continue
+        replaced = False
+        for shape in slide.shapes:
+            if _replace_in_shape(shape, old_text, new_text):
+                replaced = True
+                break
+        if replaced:
+            all_changes.append({
+                "page": page, "type": "narrative",
+                "location": f"slide {page} narrative",
+                "old": old_text[:80], "new": new_text[:80],
+                "source": upd.get("source", ""),
+            })
+        else:
+            log.warning("Narrative update NOT APPLIED on page %d: '%s'", page, old_text[:60])
+
+    # Table updates — cell-based patching
+    for upd in tbl_upds:
+        page = upd.get("page", 1)
+        slide_table = upd.get("slide_table", "")
+        if dry_run:
+            all_changes.append({
+                "page": page, "type": "table",
+                "location": f"{slide_table} (dry run)",
+                "old": "", "new": "",
+                "source": upd.get("source", ""),
+            })
+            continue
+        try:
+            slide = prs.slides[page - 1]
+        except IndexError:
+            log.warning("Table update SKIPPED: page %d does not exist", page)
+            continue
+        for shape in slide.shapes:
+            if not shape.has_table:
+                continue
+            if slide_table and not _loose_match(slide_table, shape.name):
+                continue
+            tbl = shape.table
+            for cell_upd in upd.get("updates", []):
+                r, c = cell_upd.get("row", 0), cell_upd.get("col", 0)
+                old_val = cell_upd.get("old_value", "")
+                new_val = cell_upd.get("new_value", "")
+                if r >= len(tbl.rows) or c >= len(tbl.columns):
+                    continue
+                cell = tbl.cell(r, c)
+                for para in cell.text_frame.paragraphs:
+                    if _replace_in_para(para, old_val, new_val):
+                        all_changes.append({
+                            "page": page, "type": "table",
+                            "location": f"{shape.name} [{r},{c}]",
+                            "old": old_val, "new": new_val,
+                            "source": upd.get("source", ""),
+                        })
+                        break
+
+    if not dry_run and all_changes:
+        prs.save(memo_path)
+        log.info("Market updates saved: %d changes", len(all_changes))
+
+    return all_changes
 
 
 # ============================================================================

@@ -22,7 +22,6 @@ from memo_automator import (  # noqa: E402
     _replace_in_para,
     _reformat_run,
     _apply_chart_updates,
-    _MARKET_DASHBOARD_TABS,
 )
 
 # ---------------------------------------------------------------------------
@@ -62,22 +61,16 @@ def test_1():
         char_count = len(result)
         print(f"  Char count: {char_count}")
 
-        # Count tabs found
-        tab_count = 0
-        found_tabs = []
-        for tab in _MARKET_DASHBOARD_TABS:
-            if f"TAB: {tab}" in result:
-                tab_count += 1
-                found_tabs.append(tab)
-        print(f"  Tab count found: {tab_count} / {len(_MARKET_DASHBOARD_TABS)}")
+        # Count TAB: entries found using the dynamic keyword-scored extractor
+        import re
+        found_tabs = re.findall(r"TAB: (.+)", result)
+        tab_count = len(found_tabs)
+        print(f"  Tab count found: {tab_count}")
         print(f"  Found tabs: {found_tabs}")
-        missing = [t for t in _MARKET_DASHBOARD_TABS if t not in found_tabs]
-        if missing:
-            print(f"  Missing tabs: {missing}")
 
         report("Extraction succeeded", char_count > 0, f"{char_count} chars extracted")
-        report("All 6 tabs present", tab_count == 6,
-               f"{tab_count}/6 tabs found" + (f", missing: {missing}" if missing else ""))
+        report("At least one market tab present", tab_count >= 1,
+               f"{tab_count} tabs found")
 
         # Check for back-end tab leakage
         backend_tabs = ["PROPERTIES", "IPEDS", "SCHOOLS", "PBH DATA", "EMPLOYMENT",
@@ -596,11 +589,16 @@ def test_8():
         tmp_dir = tempfile.mkdtemp()
         empty_path = os.path.join(tmp_dir, "empty_sheets.xlsx")
         wb = openpyxl.Workbook()
-        # Create dashboard tabs but leave them empty
+        # Create market-relevant tabs (keyword-scored) but leave them empty
         ws = wb.active
-        ws.title = "Tables"
+        ws.title = "Rent Comp Market"
         # Don't write any data
-        for tab_name in _MARKET_DASHBOARD_TABS[1:]:
+        for tab_name in [
+            "Occupancy Comparison By Year",
+            "Vacancy Trend By Submarket",
+            "Rent Growth Comparison",
+            "Comp Set Market",
+        ]:
             wb.create_sheet(tab_name)
             # Also leave empty
         wb.save(empty_path)
@@ -684,6 +682,117 @@ def test_8():
     except Exception as e:
         report("Nonexistent memo handled", False, f"Unexpected: {type(e).__name__}: {e}")
         traceback.print_exc()
+
+
+class TestApplyMarketUpdates:
+    """Tests for apply_market_updates() rich update schema."""
+
+    def _make_simple_pptx_with_chart(self, tmp_path) -> str:
+        """Create a minimal PPTX with one chart slide."""
+        from pptx import Presentation
+        from pptx.util import Inches
+        from pptx.chart.data import ChartData
+        from pptx.enum.chart import XL_CHART_TYPE
+
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[5])
+
+        chart_data = ChartData()
+        chart_data.categories = ["2022", "2023", "2024"]
+        chart_data.add_series("Market A", (1100, 1250, 1400))
+        chart_data.add_series("Market B", (900, 950, 1000))
+
+        chart_shape = slide.shapes.add_chart(
+            XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(1), Inches(1), Inches(6), Inches(4), chart_data
+        )
+        chart_shape.name = "Rent Growth"
+
+        path = str(tmp_path / "test.pptx")
+        prs.save(path)
+        return path
+
+    def test_chart_update_values(self, tmp_path):
+        from memo_automator import apply_market_updates
+        path = self._make_simple_pptx_with_chart(tmp_path)
+        update_set = {
+            "market_data_updates": [{
+                "type": "chart_update",
+                "page": 1,
+                "chart_name": "Rent Growth",
+                "series": [{"name": "Market A", "new_values": [1200, 1350, 1500], "old_values": [1100, 1250, 1400]}],
+                "categories": None,
+                "add_series": [],
+                "remove_series": [],
+                "source": "Rent tab",
+                "reasoning": "Updated",
+                "confidence": "high",
+            }],
+            "unmatched_memo_metrics": [],
+            "unmatched_workbook_tabs": [],
+            "warnings": [],
+        }
+        changes = apply_market_updates(path, update_set, dry_run=False)
+        assert len(changes) == 1
+        assert changes[0]["type"] == "chart"
+
+    def test_chart_update_categories(self, tmp_path):
+        from memo_automator import apply_market_updates
+        path = self._make_simple_pptx_with_chart(tmp_path)
+        update_set = {
+            "market_data_updates": [{
+                "type": "chart_update",
+                "page": 1,
+                "chart_name": "Rent Growth",
+                "series": [],
+                "categories": ["2023", "2024", "2025"],
+                "add_series": [],
+                "remove_series": [],
+                "source": "Rent tab",
+                "reasoning": "New year range",
+                "confidence": "high",
+            }],
+            "unmatched_memo_metrics": [],
+            "unmatched_workbook_tabs": [],
+            "warnings": [],
+        }
+        changes = apply_market_updates(path, update_set, dry_run=False)
+        assert len(changes) >= 1
+
+    def test_narrative_update(self, tmp_path):
+        from pptx import Presentation
+        from pptx.util import Inches
+        from memo_automator import apply_market_updates
+
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[5])
+        txbox = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(5), Inches(2))
+        txbox.text_frame.text = "Rents grew 5% year over year"
+        path = str(tmp_path / "narr.pptx")
+        prs.save(path)
+
+        update_set = {
+            "market_data_updates": [{
+                "type": "narrative_update",
+                "page": 1,
+                "old_text": "Rents grew 5% year over year",
+                "new_text": "Rents grew 12% year over year",
+                "source": "Rent tab",
+                "reasoning": "Updated figure",
+                "confidence": "high",
+            }],
+            "unmatched_memo_metrics": [],
+            "unmatched_workbook_tabs": [],
+            "warnings": [],
+        }
+        changes = apply_market_updates(path, update_set, dry_run=False)
+        assert len(changes) == 1
+        assert changes[0]["type"] == "narrative"
+
+    def test_empty_update_set_no_changes(self, tmp_path):
+        from memo_automator import apply_market_updates
+        path = self._make_simple_pptx_with_chart(tmp_path)
+        changes = apply_market_updates(path, {"market_data_updates": [], "unmatched_memo_metrics": [], "unmatched_workbook_tabs": [], "warnings": []}, dry_run=False)
+        assert changes == []
 
 
 # ===================================================================
