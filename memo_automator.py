@@ -4220,7 +4220,7 @@ def main():
                  cfg["claude"]["model"], cfg["claude"]["validation_model"])
         client = anthropic.Anthropic(
             api_key=api_key,
-            max_retries=1,
+            max_retries=5,
             timeout=httpx.Timeout(300.0, read=120.0),
         )
         run_meta = {"steps": {}, "mapping_api_calls": 0, "validation_api_calls": 0}

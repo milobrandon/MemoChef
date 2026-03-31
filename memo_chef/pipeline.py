@@ -238,12 +238,23 @@ def _write_json(path: str, payload: dict) -> None:
         json.dump(payload, handle, indent=2)
 
 
+def _is_auth_error(err: Exception) -> bool:
+    """Auth / permission errors should never be retried."""
+    auth_types = tuple(
+        e for e in (
+            getattr(anthropic, "AuthenticationError", None),
+            getattr(anthropic, "PermissionDeniedError", None),
+        ) if e is not None
+    )
+    return bool(auth_types) and isinstance(err, auth_types)
+
+
 def _retry(
     func,
     *args,
-    retries: int = 3,
-    base_delay: float = 1.0,
-    jitter: float = 0.25,
+    retries: int = 4,
+    base_delay: float = 2.0,
+    jitter: float = 1.0,
     checkpoint: CheckpointManager | None = None,
     stage: str = "",
     callback: StageCallback = None,
@@ -256,7 +267,7 @@ def _retry(
             return func(*args, **kwargs)
         except Exception as err:
             attempt += 1
-            if attempt > retries or not _is_api_error(err):
+            if attempt > retries or not _is_api_error(err) or _is_auth_error(err):
                 raise
             wait_seconds = base_delay * (2 ** (attempt - 1)) + random.uniform(0, jitter)
             if checkpoint is not None:
@@ -264,6 +275,8 @@ def _retry(
             if callback is not None and retry_percent is not None:
                 _emit(callback, stage, f"Retry {attempt}/{retries}",
                       retry_percent, f"API error, retrying in {wait_seconds:.0f}s")
+            log.info("API error (attempt %d/%d), retrying in %.0fs: %s",
+                     attempt, retries, wait_seconds, err)
             time.sleep(wait_seconds)
 
 
@@ -606,7 +619,7 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
             cfg = _deep_merge(cfg, override)
         _raw_client = anthropic.Anthropic(
             api_key=request.api_key,
-            max_retries=1,
+            max_retries=5,
             timeout=httpx.Timeout(300.0, read=120.0),
         )
         client = TokenTracker(_raw_client)
