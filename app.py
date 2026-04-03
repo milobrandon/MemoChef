@@ -13,7 +13,11 @@ import uuid
 
 import streamlit as st
 
-from app_helpers import should_disable_fire_button, verify_password
+from app_helpers import (
+    fire_button_disabled_reason,
+    should_disable_fire_button,
+    verify_password,
+)
 from app_services import (
     accept_invitation,
     add_user,
@@ -189,6 +193,16 @@ def _clear_run_state() -> None:
         "changes",
     ]:
         st.session_state.pop(key, None)
+
+
+def _missing_required_run_inputs(memo_file, proforma_file) -> str | None:
+    if not memo_file and not proforma_file:
+        return "Upload a memo deck and proforma before starting a run."
+    if not memo_file:
+        return "Upload a memo deck before starting a run."
+    if not proforma_file:
+        return "Upload a proforma before starting a run."
+    return None
 
 
 def _set_authenticated_user(
@@ -779,34 +793,6 @@ def render_new_run_tab() -> None:
              "All occurrences will be renamed before the AI pass.",
     )
 
-    # Smart defaults: auto-detect config profile from proforma tabs
-    _auto_profile = ""
-    _auto_property = ""
-    if proforma_file and not profile.get("Property"):
-        try:
-            import openpyxl
-            wb = openpyxl.load_workbook(proforma_file, read_only=True, data_only=True)
-            sheet_names = [s.lower() for s in wb.sheetnames]
-            proforma_file.seek(0)  # reset for later use
-            if any("unit mix" in s or "rent roll" in s for s in sheet_names):
-                _auto_profile = "multifamily"
-            elif any("senior" in s or "assisted" in s for s in sheet_names):
-                _auto_profile = "senior_housing"
-            elif any("retail" in s or "office" in s for s in sheet_names):
-                _auto_profile = "mixed_use"
-            # Try to extract property name from first sheet header
-            first_sheet = wb[wb.sheetnames[0]]
-            for row in first_sheet.iter_rows(max_row=5, max_col=5, values_only=True):
-                for cell in row:
-                    if cell and isinstance(cell, str) and len(cell) > 3 and len(cell) < 60:
-                        _auto_property = cell.strip()
-                        break
-                if _auto_property:
-                    break
-            wb.close()
-        except Exception:
-            pass  # silently fail — these are optional hints
-
     # Config profile selection (temporarily disabled — using default config.yaml)
     config_profile_name = ""
 
@@ -865,6 +851,12 @@ def render_new_run_tab() -> None:
             st.rerun()
 
     action_disabled = should_disable_fire_button(memo_file, proforma_file, remaining, credits_error)
+    disabled_reason = fire_button_disabled_reason(
+        memo_file,
+        proforma_file,
+        remaining,
+        credits_error,
+    )
     action_cols = st.columns(2)
     # Collect per-source directives from UI state
     _ui_directives = []
@@ -904,55 +896,66 @@ def render_new_run_tab() -> None:
         disabled=action_disabled,
         width="stretch",
     ):
-        job = _queue_item_from_inputs(
-            memo_file=memo_file,
-            proforma_file=proforma_file,
-            schedule_file=schedule_file,
-            market_data_file=market_data_file,
-            supplemental_file=supplemental_file,
-            supplemental_url=supplemental_url,
-            supplemental_brief=supplemental_brief,
-            comp_urls=comp_url_inputs,
-            auto_generate_comp_slide=auto_comp,
-            comp_csv_file=comp_csv,
-            property_name=property_name,
-            property_rename_to=property_rename_to,
-            dry_run=dry_run,
-            skip_validation=skip_validation,
-            profile_name=selected_profile or save_profile_name.strip() or None,
-            config_profile_name=config_profile_name or None,
-            use_batch_api=use_batch_api,
-            source_directives=_ui_directives,
-        )
-        _execute_job(job=job, username=username, credits_per_week=credits_per_week)
+        missing_inputs = _missing_required_run_inputs(memo_file, proforma_file)
+        if missing_inputs:
+            st.warning(missing_inputs)
+        else:
+            job = _queue_item_from_inputs(
+                memo_file=memo_file,
+                proforma_file=proforma_file,
+                schedule_file=schedule_file,
+                market_data_file=market_data_file,
+                supplemental_file=supplemental_file,
+                supplemental_url=supplemental_url,
+                supplemental_brief=supplemental_brief,
+                comp_urls=comp_url_inputs,
+                auto_generate_comp_slide=auto_comp,
+                comp_csv_file=comp_csv,
+                property_name=property_name,
+                property_rename_to=property_rename_to,
+                dry_run=dry_run,
+                skip_validation=skip_validation,
+                profile_name=selected_profile or save_profile_name.strip() or None,
+                config_profile_name=config_profile_name or None,
+                use_batch_api=use_batch_api,
+                source_directives=_ui_directives,
+            )
+            _execute_job(job=job, username=username, credits_per_week=credits_per_week)
 
     if action_cols[1].button(
         "Add to queue",
         disabled=action_disabled,
         width="stretch",
     ):
-        job = _queue_item_from_inputs(
-            memo_file=memo_file,
-            proforma_file=proforma_file,
-            schedule_file=schedule_file,
-            market_data_file=market_data_file,
-            supplemental_file=supplemental_file,
-            supplemental_url=supplemental_url,
-            supplemental_brief=supplemental_brief,
-            comp_urls=comp_url_inputs,
-            auto_generate_comp_slide=auto_comp,
-            comp_csv_file=comp_csv,
-            property_name=property_name,
-            property_rename_to=property_rename_to,
-            dry_run=dry_run,
-            skip_validation=skip_validation,
-            profile_name=selected_profile or save_profile_name.strip() or None,
-            config_profile_name=config_profile_name or None,
-            use_batch_api=use_batch_api,
-            source_directives=_ui_directives,
-        )
-        enqueue_job(username, job)
-        st.success(f"Queued `{job['memo_name']}`.")
+        missing_inputs = _missing_required_run_inputs(memo_file, proforma_file)
+        if missing_inputs:
+            st.warning(missing_inputs)
+        else:
+            job = _queue_item_from_inputs(
+                memo_file=memo_file,
+                proforma_file=proforma_file,
+                schedule_file=schedule_file,
+                market_data_file=market_data_file,
+                supplemental_file=supplemental_file,
+                supplemental_url=supplemental_url,
+                supplemental_brief=supplemental_brief,
+                comp_urls=comp_url_inputs,
+                auto_generate_comp_slide=auto_comp,
+                comp_csv_file=comp_csv,
+                property_name=property_name,
+                property_rename_to=property_rename_to,
+                dry_run=dry_run,
+                skip_validation=skip_validation,
+                profile_name=selected_profile or save_profile_name.strip() or None,
+                config_profile_name=config_profile_name or None,
+                use_batch_api=use_batch_api,
+                source_directives=_ui_directives,
+            )
+            enqueue_job(username, job)
+            st.success(f"Queued `{job['memo_name']}`.")
+
+    if disabled_reason:
+        st.caption(disabled_reason)
 
     if "memo_bytes" in st.session_state:
         st.divider()

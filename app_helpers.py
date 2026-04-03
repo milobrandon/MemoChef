@@ -32,11 +32,28 @@ def should_disable_fire_button(
     credits_error: str | None,
 ) -> bool:
     """Return True when the run button should be disabled."""
-    return (
-        not (memo_file and proforma_file)
-        or remaining_credits <= 0
-        or credits_error is not None
-    )
+    del memo_file, proforma_file
+    return remaining_credits <= 0 or credits_error is not None
+
+
+def fire_button_disabled_reason(
+    memo_file: object | None,
+    proforma_file: object | None,
+    remaining_credits: int,
+    credits_error: str | None,
+) -> str | None:
+    """Return a short explanation for why the run actions are disabled."""
+    if credits_error is not None:
+        return "Run actions are disabled while the credits service is unavailable."
+    if remaining_credits <= 0:
+        return "No weekly credits remain for this account."
+    if not memo_file and not proforma_file:
+        return "Upload a memo deck and proforma before starting a run."
+    if not memo_file:
+        return "Upload a memo deck before starting a run."
+    if not proforma_file:
+        return "Upload a proforma before starting a run."
+    return None
 
 
 def build_change_report_html(changes: list[dict], manifest: dict | None = None) -> str:
@@ -52,24 +69,6 @@ def build_change_report_html(changes: list[dict], manifest: dict | None = None) 
     by_page: dict[int, list[dict]] = defaultdict(list)
     for c in changes:
         by_page[c.get("page", 0)].append(c)
-
-    # Type icons
-    type_icons = {
-        "table": "grid_on",
-        "text": "text_fields",
-        "narrative": "auto_stories",
-        "row_insert": "add_circle",
-        "table_structure": "build",
-        "chart": "bar_chart",
-    }
-    type_colors = {
-        "table": "#c1d100",     # lime green
-        "text": "#f7f1e3",      # beige
-        "narrative": "#a95818", # birch
-        "row_insert": "#16352e",# everest green
-        "table_structure": "#512213",  # brown
-        "chart": "#c1d100",     # lime green
-    }
 
     counts = manifest.get("counts", {}) if manifest else {}
     accuracy = manifest.get("accuracy", {}) if manifest else {}
