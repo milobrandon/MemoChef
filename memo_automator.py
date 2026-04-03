@@ -75,10 +75,25 @@ _TIMEOUT_ERRORS = tuple(
         getattr(anthropic, "APIConnectionError", None),
     ) if e is not None
 )
+_TRANSPORT_ERRORS = tuple(
+    e for e in (
+        getattr(httpx, "ConnectError", None),
+        getattr(httpx, "ConnectTimeout", None),
+        getattr(httpx, "ReadError", None),
+        getattr(httpx, "ReadTimeout", None),
+        getattr(httpx, "RemoteProtocolError", None),
+    ) if e is not None
+)
 _API_STATUS_ERRORS = tuple(
     e for e in (getattr(anthropic, "APIStatusError", None),) if e is not None
 )
-_ALL_API_ERRORS = _AUTH_ERRORS + _RATE_LIMIT_ERRORS + _TIMEOUT_ERRORS + _API_STATUS_ERRORS
+_ALL_API_ERRORS = (
+    _AUTH_ERRORS
+    + _RATE_LIMIT_ERRORS
+    + _TIMEOUT_ERRORS
+    + _TRANSPORT_ERRORS
+    + _API_STATUS_ERRORS
+)
 
 
 def _is_api_error(err: Exception) -> bool:
@@ -187,6 +202,11 @@ def _exit_with_api_error(err: Exception):
         log.error(
             "Claude API request timed out or connection failed. Retry and, for large "
             "decks, consider reducing pages per batch."
+        )
+    elif _TRANSPORT_ERRORS and isinstance(err, _TRANSPORT_ERRORS):
+        log.error(
+            "Claude API connection was interrupted mid-response. Retry the run; this "
+            "is usually a transient network issue."
         )
     elif _API_STATUS_ERRORS and isinstance(err, _API_STATUS_ERRORS):
         status_code = getattr(err, "status_code", None)

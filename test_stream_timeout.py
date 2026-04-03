@@ -82,6 +82,14 @@ def _make_status_error(status_code=529, retry_after=None, body=None):
     )
 
 
+def _make_incomplete_chunked_read_error():
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    return httpx.RemoteProtocolError(
+        "peer closed connection without sending complete message body (incomplete chunked read)",
+        request=request,
+    )
+
+
 class _HangingStream:
     """Simulates a stream that never completes get_final_message()."""
 
@@ -151,6 +159,10 @@ class TestTimeoutIsRetryable(unittest.TestCase):
         err = anthropic.APITimeoutError(request=None)
         self.assertTrue(_is_api_error(err))
 
+    def test_incomplete_chunked_read_is_recognised(self):
+        err = _make_incomplete_chunked_read_error()
+        self.assertTrue(_is_api_error(err))
+
     def test_retry_recovers_from_transient_hang(self):
         """First call raises timeout, second call succeeds."""
         expected = _FakeMessage("recovered")
@@ -175,6 +187,25 @@ class TestTimeoutIsRetryable(unittest.TestCase):
 
         with self.assertRaises(anthropic.APITimeoutError):
             _retry(always_fail, retries=2, base_delay=0.01, jitter=0)
+
+    @patch("memo_chef.pipeline.time.sleep")
+    @patch("memo_automator.random.uniform", return_value=0.0)
+    def test_retry_recovers_from_incomplete_chunked_read(self, _mock_jitter, mock_sleep):
+        expected = _FakeMessage("recovered")
+        call_count = 0
+
+        def flaky_func():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise _make_incomplete_chunked_read_error()
+            return expected
+
+        result = _retry(flaky_func, retries=3, base_delay=0.01, jitter=0)
+
+        self.assertEqual(result, expected)
+        self.assertEqual(call_count, 2)
+        mock_sleep.assert_called_once_with(0.01)
 
 
 class TestApiRetryHelpers(unittest.TestCase):
