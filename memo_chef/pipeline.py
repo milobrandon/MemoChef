@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import random
 import re
 import time
 from contextlib import contextmanager
@@ -16,6 +15,7 @@ import httpx
 import yaml
 
 from memo_automator import (
+    _api_retry_wait_seconds,
     _is_api_error,
     apply_branding,
     apply_market_updates,
@@ -269,7 +269,12 @@ def _retry(
             attempt += 1
             if attempt > retries or not _is_api_error(err) or _is_auth_error(err):
                 raise
-            wait_seconds = base_delay * (2 ** (attempt - 1)) + random.uniform(0, jitter)
+            wait_seconds = _api_retry_wait_seconds(
+                err,
+                attempt,
+                base_delay=base_delay,
+                jitter=jitter,
+            )
             if checkpoint is not None:
                 checkpoint.add_warning(stage, f"Retrying after API error: {err}")
             if callback is not None and retry_percent is not None:

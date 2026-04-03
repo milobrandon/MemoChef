@@ -18,11 +18,13 @@ from app_services import (
     accept_invitation,
     add_user,
     consume_credit,
+    create_auth_session,
     create_invitation,
     delete_job,
     delete_user,
     enqueue_job,
     ensure_users_seeded,
+    get_auth_session,
     get_db_conn,
     get_invitation,
     get_invitations,
@@ -39,6 +41,7 @@ from app_services import (
     get_user_credits,
     get_users,
     record_run,
+    revoke_auth_session,
     reset_user_credits,
     save_profile,
     start_background_worker,
@@ -144,6 +147,7 @@ if invite_token:
 
 
 _CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
+_AUTH_QUERY_PARAM = "session"
 
 
 def _list_config_profiles() -> list[str]:
@@ -185,6 +189,52 @@ def _clear_run_state() -> None:
         "changes",
     ]:
         st.session_state.pop(key, None)
+
+
+def _set_authenticated_user(
+    *,
+    username: str,
+    role: str,
+    credits_per_week: int,
+    session_token: str | None = None,
+) -> None:
+    st.session_state["authenticated"] = True
+    st.session_state["username"] = username
+    st.session_state["role"] = role
+    st.session_state["credits_per_week"] = int(credits_per_week)
+    if session_token:
+        st.session_state["auth_session_token"] = session_token
+        st.query_params[_AUTH_QUERY_PARAM] = session_token
+
+
+def _clear_authenticated_user() -> None:
+    for key in (
+        "authenticated",
+        "username",
+        "role",
+        "credits_per_week",
+        "auth_session_token",
+    ):
+        st.session_state.pop(key, None)
+    if _AUTH_QUERY_PARAM in st.query_params:
+        del st.query_params[_AUTH_QUERY_PARAM]
+
+
+def _restore_authenticated_user() -> bool:
+    token = st.session_state.get("auth_session_token") or st.query_params.get(_AUTH_QUERY_PARAM)
+    if not token:
+        return False
+    session_user = get_auth_session(token)
+    if session_user is None:
+        _clear_authenticated_user()
+        return False
+    _set_authenticated_user(
+        username=session_user["username"],
+        role=session_user.get("role", "user"),
+        credits_per_week=int(session_user.get("credits_per_week", 5)),
+        session_token=token,
+    )
+    return True
 
 
 def _queue_item_from_inputs(
@@ -495,6 +545,16 @@ def _execute_job(
 
 def check_password() -> bool:
     if st.session_state.get("authenticated"):
+        if not st.session_state.get("auth_session_token") and st.session_state.get("username"):
+            session_token = create_auth_session(st.session_state["username"])
+            _set_authenticated_user(
+                username=st.session_state["username"],
+                role=st.session_state.get("role", "user"),
+                credits_per_week=int(st.session_state.get("credits_per_week", 5)),
+                session_token=session_token,
+            )
+        return True
+    if _restore_authenticated_user():
         return True
 
     users = get_users()
@@ -521,10 +581,13 @@ def check_password() -> bool:
     if submitted:
         user_cfg = users.get(username)
         if user_cfg and verify_password(password, user_cfg["password_hash"]):
-            st.session_state["authenticated"] = True
-            st.session_state["username"] = username
-            st.session_state["role"] = user_cfg.get("role", "user")
-            st.session_state["credits_per_week"] = int(user_cfg.get("credits_per_week", 5))
+            session_token = create_auth_session(username)
+            _set_authenticated_user(
+                username=username,
+                role=user_cfg.get("role", "user"),
+                credits_per_week=int(user_cfg.get("credits_per_week", 5)),
+                session_token=session_token,
+            )
             st.rerun()
         st.error("Invalid username or password.")
     st.stop()
@@ -569,8 +632,10 @@ with st.sidebar:
     st.caption("Platform")
     st.write("Reviewable automation, typed configuration, queueing, and traceable outputs.")
     if st.button("Sign out", width="stretch"):
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
+        revoke_auth_session(
+            st.session_state.get("auth_session_token") or st.query_params.get(_AUTH_QUERY_PARAM)
+        )
+        _clear_authenticated_user()
         st.rerun()
 
 render_hero()

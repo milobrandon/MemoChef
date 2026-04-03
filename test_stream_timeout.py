@@ -1,12 +1,19 @@
 """Tests for _create_message stream timeout and retry behaviour."""
 import time
 import unittest
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import anthropic
+import httpx
 
 import memo_automator
-from memo_automator import _create_message, _is_api_error
+from memo_automator import (
+    _api_retry_wait_seconds,
+    _create_message,
+    _is_api_error,
+    _retry_api_call,
+    submit_and_poll_batch,
+)
 from memo_chef.pipeline import (
     TokenTracker,
     _MessagesProxy,
@@ -35,6 +42,44 @@ class _FakeMessage:
         self.content = [_FakeTextBlock(text)]
         self.stop_reason = "end_turn"
         self.usage = _FakeUsage()
+
+
+class _FakeBatchCounts:
+    succeeded = 1
+    errored = 0
+    expired = 0
+
+
+class _FakeBatch:
+    def __init__(self, batch_id="batch_123", status="ended"):
+        self.id = batch_id
+        self.processing_status = status
+        self.request_counts = _FakeBatchCounts()
+
+
+class _FakeBatchResultEnvelope:
+    def __init__(self, message_text):
+        self.type = "succeeded"
+        self.message = _FakeMessage(message_text)
+
+
+class _FakeBatchResult:
+    def __init__(self, custom_id, message_text):
+        self.custom_id = custom_id
+        self.result = _FakeBatchResultEnvelope(message_text)
+
+
+def _make_status_error(status_code=529, retry_after=None, body=None):
+    request = httpx.Request("GET", "https://api.anthropic.com/v1/messages")
+    headers = {}
+    if retry_after is not None:
+        headers["retry-after"] = str(retry_after)
+    response = httpx.Response(status_code, headers=headers, request=request)
+    return anthropic.APIStatusError(
+        "Overloaded",
+        response=response,
+        body=body or {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}},
+    )
 
 
 class _HangingStream:
@@ -130,6 +175,62 @@ class TestTimeoutIsRetryable(unittest.TestCase):
 
         with self.assertRaises(anthropic.APITimeoutError):
             _retry(always_fail, retries=2, base_delay=0.01, jitter=0)
+
+
+class TestApiRetryHelpers(unittest.TestCase):
+    """Transient status errors should use sensible backoff and recover cleanly."""
+
+    @patch("memo_automator.random.uniform", return_value=0.0)
+    def test_retry_wait_seconds_respects_retry_after_header(self, _mock_jitter):
+        err = _make_status_error(retry_after=42)
+        self.assertEqual(
+            _api_retry_wait_seconds(err, attempt=1, base_delay=2.0, jitter=0.0),
+            42.0,
+        )
+
+    @patch("memo_automator.random.uniform", return_value=0.0)
+    def test_retry_wait_seconds_uses_longer_backoff_for_overload(self, _mock_jitter):
+        err = _make_status_error(status_code=529, retry_after=None)
+        self.assertEqual(
+            _api_retry_wait_seconds(err, attempt=1, base_delay=2.0, jitter=0.0),
+            15.0,
+        )
+
+    @patch("memo_automator.time.sleep")
+    @patch("memo_automator.random.uniform", return_value=0.0)
+    def test_retry_api_call_recovers_from_overloaded_status_error(self, _mock_jitter, mock_sleep):
+        func = MagicMock(side_effect=[_make_status_error(), "ok"])
+
+        result = _retry_api_call(func, retries=3, base_delay=2.0, jitter=0.0)
+
+        self.assertEqual(result, "ok")
+        mock_sleep.assert_called_once_with(15.0)
+
+    @patch("memo_automator.time.sleep")
+    @patch("memo_automator.random.uniform", return_value=0.0)
+    def test_submit_and_poll_batch_retries_poll_and_results_without_resubmitting(
+        self,
+        _mock_jitter,
+        mock_sleep,
+    ):
+        client = MagicMock()
+        client.messages.batches.create.return_value = _FakeBatch()
+        client.messages.batches.retrieve.side_effect = [
+            _make_status_error(),
+            _FakeBatch(status="ended"),
+        ]
+        client.messages.batches.results.side_effect = [
+            _make_status_error(),
+            [_FakeBatchResult("mapping-chunk-0", '{"table_updates": [], "text_updates": [], "row_inserts": []}')],
+        ]
+
+        result = submit_and_poll_batch(client, requests=[{"custom_id": "mapping-chunk-0"}], poll_interval=0, timeout=10)
+
+        self.assertIn("mapping-chunk-0", result)
+        client.messages.batches.create.assert_called_once()
+        self.assertEqual(client.messages.batches.retrieve.call_count, 2)
+        self.assertEqual(client.messages.batches.results.call_count, 2)
+        mock_sleep.assert_any_call(15.0)
 
 
 # ---------------------------------------------------------------------------

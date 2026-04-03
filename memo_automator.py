@@ -27,9 +27,11 @@ Usage
 import argparse
 import concurrent.futures
 import errno
+from email.utils import parsedate_to_datetime
 import json
 import logging
 import os
+import random
 import re
 import shutil
 import sys
@@ -50,7 +52,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from lxml import etree
 from pptx import Presentation
 from pptx.exc import PackageNotFoundError
-from pptx.util import Pt
 
 # ============================================================================
 # LOGGING SETUP
@@ -82,6 +83,93 @@ _ALL_API_ERRORS = _AUTH_ERRORS + _RATE_LIMIT_ERRORS + _TIMEOUT_ERRORS + _API_STA
 
 def _is_api_error(err: Exception) -> bool:
     return bool(_ALL_API_ERRORS) and isinstance(err, _ALL_API_ERRORS)
+
+
+def _api_status_code(err: Exception) -> int | None:
+    status_code = getattr(err, "status_code", None)
+    if status_code is None and hasattr(err, "response"):
+        status_code = getattr(err.response, "status_code", None)
+    return status_code
+
+
+def _api_retry_after_seconds(err: Exception) -> float | None:
+    response = getattr(err, "response", None)
+    headers = getattr(response, "headers", None)
+    if not headers:
+        return None
+    retry_after = headers.get("retry-after")
+    if not retry_after:
+        return None
+    try:
+        return max(float(retry_after), 0.0)
+    except (TypeError, ValueError):
+        try:
+            retry_dt = parsedate_to_datetime(retry_after)
+        except (TypeError, ValueError, IndexError, OverflowError):
+            return None
+        now = datetime.now(retry_dt.tzinfo) if retry_dt.tzinfo else datetime.now()
+        return max((retry_dt - now).total_seconds(), 0.0)
+
+
+def _is_overloaded_api_error(err: Exception) -> bool:
+    if _api_status_code(err) == 529:
+        return True
+    body = getattr(err, "body", None)
+    if isinstance(body, dict):
+        body_text = json.dumps(body).lower()
+    else:
+        body_text = str(body).lower()
+    return "overloaded" in str(err).lower() or "overloaded_error" in body_text
+
+
+def _api_retry_wait_seconds(
+    err: Exception,
+    attempt: int,
+    *,
+    base_delay: float = 2.0,
+    jitter: float = 1.0,
+) -> float:
+    wait_seconds = base_delay * (2 ** (attempt - 1))
+    retry_after = _api_retry_after_seconds(err)
+    if retry_after is not None:
+        wait_seconds = max(wait_seconds, retry_after)
+    elif _is_overloaded_api_error(err):
+        wait_seconds = max(wait_seconds, 15.0 * (2 ** (attempt - 1)))
+    return wait_seconds + random.uniform(0, jitter)
+
+
+def _retry_api_call(
+    func,
+    *args,
+    retries: int = 4,
+    base_delay: float = 2.0,
+    jitter: float = 1.0,
+    action: str = "Claude API call",
+    **kwargs,
+):
+    attempt = 0
+    while True:
+        try:
+            return func(*args, **kwargs)
+        except Exception as err:
+            attempt += 1
+            if attempt > retries or not _is_api_error(err) or (_AUTH_ERRORS and isinstance(err, _AUTH_ERRORS)):
+                raise
+            wait_seconds = _api_retry_wait_seconds(
+                err,
+                attempt,
+                base_delay=base_delay,
+                jitter=jitter,
+            )
+            log.warning(
+                "%s failed with transient API error (attempt %d/%d); retrying in %.0fs: %s",
+                action,
+                attempt,
+                retries,
+                wait_seconds,
+                err,
+            )
+            time.sleep(wait_seconds)
 
 
 def _exit_with_api_error(err: Exception):
@@ -1194,13 +1282,21 @@ def submit_and_poll_batch(
     Returns a dict mapping custom_id -> parsed JSON mappings dict.
     Raises RuntimeError if the batch fails or times out.
     """
-    batch = client.messages.batches.create(requests=requests)
+    batch = _retry_api_call(
+        client.messages.batches.create,
+        requests=requests,
+        action="Submitting Claude batch",
+    )
     batch_id = batch.id
     log.info("Batch submitted: %s (%d requests)", batch_id, len(requests))
 
     start = time.time()
     while True:
-        batch = client.messages.batches.retrieve(batch_id)
+        batch = _retry_api_call(
+            client.messages.batches.retrieve,
+            batch_id,
+            action=f"Polling Claude batch {batch_id}",
+        )
         status = batch.processing_status
         counts = batch.request_counts
         log.info("Batch %s: status=%s, succeeded=%d, errored=%d, expired=%d",
@@ -1214,7 +1310,11 @@ def submit_and_poll_batch(
 
     # Collect results
     results = {}
-    for result in client.messages.batches.results(batch_id):
+    batch_results = _retry_api_call(
+        lambda: list(client.messages.batches.results(batch_id)),
+        action=f"Fetching Claude batch {batch_id} results",
+    )
+    for result in batch_results:
         cid = result.custom_id
         if result.result.type == "succeeded":
             message = result.result.message

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import base64
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
+import hashlib
 import json
 import logging
 import os
 from pathlib import Path
+import secrets
 import threading
 import time
 from typing import Any
@@ -22,6 +24,7 @@ log = logging.getLogger(__name__)
 
 _BINARY_PAYLOAD_KEY = "__memo_chef_binary__"
 _BINARY_DATA_KEY = "data"
+_AUTH_SESSION_DAYS = 7
 
 
 def _json_safe_payload(value: Any) -> Any:
@@ -171,6 +174,16 @@ def get_db_conn():
         cur.execute(
             "ALTER TABLE memo_chef_users ADD COLUMN IF NOT EXISTS email TEXT"
         )
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS memo_chef_auth_sessions ("
+            "  token_hash TEXT PRIMARY KEY,"
+            "  username TEXT NOT NULL,"
+            "  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
+            "  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
+            "  expires_at TIMESTAMPTZ NOT NULL,"
+            "  revoked_at TIMESTAMPTZ"
+            ")"
+        )
         # Phase 3: accuracy metrics + slide insertion + manifest storage
         cur.execute(
             "ALTER TABLE memo_chef_runs ADD COLUMN IF NOT EXISTS slides_inserted INTEGER DEFAULT 0"
@@ -284,6 +297,10 @@ def current_week_start() -> str:
     return monday.strftime("%Y-%m-%d")
 
 
+def _hash_auth_session_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 def get_users() -> dict:
     try:
         with db_cursor() as cur:
@@ -312,6 +329,69 @@ def get_all_usernames() -> list[str]:
     with db_cursor() as cur:
         cur.execute("SELECT username FROM memo_chef_users ORDER BY username")
         return [row[0] for row in cur.fetchall()]
+
+
+def create_auth_session(username: str) -> str:
+    token = secrets.token_urlsafe(32)
+    token_hash = _hash_auth_session_token(token)
+    expires_at = datetime.now(UTC) + timedelta(days=_AUTH_SESSION_DAYS)
+    with db_cursor() as cur:
+        cur.execute(
+            "INSERT INTO memo_chef_auth_sessions (token_hash, username, expires_at) "
+            "VALUES (%s, %s, %s)",
+            (token_hash, username, expires_at),
+        )
+    return token
+
+
+def get_auth_session(token: str) -> dict | None:
+    token_hash = _hash_auth_session_token(token)
+    with db_cursor() as cur:
+        cur.execute(
+            "DELETE FROM memo_chef_auth_sessions "
+            "WHERE revoked_at IS NOT NULL OR expires_at <= now()"
+        )
+        cur.execute(
+            "SELECT u.username, u.role, u.credits_per_week "
+            "FROM memo_chef_auth_sessions s "
+            "JOIN memo_chef_users u ON u.username = s.username "
+            "WHERE s.token_hash = %s AND s.revoked_at IS NULL AND s.expires_at > now()",
+            (token_hash,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        cur.execute(
+            "UPDATE memo_chef_auth_sessions "
+            "SET last_seen_at = now(), expires_at = now() + interval '7 days' "
+            "WHERE token_hash = %s",
+            (token_hash,),
+        )
+    return {
+        "username": row[0],
+        "role": row[1],
+        "credits_per_week": int(row[2]),
+    }
+
+
+def revoke_auth_session(token: str | None) -> None:
+    if not token:
+        return
+    token_hash = _hash_auth_session_token(token)
+    with db_cursor() as cur:
+        cur.execute(
+            "UPDATE memo_chef_auth_sessions SET revoked_at = now() WHERE token_hash = %s",
+            (token_hash,),
+        )
+
+
+def revoke_user_auth_sessions(username: str) -> None:
+    with db_cursor() as cur:
+        cur.execute(
+            "UPDATE memo_chef_auth_sessions SET revoked_at = now() "
+            "WHERE username = %s AND revoked_at IS NULL",
+            (username,),
+        )
 
 
 def get_user_credits(username: str, credits_per_week: int) -> tuple[int, int]:
@@ -408,10 +488,13 @@ def update_user(
                 "UPDATE memo_chef_users SET password_hash = %s, updated_at = now() WHERE username = %s",
                 (password_hash, username),
             )
+    if new_password is not None:
+        revoke_user_auth_sessions(username)
 
 
 def delete_user(username: str) -> None:
     with db_cursor() as cur:
+        cur.execute("DELETE FROM memo_chef_auth_sessions WHERE username = %s", (username,))
         cur.execute("DELETE FROM credit_usage WHERE username = %s", (username,))
         cur.execute("DELETE FROM credit_charge_events WHERE username = %s", (username,))
         cur.execute("DELETE FROM memo_chef_users WHERE username = %s", (username,))
