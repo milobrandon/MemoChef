@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Memo Chef — IC Memo Updater</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Memo Chef</h1>
+      <p class="subtitle">Autonomous IC Memo Updater &middot; Powered by Claude Managed Agents</p>
+    </header>
+
+    <!-- Upload Form -->
+    <form id="run-form" enctype="multipart/form-data">
+      <div class="form-section">
+        <h2>Required Files</h2>
+        <div class="file-group">
+          <label for="proforma">
+            Excel Pro Forma
+            <span class="required">*</span>
+          </label>
+          <input type="file" id="proforma" name="proforma" accept=".xlsx,.xlsm" required>
+          <span class="hint">.xlsx or .xlsm</span>
+        </div>
+        <div class="file-group">
+          <label for="memo">
+            PowerPoint Memo Template
+            <span class="required">*</span>
+          </label>
+          <input type="file" id="memo" name="memo" accept=".pptx" required>
+          <span class="hint">.pptx</span>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <h2>Optional Files</h2>
+        <div class="file-group">
+          <label for="supplemental">Supporting Files</label>
+          <input type="file" id="supplemental" name="supplemental" multiple
+                 accept=".xlsx,.xlsm,.pdf,.csv,.txt,.docx">
+          <span class="hint">Market data workbooks, PDFs, broker reports — upload multiple</span>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <h2>Instructions</h2>
+        <textarea id="instructions" name="instructions" rows="4"
+                  placeholder="Optional deal-specific notes (e.g., 'JV structure, focus on sensitivity analysis, use 3-year hold period')"></textarea>
+      </div>
+
+      <button type="submit" id="run-btn">
+        <span class="btn-text">Run Memo Chef</span>
+        <span class="btn-loading" hidden>Running...</span>
+      </button>
+    </form>
+
+    <!-- Progress Display -->
+    <div id="progress-section" hidden>
+      <h2>Agent Progress</h2>
+      <div id="status-bar">
+        <span id="status-label">Initializing...</span>
+      </div>
+      <div id="event-log"></div>
+    </div>
+
+    <!-- Results -->
+    <div id="results-section" hidden>
+      <h2>Results</h2>
+      <div id="output-files"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
