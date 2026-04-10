@@ -17,6 +17,25 @@ _project_root = Path(__file__).resolve().parent.parent
 load_dotenv(_project_root / ".env")
 load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
 
+# Also try Streamlit secrets (TOML with KEY = "value" lines).
+# Check both the project root and the main repo (for worktree scenarios).
+_main_repo = _project_root
+_root_str = str(_project_root).replace("\\", "/")
+if ".claude/worktrees" in _root_str:
+    _main_repo = Path(_root_str.split(".claude/worktrees")[0].rstrip("/"))
+_streamlit_secrets = None
+for _candidate in [_project_root / ".streamlit" / "secrets.toml",
+                   _main_repo / ".streamlit" / "secrets.toml"]:
+    if _candidate.exists():
+        _streamlit_secrets = _candidate
+        break
+if _streamlit_secrets is not None and not os.environ.get("ANTHROPIC_API_KEY"):
+    for _line in _streamlit_secrets.read_text().splitlines():
+        if _line.startswith("ANTHROPIC_API_KEY"):
+            _val = _line.split("=", 1)[1].strip().strip('"')
+            os.environ["ANTHROPIC_API_KEY"] = _val
+            break
+
 ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
 AGENT_ID: str = os.environ.get("MANAGED_AGENT_ID", "")
 ENVIRONMENT_ID: str = os.environ.get("MANAGED_ENVIRONMENT_ID", "")

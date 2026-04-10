@@ -13,16 +13,17 @@ Saves the environment ID to managed_agents/.env for reuse.
 
 from __future__ import annotations
 
-import anthropic
+from managed_agents.api_client import create_environment
+from managed_agents.config import ENVIRONMENT_ID, save_ids
 
-from managed_agents.config import ANTHROPIC_API_KEY, ENVIRONMENT_ID, save_ids
 
+def main() -> None:
+    if ENVIRONMENT_ID:
+        print(f"Environment already provisioned: {ENVIRONMENT_ID}")
+        print("Delete MANAGED_ENVIRONMENT_ID from managed_agents/.env to re-create.")
+        return
 
-def create_environment() -> str:
-    """Create the cloud environment and return its ID."""
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-
-    environment = client.beta.environments.create(
+    env = create_environment(
         name="memo-chef-env",
         config={
             "type": "cloud",
@@ -39,19 +40,11 @@ def create_environment() -> str:
         },
     )
 
-    print(f"Environment created: {environment.id}")
-    return environment.id
+    env_id = env["id"]
+    print(f"Environment created: {env_id}")
 
-
-def main() -> None:
-    if ENVIRONMENT_ID:
-        print(f"Environment already provisioned: {ENVIRONMENT_ID}")
-        print("Delete managed_agents/.env entry to re-create.")
-        return
-
-    env_id = create_environment()
     save_ids(environment_id=env_id)
-    print(f"Saved environment ID to managed_agents/.env")
+    print("Saved environment ID to managed_agents/.env")
 
 
 if __name__ == "__main__":

@@ -3,11 +3,11 @@
 FastAPI backend for Memo Chef (Managed Agents edition).
 
 Endpoints:
-  POST /api/run       — upload files, start a session, return session_id
-  GET  /api/stream/{session_id} — SSE stream of agent events
-  GET  /api/files/{session_id}  — list output files
-  GET  /api/download/{file_id}  — download a single output file
-  GET  /                        — serve the frontend
+  POST /api/run       -- upload files, start a session, return session_id
+  GET  /api/stream/{session_id} -- SSE stream of agent events
+  GET  /api/files/{session_id}  -- list output files
+  GET  /api/download/{file_id}  -- download a single output file
+  GET  /                        -- serve the frontend
 
 Usage:
     uvicorn managed_agents.server:app --reload --port 8501
@@ -28,8 +28,7 @@ from managed_agents.config import AGENT_ID, ENVIRONMENT_ID
 from managed_agents.run_session import (
     build_user_message,
     create_session,
-    download_file,
-    get_client,
+    download_file_to,
     get_output_files,
     send_message,
     stream_events,
@@ -64,38 +63,35 @@ async def start_run(
     if not AGENT_ID or not ENVIRONMENT_ID:
         return {"error": "Agent or environment not provisioned. Run setup scripts first."}
 
-    client = get_client()
-
-    # Upload files via Files API and build resource list
     resources = []
 
-    # Proforma
+    # Upload proforma
     proforma_path = _tmp / proforma.filename
     proforma_path.write_bytes(await proforma.read())
-    proforma_file_id = upload_file(client, proforma_path)
+    proforma_file_id = upload_file(proforma_path)
     resources.append({
         "type": "file",
         "file_id": proforma_file_id,
         "mount_path": f"/mnt/session/uploads/{proforma.filename}",
     })
 
-    # Memo template
+    # Upload memo template
     memo_path = _tmp / memo.filename
     memo_path.write_bytes(await memo.read())
-    memo_file_id = upload_file(client, memo_path)
+    memo_file_id = upload_file(memo_path)
     resources.append({
         "type": "file",
         "file_id": memo_file_id,
         "mount_path": f"/mnt/session/uploads/{memo.filename}",
     })
 
-    # Supplemental files
+    # Upload supplemental files
     supplemental_names = []
     for sup_file in supplemental:
         if sup_file.filename:
             sup_path = _tmp / sup_file.filename
             sup_path.write_bytes(await sup_file.read())
-            sup_id = upload_file(client, sup_path)
+            sup_id = upload_file(sup_path)
             resources.append({
                 "type": "file",
                 "file_id": sup_id,
@@ -103,18 +99,17 @@ async def start_run(
             })
             supplemental_names.append(sup_file.filename)
 
-    # Upload example memos
-    example_resources = upload_example_memos(client)
+    # Upload example memos for house-style reference
+    example_resources = upload_example_memos()
     resources.extend(example_resources)
 
     # Create session
     session_id = create_session(
-        client,
         uploaded_resources=resources,
         title=f"Memo Chef: {proforma.filename}",
     )
 
-    # Build and send initial message
+    # Build and send initial message in background thread
     message = build_user_message(
         proforma_filename=proforma.filename,
         memo_filename=memo.filename,
@@ -122,12 +117,8 @@ async def start_run(
         instructions=instructions,
     )
 
-    # Run stream + send in background thread to avoid blocking
-    def _send():
-        send_message(client, session_id, message)
-
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _send)
+    await loop.run_in_executor(None, send_message, session_id, message)
 
     return {"session_id": session_id}
 
@@ -135,10 +126,9 @@ async def start_run(
 @app.get("/api/stream/{session_id}")
 async def stream_session(session_id: str):
     """SSE endpoint that streams agent events."""
-    client = get_client()
 
     def _generate():
-        for event in stream_events(client, session_id):
+        for event in stream_events(session_id):
             yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(
@@ -155,17 +145,15 @@ async def stream_session(session_id: str):
 @app.get("/api/files/{session_id}")
 async def list_output_files(session_id: str):
     """List files the agent wrote during the session."""
-    client = get_client()
-    files = get_output_files(client, session_id)
+    files = get_output_files(session_id)
     return {"files": files}
 
 
 @app.get("/api/download/{file_id}")
 async def download_output_file(file_id: str, filename: str = "output.pptx"):
     """Download a specific output file."""
-    client = get_client()
     dest = _tmp / f"{file_id}_{filename}"
-    download_file(client, file_id, dest)
+    download_file_to(file_id, dest)
     return FileResponse(
         path=str(dest),
         filename=filename,
