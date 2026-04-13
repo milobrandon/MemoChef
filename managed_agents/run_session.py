@@ -19,7 +19,7 @@ from managed_agents.api_client import (
     stream_events as api_stream_events,
     upload_file as api_upload_file,
 )
-from managed_agents.config import AGENT_ID, ENVIRONMENT_ID, EXAMPLES_DIR
+from managed_agents.config import AGENT_ID, ENVIRONMENT_ID, EXAMPLES_DIR, FIREFLIES_API_KEY
 
 
 def upload_file(file_path: Path) -> str:
@@ -44,6 +44,40 @@ def upload_example_memos() -> list[dict]:
             "mount_path": f"/mnt/examples/{path.name}",
         })
     return resources
+
+
+def upload_fireflies_config(
+    *,
+    lookback_days: int = 90,
+    search_terms: list[str] | None = None,
+) -> dict | None:
+    """Create and upload a Fireflies config JSON for the agent.
+
+    Returns a resource dict for session creation, or None if no key is configured.
+    """
+    if not FIREFLIES_API_KEY:
+        return None
+
+    import json
+    import tempfile
+
+    config = {
+        "api_key": FIREFLIES_API_KEY,
+        "lookback_days": lookback_days,
+        "search_terms": search_terms or [],
+    }
+
+    config_path = Path(tempfile.mktemp(suffix=".json", prefix="fireflies_"))
+    config_path.write_text(json.dumps(config, indent=2))
+
+    file_id = upload_file(config_path)
+    config_path.unlink(missing_ok=True)
+
+    return {
+        "type": "file",
+        "file_id": file_id,
+        "mount_path": "/mnt/session/uploads/fireflies_config.json",
+    }
 
 
 def create_session(
@@ -100,6 +134,7 @@ def build_user_message(
     memo_filename: str,
     supplemental_filenames: list[str] | None = None,
     instructions: str = "",
+    meeting_lookback_days: int | None = None,
 ) -> str:
     """Build the initial user message that kicks off the agent run."""
     parts = [
@@ -114,6 +149,16 @@ def build_user_message(
         parts.append("**Supplemental files**:")
         for name in supplemental_filenames:
             parts.append(f"- `/mnt/session/uploads/{name}`")
+
+    if meeting_lookback_days:
+        parts.extend([
+            "",
+            f"**Meeting transcripts**: A Fireflies config is mounted at "
+            f"`/mnt/session/uploads/fireflies_config.json`. Search the last "
+            f"**{meeting_lookback_days} days** of meetings for due diligence, "
+            f"entitlements, design, and schedule updates relevant to this deal. "
+            f"Use transcript insights to enrich narrative sections of the memo.",
+        ])
 
     if instructions:
         parts.append("")

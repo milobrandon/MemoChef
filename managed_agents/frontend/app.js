@@ -49,6 +49,14 @@ form.addEventListener("submit", async (e) => {
       fd.append("instructions", instructions);
     }
 
+    const meetingLookback = parseInt(
+      document.getElementById("meeting-lookback").value,
+      10,
+    );
+    if (Number.isFinite(meetingLookback) && meetingLookback > 0) {
+      fd.append("meeting_lookback_days", String(meetingLookback));
+    }
+
     // Start the run
     const resp = await fetch("/api/run", { method: "POST", body: fd });
     const data = await resp.json();

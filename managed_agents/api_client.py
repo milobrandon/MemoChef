@@ -19,6 +19,7 @@ from managed_agents.config import ANTHROPIC_API_KEY
 
 BASE_URL = "https://api.anthropic.com"
 BETA_HEADER = "managed-agents-2026-04-01"
+STREAM_BETA = "agent-api-2026-03-01"
 FILES_BETA = "files-api-2025-04-14"
 
 _HEADERS = {
@@ -35,7 +36,8 @@ def _headers(extra_betas: list[str] | None = None) -> dict[str, str]:
     if not h["x-api-key"]:
         h["x-api-key"] = ANTHROPIC_API_KEY  # reload in case env changed
     if extra_betas:
-        h["anthropic-beta"] = ",".join([BETA_HEADER] + extra_betas)
+        existing = h["anthropic-beta"]
+        h["anthropic-beta"] = ",".join([existing] + extra_betas)
     return h
 
 
@@ -69,6 +71,32 @@ def create_agent(
         body["description"] = description
     with httpx.Client(timeout=30) as c:
         resp = c.post(f"{BASE_URL}/v1/agents", headers=_headers(), json=body)
+    return _check(resp)
+
+
+def update_agent(
+    agent_id: str,
+    *,
+    system: str | None = None,
+    name: str | None = None,
+    model: str | None = None,
+    tools: list[dict] | None = None,
+    description: str | None = None,
+) -> dict:
+    """PUT /v1/agents/{id} — update an existing managed agent."""
+    body: dict[str, Any] = {}
+    if system is not None:
+        body["system"] = system
+    if name is not None:
+        body["name"] = name
+    if model is not None:
+        body["model"] = model
+    if tools is not None:
+        body["tools"] = tools
+    if description is not None:
+        body["description"] = description
+    with httpx.Client(timeout=30) as c:
+        resp = c.put(f"{BASE_URL}/v1/agents/{agent_id}", headers=_headers(), json=body)
     return _check(resp)
 
 
@@ -202,11 +230,16 @@ def stream_events(session_id: str) -> Generator[dict, None, None]:
     """GET /v1/sessions/{id}/stream — SSE stream of events.
 
     Yields parsed event dicts. Stops on session.status_idle or terminated.
+
+    NOTE: The stream endpoint requires a DIFFERENT beta header
+    (agent-api-2026-03-01) than the rest of the API (managed-agents-2026-04-01).
     """
-    headers = dict(_headers())
-    headers["Accept"] = "text/event-stream"
-    # Remove content-type for GET
-    headers.pop("content-type", None)
+    headers = {
+        "x-api-key": ANTHROPIC_API_KEY or "",
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": STREAM_BETA,
+        "Accept": "text/event-stream",
+    }
 
     with httpx.Client(timeout=None) as c:
         with c.stream(
@@ -215,7 +248,8 @@ def stream_events(session_id: str) -> Generator[dict, None, None]:
             headers=headers,
         ) as resp:
             if resp.status_code >= 400:
-                raise RuntimeError(f"Stream error {resp.status_code}")
+                body = resp.read().decode(errors="replace")
+                raise RuntimeError(f"Stream error {resp.status_code}: {body}")
 
             buffer = ""
             for chunk in resp.iter_text():

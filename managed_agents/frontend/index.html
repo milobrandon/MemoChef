@@ -46,6 +46,19 @@
       </div>
 
       <div class="form-section">
+        <h2>Meeting Transcripts (Optional)</h2>
+        <div class="file-group">
+          <label for="meeting-lookback">Fireflies Lookback Window</label>
+          <input type="number" id="meeting-lookback" name="meeting_lookback_days"
+                 min="0" max="365" step="1" value="0">
+          <span class="hint">
+            Days of meeting transcripts to search (0 = disabled). Requires
+            <code>FIREFLIES_API_KEY</code> in secrets.
+          </span>
+        </div>
+      </div>
+
+      <div class="form-section">
         <h2>Instructions</h2>
         <textarea id="instructions" name="instructions" rows="4"
                   placeholder="Optional deal-specific notes (e.g., 'JV structure, focus on sensitivity analysis, use 3-year hold period')"></textarea>

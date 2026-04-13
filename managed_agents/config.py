@@ -37,8 +37,16 @@ if _streamlit_secrets is not None and not os.environ.get("ANTHROPIC_API_KEY"):
             break
 
 ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
+FIREFLIES_API_KEY: str = os.environ.get("FIREFLIES_API_KEY", "")
 AGENT_ID: str = os.environ.get("MANAGED_AGENT_ID", "")
 ENVIRONMENT_ID: str = os.environ.get("MANAGED_ENVIRONMENT_ID", "")
+
+# Load Fireflies key from Streamlit secrets if not in env
+if not FIREFLIES_API_KEY and _streamlit_secrets is not None:
+    for _line in _streamlit_secrets.read_text().splitlines():
+        if _line.startswith("FIREFLIES_API_KEY"):
+            FIREFLIES_API_KEY = _line.split("=", 1)[1].strip().strip('"')
+            break
 
 # Paths
 EXAMPLES_DIR = Path(__file__).resolve().parent / "examples"

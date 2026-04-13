@@ -34,6 +34,7 @@ from managed_agents.run_session import (
     stream_events,
     upload_example_memos,
     upload_file,
+    upload_fireflies_config,
 )
 
 app = FastAPI(title="Memo Chef — Managed Agents", version="0.1.0")
@@ -58,6 +59,7 @@ async def start_run(
     memo: UploadFile = File(...),
     supplemental: list[UploadFile] = File(default=[]),
     instructions: str = Form(default=""),
+    meeting_lookback_days: int = Form(default=0),
 ):
     """Upload files, create a session, send the initial message, return session ID."""
     if not AGENT_ID or not ENVIRONMENT_ID:
@@ -99,6 +101,18 @@ async def start_run(
             })
             supplemental_names.append(sup_file.filename)
 
+    # Upload Fireflies config if meeting lookback is requested
+    if meeting_lookback_days > 0:
+        # Derive search terms from the proforma filename
+        deal_name = proforma.filename.replace("_", " ").split(".")[0]
+        search_terms = [t for t in deal_name.split() if len(t) > 3]
+        ff_resource = upload_fireflies_config(
+            lookback_days=meeting_lookback_days,
+            search_terms=search_terms,
+        )
+        if ff_resource:
+            resources.append(ff_resource)
+
     # Upload example memos for house-style reference
     example_resources = upload_example_memos()
     resources.extend(example_resources)
@@ -115,6 +129,7 @@ async def start_run(
         memo_filename=memo.filename,
         supplemental_filenames=supplemental_names or None,
         instructions=instructions,
+        meeting_lookback_days=meeting_lookback_days if meeting_lookback_days > 0 else None,
     )
 
     loop = asyncio.get_event_loop()
