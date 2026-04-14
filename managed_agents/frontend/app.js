@@ -49,6 +49,11 @@ form.addEventListener("submit", async (e) => {
       fd.append("instructions", instructions);
     }
 
+    const projectName = document.getElementById("project-name").value.trim();
+    if (projectName) {
+      fd.append("project_name", projectName);
+    }
+
     const meetingLookback = parseInt(
       document.getElementById("meeting-lookback").value,
       10,

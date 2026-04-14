@@ -59,6 +59,7 @@ async def start_run(
     memo: UploadFile = File(...),
     supplemental: list[UploadFile] = File(default=[]),
     instructions: str = Form(default=""),
+    project_name: str = Form(default=""),
     meeting_lookback_days: int = Form(default=0),
 ):
     """Upload files, create a session, send the initial message, return session ID."""
@@ -103,9 +104,12 @@ async def start_run(
 
     # Upload Fireflies config if meeting lookback is requested
     if meeting_lookback_days > 0:
-        # Derive search terms from the proforma filename
-        deal_name = proforma.filename.replace("_", " ").split(".")[0]
-        search_terms = [t for t in deal_name.split() if len(t) > 3]
+        # Use explicit project name if provided, otherwise derive from filename
+        if project_name:
+            search_terms = [t for t in project_name.split() if len(t) > 2]
+        else:
+            deal_name = proforma.filename.replace("_", " ").split(".")[0]
+            search_terms = [t for t in deal_name.split() if len(t) > 3]
         ff_resource = upload_fireflies_config(
             lookback_days=meeting_lookback_days,
             search_terms=search_terms,

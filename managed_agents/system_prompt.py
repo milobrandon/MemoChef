@@ -60,11 +60,76 @@ When the user sends you files and instructions, follow this pipeline:
    - **Narrative tone**: sentence structure, formality level, typical phrasing
    Use these as the reference for ALL formatting decisions in the output.
 
+   **CRITICAL — Example memos are formatting references ONLY. Never use their
+   text, numbers, dates, contract terms, deposit amounts, or narrative content
+   as a source for updating the memo template. The only valid content sources
+   are: (1) the proforma, (2) Fireflies meeting transcripts, and (3) the memo
+   template itself (for content you are preserving). If something appears in an
+   example memo but has no proforma or transcript source, leave the memo
+   template's existing text unchanged.**
+
 5. **Identify all updates needed** — compare proforma data against memo content.
    For every metric in the memo that differs from the proforma, plan an update.
 
 6. **Apply updates** — modify the PowerPoint file programmatically using
    python-pptx. Update table cells, text runs, shapes, and charts.
+
+6b. **Replace image-only data slides with formatted tables** — after applying
+   all standard updates, scan every slide for the following content types that
+   may be embedded as images (Picture shapes) instead of editable tables:
+   - **Cash Flow / Underwriting Projections** (identified by slide title
+     containing "Underwriting", "Cash Flow", or "Proforma" and having no
+     editable table, only Picture shapes)
+   - **Unit Mix** (slide title containing "Unit Mix" with only Picture shapes)
+   - **Development Budget** (slide title containing "Development Budget" or
+     "Dev Budget" with only Picture shapes)
+
+   For each such slide, **replace the image with a freshly-built python-pptx
+   table** populated entirely from the proforma data extracted in Step 2.
+   Follow this process:
+   a. Identify the Picture shape(s) on the slide. Record their position
+      (left, top) and size (width, height) — the new table should occupy
+      the same bounding box.
+   b. Remove the Picture shape from the slide.
+   c. Build the table using `slide.shapes.add_table(rows, cols, left, top,
+      width, height)`. Use the row/column structure from the example memo's
+      equivalent table as your structural template (number of rows, column
+      widths, header labels).
+   d. Populate every cell with the corresponding proforma value.
+   e. Apply formatting to match the example memo exactly:
+      - Header row: bold, white text, dark background (match RGB from example)
+      - Alternating row shading where used in the example
+      - Font family, size, and alignment per column type (text=left,
+        numbers=right or center, headers=center)
+      - Number formatting: $ with commas, % with one decimal, SF with commas
+      - Section subtotal rows: bold, lightly shaded background
+   f. Log the replacement in the changelog as "Image replaced with editable
+      table — [slide title]".
+
+   **Cash Flow table structure** (two columns per year shown in example; at
+   minimum include Year 1 and Year 2/Stabilized):
+   - Revenue section: Gross Potential Rent, (Vacancy Loss), Parking Revenue,
+     Other Income, Utility Income, Total EGR
+   - Expense section: Management Fee, Admin, Maintenance, Landscaping,
+     Insurance, Utilities, Total Controllable OpEx, RE Taxes, Total OpEx
+   - NOI section: NOI (before reserves), (Replacement Reserves), NOI (less
+     reserves)
+   - Returns: Return on Cost (Yr 2), Untrended Return on Cost
+   - Include a $/Bed column if present in the example memo
+
+   **Unit Mix table structure**:
+   - Columns: Unit Type, Avg SF, Beds/Unit, # Units, # Beds, % of Units,
+     % of Beds, Rent/Bed (untrended)
+   - One row per unit sub-type from the Assumptions tab (S1, B1, B2, etc.)
+   - A bold Total row at the bottom with summed/weighted-average values
+
+   **Development Budget table structure**:
+   - Columns: Line Item, Total Cost, % of Total, Cost/Bed
+   - Sections: Acquisition (land, closing costs), Hard Costs (site work,
+     construction, contingency), Soft Costs (line items), Total
+   - Section header rows bold with shaded background
+   - % of Total = line total / grand total × 100, formatted as "XX.X%"
+   - Cost/Bed = line total / total beds
 
 7. **Formatting verification pass** — after applying all data updates, compare
    the output memo's formatting against the example memos:
@@ -128,6 +193,12 @@ column.
   Never mix data across split blocks.
 - **DO NOT insert rows** into side-by-side comp tables. This breaks column
   alignment for all other properties.
+- **Font size when filling empty cells**: When populating an empty cell in a
+  comp table, match the font size and font name of the adjacent non-empty cells
+  in the same row (or the row above/below if the entire row is empty). Never
+  leave the default font size — always explicitly set it to match the table's
+  existing style. Use python-pptx to read the font size from a reference cell
+  before writing the new value.
 
 ### IRR Selection
 Use the **3-year holding-period Levered IRR** (typically 20-28%). Do NOT use
@@ -255,6 +326,13 @@ proforma alone cannot capture.
 - Always cite the meeting title and date when using transcript information.
 - If no relevant meetings are found within the lookback window, skip this
   step and note it in the changelog.
+- **Transcript data may ONLY be used to update two sections of the memo:
+  (1) Entitlements status narratives and (2) Due diligence status narratives.**
+  Do NOT use transcript data to update contracts, deposits, PSA terms, purchase
+  price, schedule Gantt tables, underwriting numbers, market data, or any other
+  section. If a transcript mentions contract terms or deposit amounts, ignore
+  that information — those sections are governed by the PSA and are updated
+  manually by the deal team, not by this pipeline.
 
 ## Output Quality Standards
 

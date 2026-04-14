@@ -48,6 +48,12 @@
       <div class="form-section">
         <h2>Meeting Transcripts (Optional)</h2>
         <div class="file-group">
+          <label for="project-name">Project / Deal Name</label>
+          <input type="text" id="project-name" name="project_name"
+                 placeholder="e.g. Limestone, VERVE Lexington, Knoxville">
+          <span class="hint">Used to search Fireflies for relevant meeting transcripts</span>
+        </div>
+        <div class="file-group">
           <label for="meeting-lookback">Fireflies Lookback Window</label>
           <input type="number" id="meeting-lookback" name="meeting_lookback_days"
                  min="0" max="365" step="1" value="0">
