@@ -50,19 +50,22 @@ def upload_fireflies_config(
     *,
     lookback_days: int = 90,
     search_terms: list[str] | None = None,
+    api_key_override: str | None = None,
 ) -> dict | None:
     """Create and upload a Fireflies config JSON for the agent.
 
     Returns a resource dict for session creation, or None if no key is configured.
+    api_key_override takes precedence over the FIREFLIES_API_KEY env var.
     """
-    if not FIREFLIES_API_KEY:
+    effective_key = api_key_override or FIREFLIES_API_KEY
+    if not effective_key:
         return None
 
     import json
     import tempfile
 
     config = {
-        "api_key": FIREFLIES_API_KEY,
+        "api_key": effective_key,
         "lookback_days": lookback_days,
         "search_terms": search_terms or [],
     }
