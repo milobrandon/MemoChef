@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-import glob
 import json
 import os
 from pathlib import Path
@@ -53,8 +52,17 @@ from app_services import (
     update_run_approval,
     update_user,
 )
-from memo_chef.models import CompUrl, RunRequest, StageUpdate
-from memo_chef.pipeline import run_memo_pipeline
+from managed_agents.run_session import (
+    create_session as ma_create_session,
+    download_file_to as ma_download_file_to,
+    get_output_files as ma_get_output_files,
+    send_message as ma_send_message,
+    stream_events as ma_stream_events,
+    upload_example_memos as ma_upload_example_memos,
+    upload_file as ma_upload_file,
+    upload_fireflies_config as ma_upload_fireflies_config,
+    build_user_message as ma_build_user_message,
+)
 from memo_chef.theme import APP_SUBTITLE, APP_TITLE, app_css, info_card, render_hero
 
 # ---------------------------------------------------------------------------
@@ -150,32 +158,7 @@ if invite_token:
     st.stop()
 
 
-_CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
 _AUTH_QUERY_PARAM = "session"
-
-
-def _list_config_profiles() -> list[str]:
-    """Return stem names of YAML files in configs/, sorted."""
-    if not os.path.isdir(_CONFIGS_DIR):
-        return []
-    return sorted(
-        os.path.splitext(os.path.basename(p))[0]
-        for p in glob.glob(os.path.join(_CONFIGS_DIR, "*.yaml"))
-    )
-
-
-def _config_override_path(profile_name: str | None) -> str | None:
-    if not profile_name:
-        return None
-    path = os.path.join(_CONFIGS_DIR, f"{profile_name}.yaml")
-    return path if os.path.exists(path) else None
-
-
-def _get_api_key() -> str | None:
-    try:
-        return st.secrets["ANTHROPIC_API_KEY"]
-    except (KeyError, FileNotFoundError):
-        return None
 
 
 def _clear_run_state() -> None:
@@ -255,36 +238,14 @@ def _queue_item_from_inputs(
     *,
     memo_file,
     proforma_file,
-    schedule_file,
-    market_data_file,
     supplemental_file=None,
-    supplemental_url: str = "",
-    supplemental_brief: str = "",
-    comp_urls: list[dict] | None = None,
-    auto_generate_comp_slide: bool = False,
-    comp_csv_file=None,
     property_name: str,
-    property_rename_to: str = "",
-    dry_run: bool,
-    skip_validation: bool,
     profile_name: str | None,
-    config_profile_name: str | None = None,
-    use_batch_api: bool = False,
-    source_directives: list[dict] | None = None,
+    project_name: str = "",
+    meeting_lookback_days: int = 0,
+    fireflies_api_key: str = "",
+    instructions: str = "",
 ) -> dict:
-    # Determine supplemental source type
-    supp_name = None
-    supp_bytes = None
-    supp_type = None
-    if supplemental_file:
-        supp_name = supplemental_file.name
-        supp_bytes = supplemental_file.getvalue()
-        ext = Path(supp_name).suffix.lower()
-        supp_type = {".pdf": "pdf", ".xlsx": "excel", ".xlsm": "excel", ".csv": "csv", ".txt": "text"}.get(ext, "excel")
-    elif supplemental_url:
-        supp_name = supplemental_url
-        supp_type = "url"
-
     job_id = uuid.uuid4().hex
     staging = get_job_staging_dir(job_id)
 
@@ -296,29 +257,11 @@ def _queue_item_from_inputs(
     with open(proforma_path, "wb") as f:
         f.write(proforma_file.getvalue())
 
-    schedule_path = None
-    if schedule_file:
-        schedule_path = str(staging / schedule_file.name)
-        with open(schedule_path, "wb") as f:
-            f.write(schedule_file.getvalue())
-
-    market_data_path = None
-    if market_data_file:
-        market_data_path = str(staging / market_data_file.name)
-        with open(market_data_path, "wb") as f:
-            f.write(market_data_file.getvalue())
-
     supp_path = None
-    if supp_bytes:
-        supp_path = str(staging / supp_name)
+    if supplemental_file:
+        supp_path = str(staging / supplemental_file.name)
         with open(supp_path, "wb") as f:
-            f.write(supp_bytes)
-
-    comp_csv_path = None
-    if comp_csv_file:
-        comp_csv_path = str(staging / comp_csv_file.name)
-        with open(comp_csv_path, "wb") as f:
-            f.write(comp_csv_file.getvalue())
+            f.write(supplemental_file.getvalue())
 
     return {
         "job_id": job_id,
@@ -326,41 +269,15 @@ def _queue_item_from_inputs(
         "memo_path": memo_path,
         "proforma_name": proforma_file.name,
         "proforma_path": proforma_path,
-        "schedule_name": schedule_file.name if schedule_file else None,
-        "schedule_path": schedule_path,
-        "market_data_name": market_data_file.name if market_data_file else None,
-        "market_data_path": market_data_path,
-        "supplemental_name": supp_name,
+        "supplemental_name": supplemental_file.name if supplemental_file else None,
         "supplemental_path": supp_path,
-        "supplemental_type": supp_type,
-        "supplemental_brief": supplemental_brief or None,
         "property_name": property_name or None,
-        "property_rename_to": property_rename_to or None,
-        "comp_urls": comp_urls or [],
-        "auto_generate_comp_slide": auto_generate_comp_slide,
-        "comp_csv_path": comp_csv_path,
-        "dry_run": dry_run,
-        "skip_validation": skip_validation,
-        "use_batch_api": use_batch_api,
         "profile_name": profile_name or "",
-        "config_profile_name": config_profile_name or "",
-        "source_directives": source_directives or [],
+        "project_name": project_name or "",
+        "meeting_lookback_days": meeting_lookback_days,
+        "fireflies_api_key": fireflies_api_key or "",
+        "instructions": instructions or "",
     }
-
-
-def _persist_result(result, filename: str) -> None:
-    st.session_state["memo_bytes"] = result.memo_bytes
-    st.session_state["log_bytes"] = result.log_bytes
-    st.session_state["manifest_bytes"] = result.manifest_bytes
-    st.session_state["filename"] = filename
-    st.session_state["n_changes"] = len(result.changes)
-    st.session_state["n_rejected"] = len(result.rejected)
-    st.session_state["n_missed"] = len(result.missed)
-    st.session_state["unvalidated_pages"] = result.unvalidated_pages
-    st.session_state["log_lines"] = result.log_lines
-    st.session_state["warnings"] = [warning.model_dump() for warning in result.manifest.warnings]
-    st.session_state["manifest"] = result.manifest.model_dump()
-    st.session_state["changes"] = result.changes
 
 
 def _execute_job(
@@ -373,160 +290,193 @@ def _execute_job(
 ) -> bool:
     _clear_run_state()
     cleanup_old_artifacts(max_age_seconds=3600)
-    api_key = _get_api_key()
-    if not api_key:
-        st.error("`ANTHROPIC_API_KEY` is not configured in Streamlit secrets.")
-        return False
 
     run_id = uuid.uuid4().hex
     if job.get("job_id"):
         update_job_status(job["job_id"], "running", run_id=run_id)
     started = time.time()
+
     prefix = ""
     if queue_position is not None and queue_total is not None:
         prefix = f"Queue item {queue_position}/{queue_total} · "
-    progress_bar = st.progress(0, text=f"{prefix}Initializing run")
+
+    progress_bar = st.progress(0, text=f"{prefix}Uploading files...")
     shrimp_placeholder = st.empty()
     shrimp_placeholder.markdown(_chef_gif_html(), unsafe_allow_html=True)
     status_box = st.empty()
     stage_log = st.empty()
     stage_lines: list[str] = []
 
-    def on_stage(update: StageUpdate) -> None:
-        progress_bar.progress(update.percent, text=f"{prefix}{update.label}")
-        message = update.detail or update.label
-        stage_lines.append(f"{update.percent:>3}%  {message}")
-        status_box.caption(f"{prefix}{update.label}")
-        stage_log.code("\n".join(stage_lines[-10:]), language=None)
-
     run_dir = get_run_storage_dir(run_id)
-
-    # Support both new-style (file paths on disk) and old-style (raw bytes) payloads
-    if job.get("memo_path") and os.path.isfile(job["memo_path"]):
-        memo_path = job["memo_path"]
-    else:
-        memo_path = str(run_dir / f"input_memo{os.path.splitext(job['memo_name'])[1]}")
-        with open(memo_path, "wb") as handle:
-            handle.write(job["memo_bytes"])
-
-    if job.get("proforma_path") and os.path.isfile(job["proforma_path"]):
-        proforma_path = job["proforma_path"]
-    else:
-        proforma_path = str(run_dir / f"input_proforma{os.path.splitext(job['proforma_name'])[1]}")
-        with open(proforma_path, "wb") as handle:
-            handle.write(job["proforma_bytes"])
-
-    schedule_path = None
-    if job.get("schedule_path") and os.path.isfile(job["schedule_path"]):
-        schedule_path = job["schedule_path"]
-    elif job.get("schedule_bytes"):
-        schedule_path = str(run_dir / f"input_schedule{os.path.splitext(job['schedule_name'])[1]}")
-        with open(schedule_path, "wb") as handle:
-            handle.write(job["schedule_bytes"])
-
-    market_data_path = None
-    if job.get("market_data_path") and os.path.isfile(job["market_data_path"]):
-        market_data_path = job["market_data_path"]
-    elif job.get("market_data_bytes"):
-        market_data_path = str(run_dir / f"input_market_data{os.path.splitext(job['market_data_name'])[1]}")
-        with open(market_data_path, "wb") as handle:
-            handle.write(job["market_data_bytes"])
-
-    supplemental_path = None
-    supplemental_type = job.get("supplemental_type")
-    if supplemental_type == "url":
-        supplemental_path = job.get("supplemental_name")  # URL string
-    elif job.get("supplemental_path") and os.path.isfile(job["supplemental_path"]):
-        supplemental_path = job["supplemental_path"]
-    elif job.get("supplemental_bytes"):
-        ext = os.path.splitext(job["supplemental_name"])[1] if job.get("supplemental_name") else ".pdf"
-        supplemental_path = str(run_dir / f"input_supplemental{ext}")
-        with open(supplemental_path, "wb") as handle:
-            handle.write(job["supplemental_bytes"])
-
-    comp_url_objects = [CompUrl(**cu) for cu in job.get("comp_urls", [])]
-
-    comp_csv_path = None
-    if job.get("comp_csv_path") and os.path.isfile(job["comp_csv_path"]):
-        comp_csv_path = job["comp_csv_path"]
-
-    # Build source directives from job payload
-    from memo_chef.models import SourceDirective
-
-    source_directives = []
-    for sd_dict in job.get("source_directives", []):
-        if sd_dict.get("directive", "").strip():
-            source_directives.append(SourceDirective(**sd_dict))
-
-    request = RunRequest(
-        memo_path=memo_path,
-        proforma_path=proforma_path,
-        schedule_path=schedule_path,
-        market_data_path=market_data_path,
-        supplemental_path=supplemental_path,
-        supplemental_type=supplemental_type,
-        supplemental_brief=job.get("supplemental_brief"),
-        comp_urls=comp_url_objects,
-        source_directives=source_directives,
-        auto_generate_comp_slide=job.get("auto_generate_comp_slide", False),
-        comp_csv_path=comp_csv_path,
-        output_dir=str(run_dir),
-        api_key=api_key,
-        config_path=os.path.join(os.path.dirname(__file__), "config.yaml"),
-        config_override_path=_config_override_path(job.get("config_profile_name")),
-        run_id=run_id,
-        property_name=job.get("property_name"),
-        property_rename_to=job.get("property_rename_to"),
-        dry_run=job.get("dry_run", False),
-        skip_validation=job.get("skip_validation", False),
-        use_batch_api=job.get("use_batch_api", False),
-    )
+    memo_path = Path(job["memo_path"])
+    proforma_path = Path(job["proforma_path"])
 
     try:
-        result = run_memo_pipeline(request, callback=on_stage)
+        # ── Upload files ──────────────────────────────────────────────────────
+        resources = []
+
+        progress_bar.progress(5, text=f"{prefix}Uploading memo...")
+        memo_file_id = ma_upload_file(memo_path)
+        resources.append({
+            "type": "file",
+            "file_id": memo_file_id,
+            "mount_path": f"/mnt/session/uploads/{memo_path.name}",
+        })
+
+        progress_bar.progress(10, text=f"{prefix}Uploading proforma...")
+        proforma_file_id = ma_upload_file(proforma_path)
+        resources.append({
+            "type": "file",
+            "file_id": proforma_file_id,
+            "mount_path": f"/mnt/session/uploads/{proforma_path.name}",
+        })
+
+        supplemental_names: list[str] = []
+        if job.get("supplemental_path") and os.path.isfile(job["supplemental_path"]):
+            sup_path = Path(job["supplemental_path"])
+            progress_bar.progress(13, text=f"{prefix}Uploading supplemental...")
+            sup_id = ma_upload_file(sup_path)
+            resources.append({
+                "type": "file",
+                "file_id": sup_id,
+                "mount_path": f"/mnt/session/uploads/{sup_path.name}",
+            })
+            supplemental_names.append(sup_path.name)
+
+        # ── Fireflies config ──────────────────────────────────────────────────
+        meeting_lookback_days = job.get("meeting_lookback_days", 0)
+        if meeting_lookback_days > 0:
+            project_name = job.get("project_name", "")
+            if project_name:
+                search_terms = [t for t in project_name.split() if len(t) > 2]
+            else:
+                search_terms = [t for t in memo_path.stem.replace("_", " ").split() if len(t) > 3]
+            ff_resource = ma_upload_fireflies_config(
+                lookback_days=meeting_lookback_days,
+                search_terms=search_terms,
+                api_key_override=job.get("fireflies_api_key") or None,
+            )
+            if ff_resource:
+                resources.append(ff_resource)
+
+        # ── Example memos ─────────────────────────────────────────────────────
+        progress_bar.progress(15, text=f"{prefix}Loading style references...")
+        resources.extend(ma_upload_example_memos())
+
+        # ── Create session ────────────────────────────────────────────────────
+        progress_bar.progress(20, text=f"{prefix}Creating agent session...")
+        session_id = ma_create_session(
+            uploaded_resources=resources,
+            title=f"Memo Chef: {memo_path.name}",
+        )
+
+        message = ma_build_user_message(
+            proforma_filename=proforma_path.name,
+            memo_filename=memo_path.name,
+            supplemental_filenames=supplemental_names or None,
+            instructions=job.get("instructions", ""),
+            meeting_lookback_days=meeting_lookback_days if meeting_lookback_days > 0 else None,
+        )
+        ma_send_message(session_id, message)
+
+        # ── Stream events ─────────────────────────────────────────────────────
+        progress_bar.progress(25, text=f"{prefix}Agent is working...")
+        status_box.caption(f"{prefix}Agent is working...")
+
+        for event in ma_stream_events(session_id):
+            t = event.get("type", "")
+            if t == "agent.tool_use":
+                tool_name = event.get("name", "")
+                status_box.caption(f"{prefix}Using: {tool_name}")
+                stage_lines.append(f"[Tool] {tool_name}")
+                stage_log.code("\n".join(stage_lines[-15:]), language=None)
+            elif t == "agent.message" and event.get("text"):
+                stage_lines.append(f"[Agent] {event['text'][:300]}")
+                stage_log.code("\n".join(stage_lines[-15:]), language=None)
+            elif t == "span.model_request_start":
+                status_box.caption(f"{prefix}Thinking...")
+            elif t == "session.error":
+                raise RuntimeError(f"Agent session error: {event.get('error')}")
+
+        # ── Retrieve output files ─────────────────────────────────────────────
+        progress_bar.progress(95, text=f"{prefix}Retrieving output files...")
+        output_files = ma_get_output_files(session_id)
+
+        memo_bytes: bytes | None = None
+        log_bytes: bytes | None = None
+
+        for f in output_files:
+            if f["filename"] == "output.pptx" and f.get("downloadable", True):
+                dest = run_dir / f"memo{memo_path.suffix}"
+                ma_download_file_to(f["id"], dest)
+                memo_bytes = dest.read_bytes()
+            elif f["filename"] == "changelog.md" and f.get("downloadable", True):
+                dest = run_dir / "change_log.md"
+                ma_download_file_to(f["id"], dest)
+                log_bytes = dest.read_bytes()
+
+        if not memo_bytes:
+            raise RuntimeError("Agent did not produce output.pptx — check agent logs.")
+
         duration = round(time.time() - started, 2)
         progress_bar.progress(100, text=f"{prefix}Run complete")
         shrimp_placeholder.empty()
         status_box.success(f"{prefix}Draft generated successfully.")
-        _persist_result(result, job["memo_name"])
-        (run_dir / f"memo{os.path.splitext(job['memo_name'])[1]}").write_bytes(result.memo_bytes)
-        (run_dir / "change_log.md").write_bytes(result.log_bytes)
-        (run_dir / "run_manifest.json").write_bytes(result.manifest_bytes)
-        counts = result.manifest.counts
-        accuracy = result.manifest.accuracy or {}
+
+        # Store in session state for download buttons
+        st.session_state["memo_bytes"] = memo_bytes
+        st.session_state["memo_name"] = job["memo_name"]
+        st.session_state["log_bytes"] = log_bytes or b""
+        st.session_state["warnings"] = []
+
+        # Build minimal manifest for history display
+        log_text = log_bytes.decode("utf-8", errors="replace") if log_bytes else ""
+        change_count = log_text.count("\n| ") if log_text else 0
+        manifest = {
+            "run_id": run_id,
+            "session_id": session_id,
+            "status": "completed",
+            "memo_name": job["memo_name"],
+            "proforma_name": job["proforma_name"],
+            "property_name": job.get("property_name"),
+            "duration_seconds": duration,
+            "counts": {"change_count": change_count},
+        }
+        manifest_bytes = json.dumps(manifest, indent=2).encode()
+        st.session_state["manifest"] = manifest
+        st.session_state["manifest_bytes"] = manifest_bytes
+        (run_dir / "run_manifest.json").write_bytes(manifest_bytes)
+
         record_run(
             run_id=run_id,
             username=username,
-            status=result.manifest.status,
-            memo_name=result.manifest.memo_name,
-            proforma_name=result.manifest.proforma_name,
-            property_name=result.manifest.property_name,
-            dry_run=job.get("dry_run", False),
-            skip_validation=job.get("skip_validation", False),
-            change_count=len(result.changes),
-            rejected_count=len(result.rejected),
-            missed_count=len(result.missed),
+            status="completed",
+            memo_name=job["memo_name"],
+            proforma_name=job["proforma_name"],
+            property_name=job.get("property_name"),
+            dry_run=False,
+            skip_validation=False,
+            change_count=change_count,
+            rejected_count=0,
+            missed_count=0,
             duration_seconds=duration,
-            warnings=st.session_state["warnings"],
-            input_tokens=counts.get("input_tokens", 0),
-            output_tokens=counts.get("output_tokens", 0),
-            estimated_cost_microdollars=counts.get("estimated_cost_microdollars", 0),
-            slides_inserted=counts.get("slides_inserted", 0),
-            confidence_score=accuracy.get("confidence_score"),
-            coverage_pct=accuracy.get("coverage_pct"),
-            correction_rate_pct=accuracy.get("correction_rate_pct"),
-            run_manifest_json=result.manifest_bytes.decode("utf-8") if result.manifest_bytes else None,
-            change_log_html=result.log_bytes.decode("utf-8") if result.log_bytes else None,
+            warnings=[],
+            run_manifest_json=manifest_bytes.decode("utf-8"),
+            change_log_html=log_text or None,
         )
+
         if job.get("job_id"):
             update_job_status(job["job_id"], "completed", run_id=run_id)
+
         try:
             charged = consume_credit(username, credits_per_week, run_id=run_id)
             if not charged:
                 st.warning("The run completed, but weekly credits were already exhausted.")
         except Exception as err:
             st.warning(f"Run completed, but credits could not be updated: {err}")
+
         return True
+
     except Exception as err:
         duration = round(time.time() - started, 2)
         progress_bar.progress(100, text=f"{prefix}Run failed")
@@ -541,13 +491,13 @@ def _execute_job(
                 memo_name=job["memo_name"],
                 proforma_name=job["proforma_name"],
                 property_name=job.get("property_name"),
-                dry_run=job.get("dry_run", False),
-                skip_validation=job.get("skip_validation", False),
+                dry_run=False,
+                skip_validation=False,
                 change_count=0,
                 rejected_count=0,
                 missed_count=0,
                 duration_seconds=duration,
-                warnings=[{"stage": "pipeline", "message": str(err)}],
+                warnings=[{"stage": "agent", "message": str(err)}],
             )
         except Exception:
             pass
@@ -701,127 +651,56 @@ def render_new_run_tab() -> None:
                     st.markdown(f"- {bullet}")
                 st.markdown("---")
 
-    upload_cols = st.columns(4)
+    upload_cols = st.columns(3)
     memo_file = upload_cols[0].file_uploader("Memo deck", type=["pptx"], key="memo_upload")
     proforma_file = upload_cols[1].file_uploader("Proforma", type=["xlsx", "xlsm"], key="proforma_upload")
-    upload_cols[2].file_uploader("Schedule (coming soon)", type=["mpp"], key="schedule_upload", disabled=True)
-    schedule_file = None
-    upload_cols[3].file_uploader("Market data (coming soon)", type=["xlsx", "xlsm"], key="market_upload", disabled=True)
-    market_data_file = None
-
-    # Per-source directives — tell Claude how to use each source
-    with st.expander("Directions for Claude (per source) (Beta)", expanded=False):
-        st.caption(
-            "Give Claude specific instructions for each source. "
-            "E.g., 'Only update revenue section' or 'Ignore occupancy data'."
-        )
-        directive_cols = st.columns(2)
-        proforma_directive = directive_cols[0].text_area(
-            "Proforma directions",
-            key="proforma_directive",
-            placeholder="e.g., Only use Unit Mix and Cash Flow tabs",
-            height=68,
-        )
-        schedule_directive = directive_cols[1].text_area(
-            "Schedule directions (coming soon)",
-            key="schedule_directive",
-            placeholder="e.g., Focus on construction milestones only",
-            height=68,
-            disabled=True,
-        )
-        directive_cols2 = st.columns(2)
-        market_data_directive = directive_cols2[0].text_area(
-            "Market data directions",
-            key="market_data_directive",
-            placeholder="e.g., Only update rent growth charts. Do not touch occupancy slides.",
-            height=68,
-        )
-        supplemental_directive = directive_cols2[1].text_area(
-            "Supplemental data directions (coming soon)",
-            key="supplemental_directive",
-            placeholder="e.g., Generate a market summary slide from this data",
-            height=68,
-            disabled=True,
-        )
-
-    # Supplemental data for slide insertion (coming soon)
-    supp_cols = st.columns([2, 2, 3])
-    supp_cols[0].file_uploader(
-        "Supplemental data (coming soon)",
+    supplemental_file = upload_cols[2].file_uploader(
+        "Supplemental data",
         type=["pdf", "xlsx", "xlsm", "csv"],
         key="supplemental_upload",
-        help="Upload additional data to generate a new slide (PDF, Excel, or CSV)",
-        disabled=True,
-    )
-    supplemental_file = None
-    supplemental_url = supp_cols[1].text_input(
-        "Or paste a URL (coming soon)",
-        key="supplemental_url",
-        placeholder="https://...",
-        disabled=True,
-    )
-    supplemental_brief = supp_cols[2].text_area(
-        "Brief (coming soon)",
-        key="supplemental_brief",
-        placeholder="e.g., Show student affluence trends for this market",
-        height=80,
-        disabled=True,
+        help="Optional additional file for the agent to reference",
     )
 
-    # Comp property URLs for rent scraping (coming soon)
-    with st.expander("Comp property URLs (coming soon)"):
-        st.caption("Comp URL scraping is temporarily disabled.")
-        comp_url_inputs: list[dict] = []
-
-    with st.expander("Comp Slide Builder (coming soon)"):
-        st.caption("Comp slide builder is temporarily disabled.")
-        auto_comp = False
-        comp_csv = None
-
-    rename_cols = st.columns(2)
-    property_name = rename_cols[0].text_input(
+    name_cols = st.columns(2)
+    property_name = name_cols[0].text_input(
         "Property name (as it appears in memo)",
         value=profile.get("Property", ""),
         placeholder="e.g. VERVE Lexington",
-        help="The property name currently used in the memo deck. Used for targeting updates.",
+        help="The property name currently used in the memo deck.",
     )
-    property_rename_to = rename_cols[1].text_input(
-        "Rename to (if different in proforma)",
-        value=profile.get("Rename To", ""),
-        placeholder="e.g. VERVE Pittsburgh",
-        help="If the proforma uses a different property name, enter it here. "
-             "All occurrences will be renamed before the AI pass.",
+    project_name = name_cols[1].text_input(
+        "Project / deal name",
+        placeholder="e.g. Limestone, Knoxville, VERVE Pittsburgh",
+        help="Used to search Fireflies for relevant meeting transcripts.",
     )
 
-    # Config profile selection (temporarily disabled — using default config.yaml)
-    config_profile_name = ""
+    meeting_lookback_days = st.number_input(
+        "Meeting transcript lookback (days)",
+        min_value=0,
+        max_value=365,
+        value=0,
+        step=5,
+        help="Include Fireflies meeting transcripts from the last N days. Set to 0 to disable.",
+    )
 
-    pref_cols = st.columns(3)
-    with pref_cols[0]:
-        dry_run = st.checkbox(
-            "Preview only",
-            value=bool(profile.get("Preview Only", False)),
-            help="Runs the pipeline without saving final deck changes.",
+    with st.expander("Fireflies API key (optional)"):
+        st.caption(
+            "Override the platform-level Fireflies key with your own. "
+            "Leave blank to use the platform default."
         )
-    with pref_cols[1]:
-        skip_validation = st.checkbox(
-            "Skip AI validation",
-            value=bool(profile.get("Skip QA", False)),
-            help="Faster, but less safe. Recommended only for trusted dry runs.",
-        )
-    with pref_cols[2]:
-        use_batch_api = st.checkbox(
-            "Batch mode (50% off)",
-            value=False,
-            help="Submits all mapping chunks to the Anthropic Batch API at 50% cost. "
-                 "Results typically return within minutes but may take up to 1 hour.",
+        fireflies_api_key = st.text_input(
+            "Fireflies API key",
+            type="password",
+            key="fireflies_api_key_input",
+            placeholder="Leave blank to use platform default",
         )
 
-    review_cols = st.columns(4)
-    review_cols[0].caption("Required inputs: memo + proforma")
-    review_cols[1].caption("Optional enrichments: schedule + market data")
-    review_cols[2].caption("Artifacts are downloadable after each run")
-    review_cols[3].caption("Queue jobs to run sequentially with shared settings")
+    instructions = st.text_area(
+        "Additional instructions for the agent",
+        placeholder="e.g. Focus on cash flow section. Do not update the cover slide.",
+        height=80,
+        key="instructions_input",
+    )
 
     save_profile_name = st.text_input(
         "Save current preferences as profile",
@@ -841,11 +720,9 @@ def render_new_run_tab() -> None:
                 save_profile_name.strip(),
                 username,
                 property_name or None,
-                dry_run,
-                skip_validation,
+                False,
+                False,
                 profile_notes or None,
-                config_profile=config_profile_name or None,
-                property_rename_to=property_rename_to or None,
             )
             st.success(f"Saved profile `{save_profile_name.strip()}`.")
             st.rerun()
@@ -858,37 +735,6 @@ def render_new_run_tab() -> None:
         credits_error,
     )
     action_cols = st.columns(2)
-    # Collect per-source directives from UI state
-    _ui_directives = []
-    if proforma_directive.strip():
-        _ui_directives.append({
-            "source_id": "proforma", "source_type": "proforma_tab",
-            "directive": proforma_directive.strip(), "scope": "both",
-        })
-    if schedule_directive.strip():
-        _ui_directives.append({
-            "source_id": "schedule", "source_type": "schedule",
-            "directive": schedule_directive.strip(), "scope": "both",
-        })
-    if market_data_directive.strip():
-        _ui_directives.append({
-            "source_id": "market_data", "source_type": "market_data",
-            "directive": market_data_directive.strip(), "scope": "both",
-        })
-    if supplemental_directive.strip():
-        _ui_directives.append({
-            "source_id": "supplemental", "source_type": "supplemental",
-            "directive": supplemental_directive.strip(), "scope": "both",
-        })
-    # Comp URL guidance is already captured in comp_url_inputs — add as directives too
-    for cu in comp_url_inputs:
-        if cu.get("guidance", "").strip():
-            _ui_directives.append({
-                "source_id": f"comp:{cu.get('label') or cu['url'][:30]}",
-                "source_type": "comp_url",
-                "directive": cu["guidance"],
-                "scope": "both",
-            })
 
     if action_cols[0].button(
         f"Generate draft ({remaining} credits left)" if remaining > 0 else "No credits remaining",
@@ -903,22 +749,13 @@ def render_new_run_tab() -> None:
             job = _queue_item_from_inputs(
                 memo_file=memo_file,
                 proforma_file=proforma_file,
-                schedule_file=schedule_file,
-                market_data_file=market_data_file,
                 supplemental_file=supplemental_file,
-                supplemental_url=supplemental_url,
-                supplemental_brief=supplemental_brief,
-                comp_urls=comp_url_inputs,
-                auto_generate_comp_slide=auto_comp,
-                comp_csv_file=comp_csv,
                 property_name=property_name,
-                property_rename_to=property_rename_to,
-                dry_run=dry_run,
-                skip_validation=skip_validation,
                 profile_name=selected_profile or save_profile_name.strip() or None,
-                config_profile_name=config_profile_name or None,
-                use_batch_api=use_batch_api,
-                source_directives=_ui_directives,
+                project_name=project_name,
+                meeting_lookback_days=int(meeting_lookback_days),
+                fireflies_api_key=fireflies_api_key,
+                instructions=instructions,
             )
             _execute_job(job=job, username=username, credits_per_week=credits_per_week)
 
@@ -934,22 +771,13 @@ def render_new_run_tab() -> None:
             job = _queue_item_from_inputs(
                 memo_file=memo_file,
                 proforma_file=proforma_file,
-                schedule_file=schedule_file,
-                market_data_file=market_data_file,
                 supplemental_file=supplemental_file,
-                supplemental_url=supplemental_url,
-                supplemental_brief=supplemental_brief,
-                comp_urls=comp_url_inputs,
-                auto_generate_comp_slide=auto_comp,
-                comp_csv_file=comp_csv,
                 property_name=property_name,
-                property_rename_to=property_rename_to,
-                dry_run=dry_run,
-                skip_validation=skip_validation,
                 profile_name=selected_profile or save_profile_name.strip() or None,
-                config_profile_name=config_profile_name or None,
-                use_batch_api=use_batch_api,
-                source_directives=_ui_directives,
+                project_name=project_name,
+                meeting_lookback_days=int(meeting_lookback_days),
+                fireflies_api_key=fireflies_api_key,
+                instructions=instructions,
             )
             enqueue_job(username, job)
             st.success(f"Queued `{job['memo_name']}`.")
@@ -959,83 +787,26 @@ def render_new_run_tab() -> None:
 
     if "memo_bytes" in st.session_state:
         st.divider()
-        unval = st.session_state.get("unvalidated_pages", [])
-        if unval:
-            st.warning(
-                f"Pages {unval} could not be fully validated due to API "
-                f"response truncation. Changes on these pages passed without "
-                f"QA review. **Manual review is strongly recommended.**"
-            )
         st.success("Artifacts are ready for review and download.")
-        _manifest_counts = st.session_state.get("manifest", {}).get("counts", {})
-        _slides_generated = (
-            _manifest_counts.get("slides_inserted", 0)
-            + _manifest_counts.get("comp_slides_inserted", 0)
-            + _manifest_counts.get("ai_slides_generated", 0)
-        )
-        metric_cols = st.columns(6)
-        metric_cols[0].metric("Applied changes", st.session_state["n_changes"])
-        metric_cols[1].metric("Rejected", st.session_state["n_rejected"])
-        metric_cols[2].metric("Needs review", st.session_state["n_missed"])
-        metric_cols[3].metric("Slides generated", _slides_generated or "—")
-        metric_cols[4].metric("Warnings", len(st.session_state.get("warnings", [])))
-        _cost_usd = _manifest_counts.get("estimated_cost_microdollars", 0) / 1_000_000
-        metric_cols[5].metric("Est. API cost", f"${_cost_usd:.4f}" if _cost_usd else "—")
-
-        # Change type breakdown
-        _changes = st.session_state.get("changes", [])
-        if _changes:
-            _type_counts = {}
-            for c in _changes:
-                t = c.get("type", "unknown")
-                _type_counts[t] = _type_counts.get(t, 0) + 1
-            _breakdown = " · ".join(f"{v} {k}" for k, v in sorted(_type_counts.items()))
-            st.caption(f"Breakdown: {_breakdown}")
-
-        # Before vs After change report (branded)
-        if _changes:
-            from app_helpers import build_change_report_html
-
-            with st.expander("Before vs After Report", expanded=True):
-                _report_html = build_change_report_html(
-                    _changes,
-                    manifest=st.session_state.get("manifest"),
-                )
-                st.markdown(_report_html, unsafe_allow_html=True)
-
-                # Download as standalone HTML
-                _full_html = (
-                    '<!DOCTYPE html><html><head><meta charset="utf-8">'
-                    '<title>Before vs After Report</title>'
-                    '<style>body{background:#2b2825;padding:24px;}</style>'
-                    '</head><body>' + _report_html + '</body></html>'
-                )
-                st.download_button(
-                    "Download report (HTML)",
-                    _full_html.encode("utf-8"),
-                    file_name="before_vs_after_report.html",
-                    mime="text/html",
-                    width="stretch",
-                )
 
         download_cols = st.columns(3)
         download_cols[0].download_button(
             "Download updated memo",
             st.session_state["memo_bytes"],
-            file_name=st.session_state["filename"],
+            file_name=st.session_state.get("memo_name", "output.pptx"),
             mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
             width="stretch",
         )
         download_cols[1].download_button(
             "Download change log",
-            st.session_state["log_bytes"],
+            st.session_state.get("log_bytes", b""),
             file_name="CHANGE_LOG.md",
             mime="text/markdown",
             width="stretch",
         )
         download_cols[2].download_button(
             "Download run manifest",
-            st.session_state["manifest_bytes"],
+            st.session_state.get("manifest_bytes", b""),
             file_name="run_manifest.json",
             mime="application/json",
             width="stretch",
@@ -1047,9 +818,10 @@ def render_new_run_tab() -> None:
                 for warning in warnings:
                     st.warning(f"{warning['stage']}: {warning['message']}")
 
-        with st.expander("Execution log"):
-            st.code("\n".join(st.session_state["log_lines"]), language=None)
-        st.caption("Run manifest is available as a download artifact.")
+        _log_bytes = st.session_state.get("log_bytes", b"")
+        if _log_bytes:
+            with st.expander("Changelog"):
+                st.code(_log_bytes.decode("utf-8", errors="replace"), language=None)
 
 
 def render_history_tab() -> None:
