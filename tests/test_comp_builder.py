@@ -1,6 +1,5 @@
 """Tests for comp slide builder."""
-import pytest
-from memo_chef.models import CompProperty, UnitMixEntry
+from memo_chef.models import CompProperty
 
 
 def test_normalize_from_csv(tmp_path):

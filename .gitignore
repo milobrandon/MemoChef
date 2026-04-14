@@ -3,6 +3,17 @@
 .streamlit/secrets.toml
 .streamlit/secrets_deploy.toml
 
+# Example memos (large proprietary files)
+managed_agents/examples/*.pptx
+
+# Managed agents live test artifacts (local dev only)
+test_output_managed_agents/
+test_api_live.py
+test_managed_agents_live.py
+
+# Stray Streamlit session logs (from rolled-back runs)
+rollback*.log
+
 # Python
 __pycache__/
 *.pyc

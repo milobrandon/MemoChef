@@ -21,8 +21,8 @@ load_dotenv(os.path.join(_project_root, "memo_automator_app", ".env"))
 load_dotenv(os.path.join(_project_root, ".env"))
 load_dotenv()
 
-from memo_chef.models import RunRequest
-from memo_chef.pipeline import run_memo_pipeline
+from memo_chef.models import RunRequest  # noqa: E402
+from memo_chef.pipeline import run_memo_pipeline  # noqa: E402
 
 # ---------- Paths ----------
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
