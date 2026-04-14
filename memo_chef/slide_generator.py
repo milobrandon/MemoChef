@@ -16,12 +16,10 @@ from pathlib import Path
 from typing import Any
 
 from pptx import Presentation
-from pptx.util import Inches, Pt
+from pptx.util import Pt
 
 from .models import DeckProfile, SlideContent, SlidePlan
 from .slide_insertion import (
-    _build_chart,
-    _build_table,
     build_slide_from_scratch,
     clone_slide,
     detect_memo_sections,
