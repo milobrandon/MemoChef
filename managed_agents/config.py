@@ -29,24 +29,30 @@ for _candidate in [_project_root / ".streamlit" / "secrets.toml",
     if _candidate.exists():
         _streamlit_secrets = _candidate
         break
-if _streamlit_secrets is not None and not os.environ.get("ANTHROPIC_API_KEY"):
+# Bridge selected secrets from .streamlit/secrets.toml into os.environ so
+# downstream code (and the module-level constants below) can rely on env
+# vars on Streamlit Cloud, where secrets are normally only exposed via
+# st.secrets.
+_SECRETS_TO_ENV = (
+    "ANTHROPIC_API_KEY",
+    "FIREFLIES_API_KEY",
+    "MANAGED_AGENT_ID",
+    "MANAGED_ENVIRONMENT_ID",
+)
+if _streamlit_secrets is not None:
     for _line in _streamlit_secrets.read_text().splitlines():
-        if _line.startswith("ANTHROPIC_API_KEY"):
+        if "=" not in _line or _line.lstrip().startswith("#"):
+            continue
+        _line_key = _line.split("=", 1)[0].strip()
+        if _line_key in _SECRETS_TO_ENV and not os.environ.get(_line_key):
             _val = _line.split("=", 1)[1].strip().strip('"')
-            os.environ["ANTHROPIC_API_KEY"] = _val
-            break
+            if _val:
+                os.environ[_line_key] = _val
 
 ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
 FIREFLIES_API_KEY: str = os.environ.get("FIREFLIES_API_KEY", "")
 AGENT_ID: str = os.environ.get("MANAGED_AGENT_ID", "")
 ENVIRONMENT_ID: str = os.environ.get("MANAGED_ENVIRONMENT_ID", "")
-
-# Load Fireflies key from Streamlit secrets if not in env
-if not FIREFLIES_API_KEY and _streamlit_secrets is not None:
-    for _line in _streamlit_secrets.read_text().splitlines():
-        if _line.startswith("FIREFLIES_API_KEY"):
-            FIREFLIES_API_KEY = _line.split("=", 1)[1].strip().strip('"')
-            break
 
 # Paths
 EXAMPLES_DIR = Path(__file__).resolve().parent / "examples"
