@@ -13,3 +13,7 @@ services:
         sync: false
       - key: USER_BRANDON_HASH
         sync: false
+      - key: MANAGED_AGENT_ID
+        sync: false
+      - key: MANAGED_ENVIRONMENT_ID
+        sync: false
