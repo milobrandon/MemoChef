@@ -1,6 +1,7 @@
 """Unit tests for Streamlit auth/credit helper logic."""
 
 from app_helpers import (
+    count_changes_from_log,
     fire_button_disabled_reason,
     hash_password,
     should_disable_fire_button,
@@ -57,3 +58,23 @@ def test_fire_button_still_requires_memo_in_narrative_only_mode():
     assert fire_button_disabled_reason(
         None, None, 3, None, meeting_lookback_days=30
     ) == "Upload a memo deck before starting a run."
+
+
+def test_count_changes_full_run_format():
+    log = "# Changelog\n\n**Total changes applied:** 310\n\n## Summary..."
+    assert count_changes_from_log(log) == 310
+
+
+def test_count_changes_narrative_format():
+    log = "# Changelog\n\n## Changes Applied\n\n**Total changes: 3**\n\n### Change 1\n..."
+    assert count_changes_from_log(log) == 3
+
+
+def test_count_changes_falls_back_to_change_headings():
+    log = "### Change 1\nfoo\n### Change 2\nbar\n### Change 3\nbaz"
+    assert count_changes_from_log(log) == 3
+
+
+def test_count_changes_empty_log():
+    assert count_changes_from_log("") == 0
+    assert count_changes_from_log(None) == 0  # type: ignore[arg-type]
