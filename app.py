@@ -13,6 +13,7 @@ import uuid
 import streamlit as st
 
 from app_helpers import (
+    count_changes_from_log,
     fire_button_disabled_reason,
     should_disable_fire_button,
     verify_password,
@@ -434,7 +435,7 @@ def _execute_job(
 
         # Build minimal manifest for history display
         log_text = log_bytes.decode("utf-8", errors="replace") if log_bytes else ""
-        change_count = log_text.count("\n| ") if log_text else 0
+        change_count = count_changes_from_log(log_text)
         manifest = {
             "run_id": run_id,
             "session_id": session_id,

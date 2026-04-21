@@ -1,7 +1,37 @@
 """Testable helper logic shared by the Streamlit app."""
 
 import hashlib
+import re
 import secrets
+
+
+def count_changes_from_log(log_text: str) -> int:
+    """Extract the total change count from a changelog markdown string.
+
+    Handles the two changelog formats the agent produces:
+      - Full-proforma runs: "**Total changes applied:** 310"
+      - Narrative-only runs: "**Total changes: 3**"
+
+    Falls back to counting ``### Change N`` headings (narrative), then to
+    table-row counting (legacy heuristic) so we always return *something*
+    rather than zero.
+    """
+    if not log_text:
+        return 0
+
+    match = re.search(
+        r"total\s+changes(?:\s+applied)?:?\s*\*{0,2}\s*(\d+)",
+        log_text,
+        re.IGNORECASE,
+    )
+    if match:
+        return int(match.group(1))
+
+    change_headings = len(re.findall(r"^###\s+Change\s+\d+", log_text, re.MULTILINE))
+    if change_headings:
+        return change_headings
+
+    return log_text.count("\n| ")
 
 
 def hash_password(password: str, salt: bytes | None = None) -> str:
