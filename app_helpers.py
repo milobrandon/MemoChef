@@ -41,18 +41,21 @@ def fire_button_disabled_reason(
     proforma_file: object | None,
     remaining_credits: int,
     credits_error: str | None,
+    meeting_lookback_days: int = 0,
 ) -> str | None:
-    """Return a short explanation for why the run actions are disabled."""
+    """Return a short explanation for why the run actions are disabled.
+
+    Proforma is optional when meeting_lookback_days > 0 (narrative-only mode
+    using Fireflies transcripts).
+    """
     if credits_error is not None:
         return "Run actions are disabled while the credits service is unavailable."
     if remaining_credits <= 0:
         return "No weekly credits remain for this account."
-    if not memo_file and not proforma_file:
-        return "Upload a memo deck and proforma before starting a run."
     if not memo_file:
         return "Upload a memo deck before starting a run."
-    if not proforma_file:
-        return "Upload a proforma before starting a run."
+    if not proforma_file and meeting_lookback_days <= 0:
+        return "Upload a proforma, or set meeting lookback > 0 for a narrative-only run."
     return None
 
 

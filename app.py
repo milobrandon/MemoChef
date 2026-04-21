@@ -178,13 +178,13 @@ def _clear_run_state() -> None:
         st.session_state.pop(key, None)
 
 
-def _missing_required_run_inputs(memo_file, proforma_file) -> str | None:
-    if not memo_file and not proforma_file:
-        return "Upload a memo deck and proforma before starting a run."
+def _missing_required_run_inputs(
+    memo_file, proforma_file, meeting_lookback_days: int = 0
+) -> str | None:
     if not memo_file:
         return "Upload a memo deck before starting a run."
-    if not proforma_file:
-        return "Upload a proforma before starting a run."
+    if not proforma_file and meeting_lookback_days <= 0:
+        return "Upload a proforma, or set meeting lookback > 0 for a narrative-only run."
     return None
 
 
@@ -253,9 +253,11 @@ def _queue_item_from_inputs(
     with open(memo_path, "wb") as f:
         f.write(memo_file.getvalue())
 
-    proforma_path = str(staging / proforma_file.name)
-    with open(proforma_path, "wb") as f:
-        f.write(proforma_file.getvalue())
+    proforma_path: str | None = None
+    if proforma_file is not None:
+        proforma_path = str(staging / proforma_file.name)
+        with open(proforma_path, "wb") as f:
+            f.write(proforma_file.getvalue())
 
     supp_path = None
     if supplemental_file:
@@ -267,7 +269,7 @@ def _queue_item_from_inputs(
         "job_id": job_id,
         "memo_name": memo_file.name,
         "memo_path": memo_path,
-        "proforma_name": proforma_file.name,
+        "proforma_name": proforma_file.name if proforma_file is not None else None,
         "proforma_path": proforma_path,
         "supplemental_name": supplemental_file.name if supplemental_file else None,
         "supplemental_path": supp_path,
@@ -309,7 +311,7 @@ def _execute_job(
 
     run_dir = get_run_storage_dir(run_id)
     memo_path = Path(job["memo_path"])
-    proforma_path = Path(job["proforma_path"])
+    proforma_path = Path(job["proforma_path"]) if job.get("proforma_path") else None
 
     try:
         # ── Upload files ──────────────────────────────────────────────────────
@@ -323,13 +325,14 @@ def _execute_job(
             "mount_path": f"/mnt/session/uploads/{memo_path.name}",
         })
 
-        progress_bar.progress(10, text=f"{prefix}Uploading proforma...")
-        proforma_file_id = ma_upload_file(proforma_path)
-        resources.append({
-            "type": "file",
-            "file_id": proforma_file_id,
-            "mount_path": f"/mnt/session/uploads/{proforma_path.name}",
-        })
+        if proforma_path is not None:
+            progress_bar.progress(10, text=f"{prefix}Uploading proforma...")
+            proforma_file_id = ma_upload_file(proforma_path)
+            resources.append({
+                "type": "file",
+                "file_id": proforma_file_id,
+                "mount_path": f"/mnt/session/uploads/{proforma_path.name}",
+            })
 
         supplemental_names: list[str] = []
         if job.get("supplemental_path") and os.path.isfile(job["supplemental_path"]):
@@ -371,7 +374,7 @@ def _execute_job(
         )
 
         message = ma_build_user_message(
-            proforma_filename=proforma_path.name,
+            proforma_filename=proforma_path.name if proforma_path else None,
             memo_filename=memo_path.name,
             supplemental_filenames=supplemental_names or None,
             instructions=job.get("instructions", ""),
@@ -437,7 +440,7 @@ def _execute_job(
             "session_id": session_id,
             "status": "completed",
             "memo_name": job["memo_name"],
-            "proforma_name": job["proforma_name"],
+            "proforma_name": job.get("proforma_name") or "(narrative-only)",
             "property_name": job.get("property_name"),
             "duration_seconds": duration,
             "counts": {"change_count": change_count},
@@ -452,7 +455,7 @@ def _execute_job(
             username=username,
             status="completed",
             memo_name=job["memo_name"],
-            proforma_name=job["proforma_name"],
+            proforma_name=job.get("proforma_name") or "(narrative-only)",
             property_name=job.get("property_name"),
             dry_run=False,
             skip_validation=False,
@@ -489,7 +492,7 @@ def _execute_job(
                 username=username,
                 status="failed",
                 memo_name=job["memo_name"],
-                proforma_name=job["proforma_name"],
+                proforma_name=job.get("proforma_name") or "(narrative-only)",
                 property_name=job.get("property_name"),
                 dry_run=False,
                 skip_validation=False,
@@ -733,6 +736,7 @@ def render_new_run_tab() -> None:
         proforma_file,
         remaining,
         credits_error,
+        meeting_lookback_days=int(meeting_lookback_days),
     )
     action_cols = st.columns(2)
 
@@ -742,7 +746,9 @@ def render_new_run_tab() -> None:
         disabled=action_disabled,
         width="stretch",
     ):
-        missing_inputs = _missing_required_run_inputs(memo_file, proforma_file)
+        missing_inputs = _missing_required_run_inputs(
+            memo_file, proforma_file, int(meeting_lookback_days)
+        )
         if missing_inputs:
             st.warning(missing_inputs)
         else:
@@ -764,8 +770,15 @@ def render_new_run_tab() -> None:
         disabled=action_disabled,
         width="stretch",
     ):
-        missing_inputs = _missing_required_run_inputs(memo_file, proforma_file)
-        if missing_inputs:
+        missing_inputs = _missing_required_run_inputs(
+            memo_file, proforma_file, int(meeting_lookback_days)
+        )
+        if proforma_file is None:
+            st.warning(
+                "Narrative-only runs (no proforma) aren't supported in the queue yet — "
+                "use Generate draft instead."
+            )
+        elif missing_inputs:
             st.warning(missing_inputs)
         else:
             job = _queue_item_from_inputs(

@@ -133,19 +133,34 @@ def download_file_to(file_id: str, dest: Path) -> Path:
 
 def build_user_message(
     *,
-    proforma_filename: str,
+    proforma_filename: str | None,
     memo_filename: str,
     supplemental_filenames: list[str] | None = None,
     instructions: str = "",
     meeting_lookback_days: int | None = None,
 ) -> str:
-    """Build the initial user message that kicks off the agent run."""
-    parts = [
-        "Please update the IC memo using the proforma data.",
-        "",
-        f"**Proforma**: `/mnt/session/uploads/{proforma_filename}`",
-        f"**Memo template**: `/mnt/session/uploads/{memo_filename}`",
-    ]
+    """Build the initial user message that kicks off the agent run.
+
+    If proforma_filename is None, the run is narrative-only: the agent
+    should update narrative sections (entitlement, DD, design, schedule,
+    market context) using supplemental files and meeting transcripts, and
+    leave proforma-driven tables/financials untouched.
+    """
+    if proforma_filename is None:
+        parts = [
+            "Please update the IC memo's narrative sections ONLY. "
+            "Do NOT modify any financial tables, returns, budgets, or "
+            "proforma-driven numbers — no proforma is provided for this run.",
+            "",
+            f"**Memo template**: `/mnt/session/uploads/{memo_filename}`",
+        ]
+    else:
+        parts = [
+            "Please update the IC memo using the proforma data.",
+            "",
+            f"**Proforma**: `/mnt/session/uploads/{proforma_filename}`",
+            f"**Memo template**: `/mnt/session/uploads/{memo_filename}`",
+        ]
 
     if supplemental_filenames:
         parts.append("")
