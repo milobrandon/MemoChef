@@ -380,6 +380,7 @@ def _execute_job(
             supplemental_filenames=supplemental_names or None,
             instructions=job.get("instructions", ""),
             meeting_lookback_days=meeting_lookback_days if meeting_lookback_days > 0 else None,
+            property_name=job.get("property_name"),
         )
         ma_send_message(session_id, message)
 
