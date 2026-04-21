@@ -193,9 +193,15 @@ def build_user_message(
         parts.append("")
         parts.append(f"**Additional instructions**: {instructions}")
 
+    # Example memos are only loaded for full-proforma runs; reference them
+    # only when the caller actually mounted them.
+    if proforma_filename is not None:
+        parts.extend([
+            "",
+            "Example IC memos (for house style reference) are mounted at `/mnt/examples/`.",
+        ])
+
     parts.extend([
-        "",
-        "Example IC memos (for house style reference) are mounted at `/mnt/examples/`.",
         "",
         "Write the updated memo to `/mnt/session/uploads/output.pptx` and a changelog "
         "to `/mnt/session/uploads/changelog.md`.",

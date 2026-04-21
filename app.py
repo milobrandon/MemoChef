@@ -364,8 +364,12 @@ def _execute_job(
                 resources.append(ff_resource)
 
         # ── Example memos ─────────────────────────────────────────────────────
-        progress_bar.progress(15, text=f"{prefix}Loading style references...")
-        resources.extend(ma_upload_example_memos())
+        # Skip in narrative-only mode: examples are multi-hundred-MB style
+        # references for financial-table formatting that narrative edits don't
+        # need, and uploading them costs minutes of wall-clock time per run.
+        if proforma_path is not None:
+            progress_bar.progress(15, text=f"{prefix}Loading style references...")
+            resources.extend(ma_upload_example_memos())
 
         # ── Create session ────────────────────────────────────────────────────
         progress_bar.progress(20, text=f"{prefix}Creating agent session...")
