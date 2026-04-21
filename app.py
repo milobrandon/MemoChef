@@ -13,6 +13,7 @@ import uuid
 import streamlit as st
 
 from app_helpers import (
+    count_changes_from_log,
     fire_button_disabled_reason,
     should_disable_fire_button,
     verify_password,
@@ -363,8 +364,12 @@ def _execute_job(
                 resources.append(ff_resource)
 
         # ── Example memos ─────────────────────────────────────────────────────
-        progress_bar.progress(15, text=f"{prefix}Loading style references...")
-        resources.extend(ma_upload_example_memos())
+        # Skip in narrative-only mode: examples are multi-hundred-MB style
+        # references for financial-table formatting that narrative edits don't
+        # need, and uploading them costs minutes of wall-clock time per run.
+        if proforma_path is not None:
+            progress_bar.progress(15, text=f"{prefix}Loading style references...")
+            resources.extend(ma_upload_example_memos())
 
         # ── Create session ────────────────────────────────────────────────────
         progress_bar.progress(20, text=f"{prefix}Creating agent session...")
@@ -379,6 +384,7 @@ def _execute_job(
             supplemental_filenames=supplemental_names or None,
             instructions=job.get("instructions", ""),
             meeting_lookback_days=meeting_lookback_days if meeting_lookback_days > 0 else None,
+            property_name=job.get("property_name"),
         )
         ma_send_message(session_id, message)
 
@@ -434,7 +440,7 @@ def _execute_job(
 
         # Build minimal manifest for history display
         log_text = log_bytes.decode("utf-8", errors="replace") if log_bytes else ""
-        change_count = log_text.count("\n| ") if log_text else 0
+        change_count = count_changes_from_log(log_text)
         manifest = {
             "run_id": run_id,
             "session_id": session_id,

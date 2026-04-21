@@ -138,6 +138,7 @@ def build_user_message(
     supplemental_filenames: list[str] | None = None,
     instructions: str = "",
     meeting_lookback_days: int | None = None,
+    property_name: str | None = None,
 ) -> str:
     """Build the initial user message that kicks off the agent run.
 
@@ -178,13 +179,29 @@ def build_user_message(
             f"Use transcript insights to enrich narrative sections of the memo.",
         ])
 
+    if property_name:
+        parts.extend([
+            "",
+            f"**Property**: {property_name}. This run is scoped to this "
+            f"property only. When transcripts, documents, or supplemental "
+            f"files cover multiple properties, apply updates ONLY in the "
+            f"context of {property_name}; do not attribute content from "
+            f"other properties.",
+        ])
+
     if instructions:
         parts.append("")
         parts.append(f"**Additional instructions**: {instructions}")
 
+    # Example memos are only loaded for full-proforma runs; reference them
+    # only when the caller actually mounted them.
+    if proforma_filename is not None:
+        parts.extend([
+            "",
+            "Example IC memos (for house style reference) are mounted at `/mnt/examples/`.",
+        ])
+
     parts.extend([
-        "",
-        "Example IC memos (for house style reference) are mounted at `/mnt/examples/`.",
         "",
         "Write the updated memo to `/mnt/session/uploads/output.pptx` and a changelog "
         "to `/mnt/session/uploads/changelog.md`.",
