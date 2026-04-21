@@ -40,8 +40,20 @@ def test_fire_button_disabled_for_credits_only():
 
 def test_fire_button_reason_explains_missing_inputs():
     assert fire_button_disabled_reason(None, None, 3, None) == (
-        "Upload a memo deck and proforma before starting a run."
+        "Upload a memo deck before starting a run."
     )
     assert fire_button_disabled_reason(object(), None, 3, None) == (
-        "Upload a proforma before starting a run."
+        "Upload a proforma, or set meeting lookback > 0 for a narrative-only run."
     )
+
+
+def test_fire_button_allows_narrative_only_mode():
+    assert fire_button_disabled_reason(
+        object(), None, 3, None, meeting_lookback_days=30
+    ) is None
+
+
+def test_fire_button_still_requires_memo_in_narrative_only_mode():
+    assert fire_button_disabled_reason(
+        None, None, 3, None, meeting_lookback_days=30
+    ) == "Upload a memo deck before starting a run."
