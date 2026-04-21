@@ -138,6 +138,7 @@ def build_user_message(
     supplemental_filenames: list[str] | None = None,
     instructions: str = "",
     meeting_lookback_days: int | None = None,
+    property_name: str | None = None,
 ) -> str:
     """Build the initial user message that kicks off the agent run.
 
@@ -176,6 +177,16 @@ def build_user_message(
             f"**{meeting_lookback_days} days** of meetings for due diligence, "
             f"entitlements, design, and schedule updates relevant to this deal. "
             f"Use transcript insights to enrich narrative sections of the memo.",
+        ])
+
+    if property_name:
+        parts.extend([
+            "",
+            f"**Property**: {property_name}. This run is scoped to this "
+            f"property only. When transcripts, documents, or supplemental "
+            f"files cover multiple properties, apply updates ONLY in the "
+            f"context of {property_name}; do not attribute content from "
+            f"other properties.",
         ])
 
     if instructions:
