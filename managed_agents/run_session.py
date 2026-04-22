@@ -139,6 +139,8 @@ def build_user_message(
     instructions: str = "",
     meeting_lookback_days: int | None = None,
     property_name: str | None = None,
+    market_tabs: list[str] | None = None,
+    generate_market_slides: bool = False,
 ) -> str:
     """Build the initial user message that kicks off the agent run.
 
@@ -187,6 +189,39 @@ def build_user_message(
             f"files cover multiple properties, apply updates ONLY in the "
             f"context of {property_name}; do not attribute content from "
             f"other properties.",
+        ])
+
+    if market_tabs:
+        tab_list = ", ".join(f"`{t}`" for t in market_tabs)
+        parts.extend([
+            "",
+            f"**Market analysis workbook — approved tabs**: {tab_list}. "
+            f"These are the ONLY tabs from the market workbook you should "
+            f"read. Do NOT open or reference any other tabs (back-end data "
+            f"like raw IPEDS, RealPage dumps, manual data tables, or raw "
+            f"supply/demand are out of scope even if they appear in the "
+            f"file). If a tab you need isn't in this list, surface it as "
+            f"a changelog warning — don't read it anyway.",
+        ])
+
+    if generate_market_slides:
+        parts.extend([
+            "",
+            "**Generate new market research slides**: ON. If the memo's "
+            "market research section is thinner than the approved workbook "
+            "tabs support, you may insert new slides into that section "
+            "using the house style from `/mnt/examples/`. Insert slides "
+            "adjacent to related existing content; do not append to the "
+            "end of the deck. Narrative on new slides should cite specific "
+            "years and deltas (e.g. \"rent growth accelerated from 1.6% "
+            "in 2021 to 17.8% in 2023\").",
+        ])
+    elif market_tabs:
+        parts.extend([
+            "",
+            "**Generate new market research slides**: OFF. Update existing "
+            "market research slides only. Do NOT insert new slides even if "
+            "the workbook has data the memo doesn't currently show.",
         ])
 
     if instructions:

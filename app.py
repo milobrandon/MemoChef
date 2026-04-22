@@ -15,6 +15,7 @@ import streamlit as st
 from app_helpers import (
     count_changes_from_log,
     fire_button_disabled_reason,
+    list_workbook_sheets,
     should_disable_fire_button,
     verify_password,
 )
@@ -246,6 +247,8 @@ def _queue_item_from_inputs(
     meeting_lookback_days: int = 0,
     fireflies_api_key: str = "",
     instructions: str = "",
+    market_tabs: list[str] | None = None,
+    generate_market_slides: bool = False,
 ) -> dict:
     job_id = uuid.uuid4().hex
     staging = get_job_staging_dir(job_id)
@@ -280,6 +283,8 @@ def _queue_item_from_inputs(
         "meeting_lookback_days": meeting_lookback_days,
         "fireflies_api_key": fireflies_api_key or "",
         "instructions": instructions or "",
+        "market_tabs": list(market_tabs) if market_tabs else [],
+        "generate_market_slides": bool(generate_market_slides),
     }
 
 
@@ -385,6 +390,8 @@ def _execute_job(
             instructions=job.get("instructions", ""),
             meeting_lookback_days=meeting_lookback_days if meeting_lookback_days > 0 else None,
             property_name=job.get("property_name"),
+            market_tabs=job.get("market_tabs") or None,
+            generate_market_slides=bool(job.get("generate_market_slides")),
         )
         ma_send_message(session_id, message)
 
@@ -692,6 +699,43 @@ def render_new_run_tab() -> None:
         help="Include Fireflies meeting transcripts from the last N days. Set to 0 to disable.",
     )
 
+    # ── Market Analysis Workbook controls ─────────────────────────────────────
+    # Show tab picker + slide-generation toggle whenever the user has uploaded
+    # an Excel-format supplemental file (the market analysis workbook lives
+    # there). Keeps the agent from guessing which tabs to read or whether to
+    # create new slides.
+    market_tabs: list[str] = []
+    generate_market_slides = False
+    if supplemental_file is not None and supplemental_file.name.lower().endswith(
+        (".xlsx", ".xlsm")
+    ):
+        sheet_names = list_workbook_sheets(supplemental_file.getvalue())
+        if sheet_names:
+            st.markdown("**Market Analysis Workbook**")
+            market_tabs = st.multiselect(
+                "Tabs to use (output tabs only — skip back-end data tabs)",
+                options=sheet_names,
+                default=[],
+                help=(
+                    "Select the finished output tabs the agent should read "
+                    "(e.g. Competitive Set, Rent Growth Comp. By Year). "
+                    "Do NOT select raw/back-end tabs like IPEDS Data, "
+                    "Manual Enrollment Data, or Supply and Demand — those "
+                    "are source data, not presentation-ready."
+                ),
+                key="market_tabs_input",
+            )
+            generate_market_slides = st.checkbox(
+                "Generate new market research slides",
+                value=False,
+                help=(
+                    "When ON, the agent may insert new slides into the "
+                    "market research section based on the selected tabs. "
+                    "When OFF, the agent will only update existing slides."
+                ),
+                key="generate_market_slides_input",
+            )
+
     with st.expander("Fireflies API key (optional)"):
         st.caption(
             "Override the platform-level Fireflies key with your own. "
@@ -768,6 +812,8 @@ def render_new_run_tab() -> None:
                 meeting_lookback_days=int(meeting_lookback_days),
                 fireflies_api_key=fireflies_api_key,
                 instructions=instructions,
+                market_tabs=market_tabs,
+                generate_market_slides=generate_market_slides,
             )
             _execute_job(job=job, username=username, credits_per_week=credits_per_week)
 
@@ -797,6 +843,8 @@ def render_new_run_tab() -> None:
                 meeting_lookback_days=int(meeting_lookback_days),
                 fireflies_api_key=fireflies_api_key,
                 instructions=instructions,
+                market_tabs=market_tabs,
+                generate_market_slides=generate_market_slides,
             )
             enqueue_job(username, job)
             st.success(f"Queued `{job['memo_name']}`.")

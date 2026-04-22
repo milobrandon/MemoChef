@@ -4,6 +4,7 @@ from app_helpers import (
     count_changes_from_log,
     fire_button_disabled_reason,
     hash_password,
+    list_workbook_sheets,
     should_disable_fire_button,
     verify_password,
 )
@@ -78,3 +79,20 @@ def test_count_changes_falls_back_to_change_headings():
 def test_count_changes_empty_log():
     assert count_changes_from_log("") == 0
     assert count_changes_from_log(None) == 0  # type: ignore[arg-type]
+
+
+def test_list_workbook_sheets_parses_real_xlsx(tmp_path):
+    import openpyxl
+    wb = openpyxl.Workbook()
+    wb.active.title = "Summary"
+    wb.create_sheet("Competitive Set")
+    wb.create_sheet("Rent Growth Comp. By Year")
+    path = tmp_path / "book.xlsx"
+    wb.save(path)
+    names = list_workbook_sheets(path.read_bytes())
+    assert names == ["Summary", "Competitive Set", "Rent Growth Comp. By Year"]
+
+
+def test_list_workbook_sheets_returns_empty_on_garbage():
+    assert list_workbook_sheets(b"not a workbook") == []
+    assert list_workbook_sheets(b"") == []
