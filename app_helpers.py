@@ -5,6 +5,25 @@ import re
 import secrets
 
 
+def list_workbook_sheets(file_bytes: bytes) -> list[str]:
+    """Return the sheet names of an uploaded .xlsx/.xlsm workbook.
+
+    Returns an empty list on any failure (corrupt file, wrong format) so
+    the UI can silently hide the tab picker instead of erroring.
+    """
+    import io
+
+    import openpyxl
+
+    try:
+        wb = openpyxl.load_workbook(
+            io.BytesIO(file_bytes), read_only=True, data_only=True
+        )
+        return list(wb.sheetnames)
+    except Exception:
+        return []
+
+
 def count_changes_from_log(log_text: str) -> int:
     """Extract the total change count from a changelog markdown string.
 

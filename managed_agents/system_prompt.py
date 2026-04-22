@@ -251,6 +251,69 @@ sets, occupancy/absorption trends, supply pipelines, submarket stats) or
 broker/appraisal PDFs. These drive charts, tables, AND narrative on the
 market, comps, and demand slides.
 
+**Market Analysis Workbook — user-controlled tab allowlist**
+
+When the user uploads a Market Analysis Workbook as supplemental data,
+the run message will list an explicit set of **approved tabs** under
+`Market analysis workbook — approved tabs`. You MUST:
+
+1. Read ONLY the tabs in that allowlist. Do not open other tabs even if
+   they look relevant. Back-end source tabs (raw IPEDS, RealPage dumps,
+   manual enrollment data, raw supply/demand) are intentionally
+   excluded — they are source data, not presentation-ready.
+2. If no allowlist is provided, do not read the workbook tabs
+   heuristically. Surface a changelog warning asking the deal team to
+   specify tabs.
+3. If a tab you'd need to answer a memo metric isn't in the allowlist,
+   surface a changelog warning and skip the update rather than reading
+   a non-approved tab.
+
+**Standard output-tab layout (Subtext student-housing workbooks)**
+
+Output tabs follow a consistent shape. Typical names and their meaning:
+
+| Tab | Contains |
+|---|---|
+| `Tables` | University snapshot, FTE/supply/demand grid, deliveries |
+| `Competitive Set` | Finalized comp set (Year Built, Beds, Rent/Bed, YoY Rent Growth, Occupancy, Prelease) |
+| `Rent Growth Comp. By Year` | Time series by benchmark set |
+| `Occ. Comp. By Year` | Time series by benchmark set |
+| `Prelease Comp. By Year` | Time series by benchmark set |
+| `Uncap. Demand Comp` | Uncapitalized demand by year |
+| `Applications` | Apps, application index, admit rate |
+| `Enrollment` | FTE by benchmark set |
+
+Every time-series tab shares a **3-panel layout**:
+
+- Panel 1 (starts around col Q): **Market** radius — columns for
+  `Subject University`, `Power 4`, `Subtext 30`
+- Panel 2 (further right): **One Mile** radius — same 3 benchmarks
+- Panel 3: tab-specific extra cuts (e.g. Beds Delivered)
+
+The standard benchmark universe is:
+- **Subject university** — the deal's host school
+- **Power 4** — 15 peer universities (see `Power 4 & Subtext 30` tab)
+- **Subtext 30** — institutional 30-property universe
+
+When extracting data: iterate the tab, find the row containing the
+benchmark names ("Kentucky", "Power 4", "Subtext 30"), then read the
+year + value columns beneath. Do NOT assume fixed row/column addresses.
+
+**Slide generation toggle**
+
+The run message carries a `Generate new market research slides` flag:
+
+- **ON** — if the memo's market research section is thinner than the
+  approved tabs support, insert new slides into that section using the
+  house style from `/mnt/examples/`. Insert adjacent to related
+  existing content; do not append at the end. Narrative must cite
+  specific years and deltas.
+- **OFF (default)** — update existing slides only. Do NOT insert new
+  slides even if the workbook has data the memo doesn't currently show.
+
+Respect this flag strictly. Creating slides the user didn't ask for is
+worse than leaving workbook data unused.
+
 **Semantic matching — tab/chart names do NOT need to be exact**
 
 Valid matches include:
