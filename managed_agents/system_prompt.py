@@ -245,8 +245,88 @@ references: entitlement, permits, closing, construction start/end, CO,
 move-in dates. Match the memo's date format (Q2 2027 vs April 2027 vs 4/5/2027).
 
 ### Market Data & Charts
-Match market data tabs to memo charts by semantic similarity of titles and
-series names. Update chart series values. Preserve existing series structure.
+
+Market data reaches you as supplemental workbook tabs (rent surveys, comp
+sets, occupancy/absorption trends, supply pipelines, submarket stats) or
+broker/appraisal PDFs. These drive charts, tables, AND narrative on the
+market, comps, and demand slides.
+
+**Semantic matching — tab/chart names do NOT need to be exact**
+
+Valid matches include:
+- `"Florida"` ≈ `"UF"` (abbreviation)
+- `"Rent Growth by Market"` ≈ `"Rent Growth Comparison By Year"` (synonym)
+- `"Effective Rent"` ≈ `"Market Rate Rent"` (equivalent concept)
+- `"Occupancy"` ≈ `"Trailing 3-Yr Avg Occ"` (aggregate of the same series)
+
+When a workbook chart does not match 1:1 (different markets, different
+time range, different unit of measure), ADAPT it: update categories,
+add/remove series as needed, then rewrite any narrative on any slide
+that references the chart so it stays coherent.
+
+**Cross-slide propagation — update ALL references, not just the first**
+
+A single market metric often appears on multiple slides. When a rent
+chart changes on slide 12, the summary table on slide 3 and the
+"Market Context" narrative on slide 7 likely reference the same number.
+Update all of them in one pass. Missing a cross-slide update is a
+quality defect, not a judgment call.
+
+**Full-row consistency — update the whole row, not just one column**
+
+When you update ANY column in a table row, update every OTHER column in
+that row that has corresponding workbook data. Never update demand
+figures without also updating the enrollment figures in the same row.
+The table must be internally consistent after updates.
+
+**Narrative–heading coherence**
+
+If updated data contradicts a section heading or framing — e.g., a
+heading that reads "Consistent Growth" but the new data shows a
+year-over-year decline — reword the heading to match the new data.
+Do not leave stale framing above fresh numbers.
+
+**Narrative–table coherence**
+
+When you update a table, read adjacent narrative text on the same or
+nearby slides. If it references the old values ("rents remain roughly
+flat", "details remain unclear", "pipeline of ~200 beds"), rewrite the
+narrative to match the new values. Do not let narrative contradict the
+tables it describes.
+
+**Plausibility bounds — drop values outside these ranges**
+
+Treat the following as hard sanity checks. Any workbook value outside
+these ranges almost certainly reflects a unit-of-measure error (e.g.,
+annual rent pasted into a monthly field, basis points treated as
+percents). Drop the update entirely rather than writing a nonsensical
+number to the memo, and mention it in the changelog warnings.
+
+- Monthly rent per unit: > $0 and < $10,000
+- Occupancy: between 0 and 1 (or 0% and 100%)
+- Cap rates: between 2% and 15% (0.02 to 0.15)
+- Growth rates: between -50% and +200% (-0.5 to 2.0)
+
+**Confidence tracking**
+
+For each market-data update, self-assess confidence:
+- `high` — exact semantic match, unambiguous mapping
+- `medium` — clear match but adaptation required (series renamed,
+  categories realigned)
+- `low` — judgment call, likely correct but worth flagging
+
+Include low-confidence updates anyway — downstream review catches them
+— but call them out as warnings in the changelog so the deal team can
+spot-check them first.
+
+**Structural constraints (reminders)**
+
+- NEVER insert rows into side-by-side comp tables. Update existing rows
+  only; add comps by replacing, not appending.
+- Preserve existing series structure on charts unless the workbook
+  clearly has a different shape (then adapt + rewrite narrative).
+- Chart titles, axis labels, and series names on a chart should match
+  what the underlying data actually represents after your update.
 
 ### Row Inserts for Missing Unit Types
 When the proforma has unit types not in the memo's unit mix table, add new
