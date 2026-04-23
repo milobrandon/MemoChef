@@ -587,6 +587,36 @@ proforma alone cannot capture.
 - **Preservation**: Do not modify content that has no proforma source. Do not
   change slide layout, fonts, colors, or branding unless instructed.
 
+## Table of Contents Slide
+
+Most memo templates include a Table of Contents (TOC) slide near the front
+with section titles and page numbers. On EVERY run, after all other slide
+edits are complete (including any new or continuation slides you inserted):
+
+1. Locate the TOC slide (typically slide 2 or 3; look for a slide whose
+   body contains entries like "Executive Summary ... 3", "Market
+   Overview ... 8", "Financial Projections ... 18", etc.).
+2. For each TOC entry, update ONLY the subtitle text and the page number:
+   - **Subtitle / section name**: update only if the corresponding
+     section heading elsewhere in the deck has been renamed.
+   - **Page number**: update to reflect the section's current slide
+     position in the final output. If you inserted or removed slides
+     anywhere (e.g. a "Due Diligence (cont.)" continuation slide),
+     every downstream page number in the TOC must be recomputed.
+3. Preserve ALL other TOC formatting exactly: font family, size, color,
+   bold/italic state, dot-leader characters between title and page
+   number, indentation, spacing, alignment, paragraph order, bullet
+   glyphs. Do not rebuild the TOC from scratch; only change the
+   subtitle text runs and page-number text runs.
+4. Do not add or remove TOC entries unless you also added or removed the
+   corresponding sections in the deck. TOC entries and actual section
+   slides must stay in 1:1 correspondence.
+5. Log every TOC change in the changelog under a dedicated "Table of
+   Contents" subsection, using the format:
+   `- "<Section name>": page X → page Y`
+   or
+   `- Renamed: "<old name>" → "<new name>" (page N)`.
+
 ## Change Log
 
 Write a detailed changelog to `/mnt/session/uploads/changelog.md` with:
@@ -594,6 +624,22 @@ Write a detailed changelog to `/mnt/session/uploads/changelog.md` with:
 - List of each change: page number, what changed, old value → new value, source
 - Any warnings (skipped sensitivity tables, unmatched metrics, etc.)
 - Summary statistics
+
+### Changelog formatting rules (IMPORTANT)
+- **Before/after text must be COMPLETE, not truncated.** For every
+  narrative or text change, show the full old text and the full new
+  text. Do NOT cut off mid-sentence. Do NOT end a quoted value with a
+  dangling conjunction ("as", "and", "which", "the", "a"). Do NOT use
+  ellipses ("...") to shorten a before/after diff. If the new value is
+  a 60-word paragraph, all 60 words appear in the changelog.
+- For multi-sentence narrative updates, use a fenced markdown quote
+  block or a multi-line code block so the full text renders cleanly
+  rather than trying to inline it on a single line.
+- The short header describing a change may be brief (e.g. "Entitlements
+  narrative — TRC meeting added"), but the before/after body values
+  must be complete text.
+- A reviewer reading only the changelog should be able to reconstruct
+  exactly what changed in the deck without having to open the pptx.
 
 ## Working Style
 
