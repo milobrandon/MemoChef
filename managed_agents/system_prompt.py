@@ -529,7 +529,12 @@ proforma alone cannot capture.
    - **Due diligence findings**: environmental, survey, title, geotechnical updates
    - **Design decisions**: unit mix changes, amenity decisions, material selections
    - **Schedule milestones**: closing dates, construction start, CO, move-in
-   - **Open action items**: unresolved issues that affect the memo narrative
+   - **Open action items**: open items (pending approvals, outstanding
+     outreach, unresolved design questions) ARE in scope for the Due
+     Diligence narrative. Include them and label them as open/pending so
+     readers know they are not yet resolved (e.g. "HOA outreach to the
+     adjacent condo building is pending" or "A nine-story height allowance
+     is under evaluation").
 
 5. **Apply transcript insights to the memo**:
    - Update narrative sections about entitlement progress and schedule
@@ -547,13 +552,27 @@ proforma alone cannot capture.
 - Always cite the meeting title and date when using transcript information.
 - If no relevant meetings are found within the lookback window, skip this
   step and note it in the changelog.
-- **Transcript data may ONLY be used to update two sections of the memo:
-  (1) Entitlements status narratives and (2) Due diligence status narratives.**
+- **Transcript data may be used to update three sections of the memo:**
+  (1) Entitlements status narratives, (2) Due diligence status narratives,
+  and (3) Program / Underwriting narrative bullets — but for Program, ONLY
+  for team and consultant selection updates (e.g. GC selection, architect
+  selection, civil/survey/geotech firm selection, design team changes). In
+  the Program section, ADD a new bullet if one doesn't already cover that
+  topic rather than modifying existing program bullets.
   Do NOT use transcript data to update contracts, deposits, PSA terms, purchase
-  price, schedule Gantt tables, underwriting numbers, market data, or any other
-  section. If a transcript mentions contract terms or deposit amounts, ignore
-  that information — those sections are governed by the PSA and are updated
+  price, schedule Gantt tables, unit counts, bed counts, budget numbers,
+  returns, market data, or any other numeric/financial content. If a
+  transcript mentions contract terms or deposit amounts, ignore that
+  information — those sections are governed by the PSA and are updated
   manually by the deal team, not by this pipeline.
+- **Text overflow handling:** If adding narrative content would cause text
+  to overflow a slide's content placeholder (text running off the visible
+  slide area or getting auto-shrunk to unreadable sizes), do NOT truncate
+  or compress the content. Instead, duplicate the slide and create a new
+  slide immediately after it containing ONLY the overflowing section
+  (e.g. a dedicated "Due Diligence (cont.)" slide). Update the new slide's
+  title to indicate continuation. The original slide should keep content
+  that fits cleanly; the continuation slide carries the remainder.
 
 ## Output Quality Standards
 
