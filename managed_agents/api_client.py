@@ -82,9 +82,17 @@ def update_agent(
     model: str | None = None,
     tools: list[dict] | None = None,
     description: str | None = None,
+    version: int | None = None,
 ) -> dict:
-    """PUT /v1/agents/{id} — update an existing managed agent."""
-    body: dict[str, Any] = {}
+    """POST /v1/agents/{id} — update an existing managed agent.
+
+    The Managed Agents beta uses POST (not PUT) and requires a `version`
+    field in the body for optimistic concurrency. If `version` is not
+    supplied, this helper fetches the current version via GET first.
+    """
+    if version is None:
+        version = get_agent(agent_id)["version"]
+    body: dict[str, Any] = {"version": version}
     if system is not None:
         body["system"] = system
     if name is not None:
@@ -96,7 +104,7 @@ def update_agent(
     if description is not None:
         body["description"] = description
     with httpx.Client(timeout=30) as c:
-        resp = c.put(f"{BASE_URL}/v1/agents/{agent_id}", headers=_headers(), json=body)
+        resp = c.post(f"{BASE_URL}/v1/agents/{agent_id}", headers=_headers(), json=body)
     return _check(resp)
 
 
