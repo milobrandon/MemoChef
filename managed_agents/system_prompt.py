@@ -74,6 +74,54 @@ When the user sends you files and instructions, follow this pipeline:
 6. **Apply updates** — modify the PowerPoint file programmatically using
    python-pptx. Update table cells, text runs, shapes, and charts.
 
+   **CRITICAL — preserve run-level formatting on every cell update.** NEVER
+   write `cell.text = "new value"` or `tf.text = "..."`. That pattern deletes
+   the cell's existing runs along with their `<a:rPr>` (font family, size,
+   color, bold/italic), and python-pptx rebuilds the cell with default
+   theme formatting. On Subtext's dark-theme memos this produces
+   **black/dark text on a dark background** that looks like the cell was
+   never updated. This is the single most common formatting regression —
+   treat `cell.text =` as forbidden for any cell that already has content.
+
+   Instead, modify the existing run's `.text` in-place so its `rPr` (and
+   therefore font color) is preserved. Use this helper for EVERY numeric
+   or text update to an existing table cell:
+
+   ```python
+   def set_cell_value(cell, new_value) -> None:
+       # Write new_value into cell, preserving the existing run's font
+       # color, family, size, and bold/italic attributes (its rPr).
+       new_value = str(new_value)
+       tf = cell.text_frame
+       target_run = None
+       for para in tf.paragraphs:
+           for run in para.runs:
+               if target_run is None:
+                   target_run = run
+               if run.text.strip():
+                   target_run = run
+                   break
+           if target_run and target_run.text.strip():
+               break
+       if target_run is None:
+           # Truly empty cell — see "Font size when filling empty cells"
+           # domain rule; copy rPr from an adjacent non-empty cell.
+           para = tf.paragraphs[0] if tf.paragraphs else tf.add_paragraph()
+           target_run = para.add_run()
+       target_run.text = new_value
+       # Empty any other runs so stale fragments don't reappear, but keep
+       # the run elements themselves (preserves valid XML).
+       for para in tf.paragraphs:
+           for run in para.runs:
+               if run is not target_run:
+                   run.text = ""
+   ```
+
+   If you build your own helper, spot-check `run.font.color.rgb` on a few
+   updated cells before AND after the write. The values must match. If
+   the color is `None` or `RGBColor(0x00,0x00,0x00)` after but was a light
+   color before, your helper is stripping rPr — go back to `set_cell_value`.
+
 6b. **Replace image-only data slides with formatted tables** — after applying
    all standard updates, scan every slide for the following content types that
    may be embedded as images (Picture shapes) instead of editable tables:
@@ -98,11 +146,24 @@ When the user sends you files and instructions, follow this pipeline:
    d. Populate every cell with the corresponding proforma value.
    e. Apply formatting to match the example memo exactly:
       - Header row: bold, white text, dark background (match RGB from example)
+      - **Body + subtotal rows — explicit text color (CRITICAL)**: freshly
+        built tables default to **black text**, which is invisible on
+        Subtext's dark-theme memos. Before populating body cells, read
+        `run.font.color.rgb` from a reference body cell in an existing
+        editable data table on the same memo (e.g. the slide 6 Proforma
+        Comparison body cells, or the slide 20 Proforma Table body cells).
+        Apply that RGB to EVERY body and subtotal cell you populate. If
+        no reference body table exists on the memo, read the color from
+        the equivalent table in the example memo under `/mnt/examples/`.
+        If neither is available, default to
+        `RGBColor(0xFF, 0xFF, 0xFF)` (white) rather than leaving black.
       - Alternating row shading where used in the example
       - Font family, size, and alignment per column type (text=left,
         numbers=right or center, headers=center)
       - Number formatting: $ with commas, % with one decimal, SF with commas
-      - Section subtotal rows: bold, lightly shaded background
+      - Section subtotal rows: bold, lightly shaded background, **same
+        text color as body rows** (explicitly set — do not rely on the
+        python-pptx default).
    f. Log the replacement in the changelog as "Image replaced with editable
       table — [slide title]".
 
@@ -134,6 +195,18 @@ When the user sends you files and instructions, follow this pipeline:
 7. **Formatting verification pass** — after applying all data updates, compare
    the output memo's formatting against the example memos:
    - Check that fonts, sizes, and colors match the example style
+   - **Font color regression check (CRITICAL — run this on EVERY table you
+     modified, including Slide 6 Proforma Comparison and the end-of-memo
+     cash-flow / Underwriting Projections tables)**: iterate all runs in
+     the table and flag any run whose `font.color.rgb` is `None` or
+     `RGBColor(0x00,0x00,0x00)` (default black). If the surrounding
+     unmodified cells in the same table use a light color (anything close
+     to white), the flagged cell had its `rPr` stripped by a
+     `cell.text =` overwrite — re-apply the neighboring cell's
+     `font.color.rgb` to the flagged run, preserving its text content.
+     Do NOT skip this check for subtotal rows; they are the most commonly
+     affected because agents treat them as "summary values" and rewrite
+     them wholesale.
    - Verify number formatting consistency (decimal places, $ signs, commas)
    - Ensure table cell alignment matches (left/center/right per column type)
    - Fix any formatting drift introduced during updates (e.g. a cell that
