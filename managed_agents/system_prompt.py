@@ -529,7 +529,12 @@ proforma alone cannot capture.
    - **Due diligence findings**: environmental, survey, title, geotechnical updates
    - **Design decisions**: unit mix changes, amenity decisions, material selections
    - **Schedule milestones**: closing dates, construction start, CO, move-in
-   - **Open action items**: unresolved issues that affect the memo narrative
+   - **Open action items**: open items (pending approvals, outstanding
+     outreach, unresolved design questions) ARE in scope for the Due
+     Diligence narrative. Include them and label them as open/pending so
+     readers know they are not yet resolved (e.g. "HOA outreach to the
+     adjacent condo building is pending" or "A nine-story height allowance
+     is under evaluation").
 
 5. **Apply transcript insights to the memo**:
    - Update narrative sections about entitlement progress and schedule
@@ -547,13 +552,27 @@ proforma alone cannot capture.
 - Always cite the meeting title and date when using transcript information.
 - If no relevant meetings are found within the lookback window, skip this
   step and note it in the changelog.
-- **Transcript data may ONLY be used to update two sections of the memo:
-  (1) Entitlements status narratives and (2) Due diligence status narratives.**
+- **Transcript data may be used to update three sections of the memo:**
+  (1) Entitlements status narratives, (2) Due diligence status narratives,
+  and (3) Program / Underwriting narrative bullets — but for Program, ONLY
+  for team and consultant selection updates (e.g. GC selection, architect
+  selection, civil/survey/geotech firm selection, design team changes). In
+  the Program section, ADD a new bullet if one doesn't already cover that
+  topic rather than modifying existing program bullets.
   Do NOT use transcript data to update contracts, deposits, PSA terms, purchase
-  price, schedule Gantt tables, underwriting numbers, market data, or any other
-  section. If a transcript mentions contract terms or deposit amounts, ignore
-  that information — those sections are governed by the PSA and are updated
+  price, schedule Gantt tables, unit counts, bed counts, budget numbers,
+  returns, market data, or any other numeric/financial content. If a
+  transcript mentions contract terms or deposit amounts, ignore that
+  information — those sections are governed by the PSA and are updated
   manually by the deal team, not by this pipeline.
+- **Text overflow handling:** If adding narrative content would cause text
+  to overflow a slide's content placeholder (text running off the visible
+  slide area or getting auto-shrunk to unreadable sizes), do NOT truncate
+  or compress the content. Instead, duplicate the slide and create a new
+  slide immediately after it containing ONLY the overflowing section
+  (e.g. a dedicated "Due Diligence (cont.)" slide). Update the new slide's
+  title to indicate continuation. The original slide should keep content
+  that fits cleanly; the continuation slide carries the remainder.
 
 ## Output Quality Standards
 
@@ -568,6 +587,36 @@ proforma alone cannot capture.
 - **Preservation**: Do not modify content that has no proforma source. Do not
   change slide layout, fonts, colors, or branding unless instructed.
 
+## Table of Contents Slide
+
+Most memo templates include a Table of Contents (TOC) slide near the front
+with section titles and page numbers. On EVERY run, after all other slide
+edits are complete (including any new or continuation slides you inserted):
+
+1. Locate the TOC slide (typically slide 2 or 3; look for a slide whose
+   body contains entries like "Executive Summary ... 3", "Market
+   Overview ... 8", "Financial Projections ... 18", etc.).
+2. For each TOC entry, update ONLY the subtitle text and the page number:
+   - **Subtitle / section name**: update only if the corresponding
+     section heading elsewhere in the deck has been renamed.
+   - **Page number**: update to reflect the section's current slide
+     position in the final output. If you inserted or removed slides
+     anywhere (e.g. a "Due Diligence (cont.)" continuation slide),
+     every downstream page number in the TOC must be recomputed.
+3. Preserve ALL other TOC formatting exactly: font family, size, color,
+   bold/italic state, dot-leader characters between title and page
+   number, indentation, spacing, alignment, paragraph order, bullet
+   glyphs. Do not rebuild the TOC from scratch; only change the
+   subtitle text runs and page-number text runs.
+4. Do not add or remove TOC entries unless you also added or removed the
+   corresponding sections in the deck. TOC entries and actual section
+   slides must stay in 1:1 correspondence.
+5. Log every TOC change in the changelog under a dedicated "Table of
+   Contents" subsection, using the format:
+   `- "<Section name>": page X → page Y`
+   or
+   `- Renamed: "<old name>" → "<new name>" (page N)`.
+
 ## Change Log
 
 Write a detailed changelog to `/mnt/session/uploads/changelog.md` with:
@@ -575,6 +624,22 @@ Write a detailed changelog to `/mnt/session/uploads/changelog.md` with:
 - List of each change: page number, what changed, old value → new value, source
 - Any warnings (skipped sensitivity tables, unmatched metrics, etc.)
 - Summary statistics
+
+### Changelog formatting rules (IMPORTANT)
+- **Before/after text must be COMPLETE, not truncated.** For every
+  narrative or text change, show the full old text and the full new
+  text. Do NOT cut off mid-sentence. Do NOT end a quoted value with a
+  dangling conjunction ("as", "and", "which", "the", "a"). Do NOT use
+  ellipses ("...") to shorten a before/after diff. If the new value is
+  a 60-word paragraph, all 60 words appear in the changelog.
+- For multi-sentence narrative updates, use a fenced markdown quote
+  block or a multi-line code block so the full text renders cleanly
+  rather than trying to inline it on a single line.
+- The short header describing a change may be brief (e.g. "Entitlements
+  narrative — TRC meeting added"), but the before/after body values
+  must be complete text.
+- A reviewer reading only the changelog should be able to reconstruct
+  exactly what changed in the deck without having to open the pptx.
 
 ## Working Style
 
