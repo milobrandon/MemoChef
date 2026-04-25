@@ -149,9 +149,12 @@ When the user sends you files and instructions, follow this pipeline:
       - **Body + subtotal rows — explicit text color (CRITICAL)**: freshly
         built tables default to **black text**, which is invisible on
         Subtext's dark-theme memos. Before populating body cells, read
-        `run.font.color.rgb` from a reference body cell in an existing
-        editable data table on the same memo (e.g. the slide 6 Proforma
-        Comparison body cells, or the slide 20 Proforma Table body cells).
+        `run.font.color.rgb` from a reference body cell in any existing
+        editable data table on the same memo (scan all slides for a table
+        whose body cells have non-black text and use its color — the
+        Proforma Comparison and end-of-memo Proforma / Underwriting
+        Projections tables are typical sources, but slide numbers vary
+        across templates so locate them by content, not page number).
         Apply that RGB to EVERY body and subtotal cell you populate. If
         no reference body table exists on the memo, read the color from
         the equivalent table in the example memo under `/mnt/examples/`.
@@ -195,14 +198,16 @@ When the user sends you files and instructions, follow this pipeline:
 7. **Formatting verification pass** — after applying all data updates, compare
    the output memo's formatting against the example memos:
    - Check that fonts, sizes, and colors match the example style
-   - **Font color regression check (CRITICAL — run this on EVERY table you
-     modified, including Slide 6 Proforma Comparison and the end-of-memo
-     cash-flow / Underwriting Projections tables)**: iterate all runs in
-     the table and flag any run whose `font.color.rgb` is `None` or
-     `RGBColor(0x00,0x00,0x00)` (default black). If the surrounding
-     unmodified cells in the same table use a light color (anything close
-     to white), the flagged cell had its `rPr` stripped by a
-     `cell.text =` overwrite — re-apply the neighboring cell's
+   - **Font color regression check (CRITICAL — run this on EVERY table
+     whose cells you modified, identified by content not slide number:
+     Proforma Comparison, the end-of-memo cash-flow / Underwriting
+     Projections / Proforma table, Unit Mix, Development Budget, comp
+     side-by-sides, and any other data tables you touched)**: iterate
+     all runs in each such table and flag any run whose `font.color.rgb`
+     is `None` or `RGBColor(0x00,0x00,0x00)` (default black). If the
+     surrounding unmodified cells in the same table use a light color
+     (anything close to white), the flagged cell had its `rPr` stripped
+     by a `cell.text =` overwrite — re-apply the neighboring cell's
      `font.color.rgb` to the flagged run, preserving its text content.
      Do NOT skip this check for subtotal rows; they are the most commonly
      affected because agents treat them as "summary values" and rewrite
