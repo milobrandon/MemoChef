@@ -59,6 +59,7 @@ def create_agent(
     system: str,
     tools: list[dict],
     description: str = "",
+    skills: list[dict] | None = None,
 ) -> dict:
     """POST /v1/agents — create a managed agent."""
     body: dict[str, Any] = {
@@ -69,6 +70,8 @@ def create_agent(
     }
     if description:
         body["description"] = description
+    if skills:
+        body["skills"] = skills
     with httpx.Client(timeout=30) as c:
         resp = c.post(f"{BASE_URL}/v1/agents", headers=_headers(), json=body)
     return _check(resp)
@@ -82,6 +85,7 @@ def update_agent(
     model: str | None = None,
     tools: list[dict] | None = None,
     description: str | None = None,
+    skills: list[dict] | None = None,
     version: int | None = None,
 ) -> dict:
     """POST /v1/agents/{id} — update an existing managed agent.
@@ -103,6 +107,8 @@ def update_agent(
         body["tools"] = tools
     if description is not None:
         body["description"] = description
+    if skills is not None:
+        body["skills"] = skills
     with httpx.Client(timeout=30) as c:
         resp = c.post(f"{BASE_URL}/v1/agents/{agent_id}", headers=_headers(), json=body)
     return _check(resp)

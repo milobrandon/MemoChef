@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from managed_agents.api_client import create_agent
 from managed_agents.config import AGENT_ID, save_ids
+from managed_agents.skills import SKILLS
 from managed_agents.system_prompt import SYSTEM_PROMPT
 
 
@@ -27,6 +28,7 @@ def main() -> None:
         model="claude-sonnet-4-6",
         system=SYSTEM_PROMPT,
         tools=[{"type": "agent_toolset_20260401"}],
+        skills=SKILLS,
     )
 
     agent_id = agent["id"]
