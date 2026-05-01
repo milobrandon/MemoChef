@@ -3719,6 +3719,28 @@ def _nearest_brand_color(r: int, g: int, b: int, threshold: float = 80.0):
     return None
 
 
+def _is_footer_shape(shape) -> bool:
+    """Detect footer-style shapes (footer / date / slide-number placeholders).
+
+    These are excluded from font reformatting, margin clamping, and auto-size
+    enforcement so their font size and intentional edge placement are preserved.
+    Standard PPT placeholder idx values: 10=date, 11=footer, 12=slide number.
+    """
+    try:
+        if shape.is_placeholder:
+            ph_idx = shape.placeholder_format.idx
+            if ph_idx in (10, 11, 12):
+                return True
+    except (AttributeError, ValueError):
+        pass
+    name = (shape.name or "").lower()
+    return (
+        "footer" in name
+        or "slide number" in name
+        or "date placeholder" in name
+    )
+
+
 def apply_branding(memo_path: str, theme_path: str, cfg: dict) -> int:
     """
     Apply Subtext branding to the entire memo:
@@ -3774,6 +3796,8 @@ def apply_branding(memo_path: str, theme_path: str, cfg: dict) -> int:
         for shape in slide.shapes:
             # Process text frames (text boxes, placeholders)
             if shape.has_text_frame:
+                if _is_footer_shape(shape):
+                    continue
                 _stype = str(shape.shape_type) if shape.shape_type is not None else ""
                 is_title = ("TITLE" in _stype or "SUBTITLE" in _stype
                             or "CENTER_TITLE" in _stype
@@ -4073,6 +4097,11 @@ def normalize_layout(memo_path: str, cfg: dict) -> dict:
             except Exception:
                 pass
 
+            # Footer/date/page-number placeholders are intentionally placed at
+            # slide edges; clamping shrinks them and triggers auto-size shrink.
+            if _is_footer_shape(shape):
+                continue
+
             clamped = False
 
             # Clamp left
@@ -4114,6 +4143,11 @@ def normalize_layout(memo_path: str, cfg: dict) -> dict:
     for idx, slide in enumerate(prs.slides):
         for shape in slide.shapes:
             if not shape.has_text_frame:
+                continue
+            # Footers/date/page-number placeholders: TEXT_TO_FIT_SHAPE causes
+            # PowerPoint to render the footer at a shrunken font size when the
+            # text doesn't fit the placeholder snugly. Leave footers alone.
+            if _is_footer_shape(shape):
                 continue
             tf = shape.text_frame
             # Ensure word wrap is on

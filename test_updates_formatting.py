@@ -219,6 +219,93 @@ def test_normalize_layout_preserves_table_font_sizes(tmp_dir):
     )
 
 
+def test_normalize_layout_preserves_footer_font_size(tmp_dir):
+    """normalize_layout() must not enable TEXT_TO_FIT_SHAPE on footer-style shapes.
+
+    PowerPoint's "shrink text on overflow" auto-size renders footer text at a
+    visually smaller size when the placeholder is even slightly snug. Footers
+    (footer / date / slide-number placeholders) must be skipped so their font
+    size is preserved.
+    """
+    from pptx.enum.text import MSO_AUTO_SIZE
+
+    path = os.path.join(tmp_dir, "footer_font_test.pptx")
+    prs = Presentation()
+
+    prs.slides.add_slide(prs.slide_layouts[5])  # cover (skipped by some sections)
+    slide = prs.slides.add_slide(prs.slide_layouts[5])
+
+    # Footer-style text boxes, identified by name
+    footer_box = slide.shapes.add_textbox(
+        Inches(0.5), Inches(7.0), Inches(2.0), Inches(0.3)
+    )
+    footer_box.name = "Footer Placeholder 1"
+    footer_box.text_frame.text = "Subtext Holdings, LLC | Confidential"
+    footer_box.text_frame.paragraphs[0].runs[0].font.size = Pt(9)
+
+    pn_box = slide.shapes.add_textbox(
+        Inches(8.0), Inches(7.0), Inches(1.5), Inches(0.3)
+    )
+    pn_box.name = "Slide Number Placeholder 2"
+    pn_box.text_frame.text = "Page 23 of 47"
+    pn_box.text_frame.paragraphs[0].runs[0].font.size = Pt(9)
+
+    date_box = slide.shapes.add_textbox(
+        Inches(0.5), Inches(0.1), Inches(2.0), Inches(0.3)
+    )
+    date_box.name = "Date Placeholder 3"
+    date_box.text_frame.text = "May 1, 2026"
+    date_box.text_frame.paragraphs[0].runs[0].font.size = Pt(9)
+
+    # A regular content box for control — this one SHOULD get auto-size applied
+    content_box = slide.shapes.add_textbox(
+        Inches(1.0), Inches(2.0), Inches(6.0), Inches(2.0)
+    )
+    content_box.name = "ContentBox"
+    content_box.text_frame.text = "Body content paragraph."
+
+    prs.save(path)
+
+    cfg = {
+        "layout": {
+            "margin_left": 0.50,
+            "margin_right": 0.50,
+            "margin_top": 0.25,
+            "margin_bottom": 0.50,
+            "snap_tolerance": 0.05,
+        }
+    }
+    normalize_layout(path, cfg)
+
+    prs_after = Presentation(path)
+    slide_after = prs_after.slides[1]
+    footer_after = next(s for s in slide_after.shapes if s.name == "Footer Placeholder 1")
+    pn_after = next(s for s in slide_after.shapes if s.name == "Slide Number Placeholder 2")
+    date_after = next(s for s in slide_after.shapes if s.name == "Date Placeholder 3")
+    content_after = next(s for s in slide_after.shapes if s.name == "ContentBox")
+
+    # Footers must NOT have auto-size enabled (would shrink rendered font)
+    assert footer_after.text_frame.auto_size != MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE, (
+        f"Footer auto_size must not be TEXT_TO_FIT_SHAPE, got {footer_after.text_frame.auto_size!r}"
+    )
+    assert pn_after.text_frame.auto_size != MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE, (
+        f"Page-number auto_size must not be TEXT_TO_FIT_SHAPE, got {pn_after.text_frame.auto_size!r}"
+    )
+    assert date_after.text_frame.auto_size != MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE, (
+        f"Date auto_size must not be TEXT_TO_FIT_SHAPE, got {date_after.text_frame.auto_size!r}"
+    )
+
+    # Footer font sizes must be preserved exactly
+    assert footer_after.text_frame.paragraphs[0].runs[0].font.size == Pt(9)
+    assert pn_after.text_frame.paragraphs[0].runs[0].font.size == Pt(9)
+    assert date_after.text_frame.paragraphs[0].runs[0].font.size == Pt(9)
+
+    # Control: regular content box SHOULD have received auto-size
+    assert content_after.text_frame.auto_size == MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE, (
+        "Non-footer content box should still receive auto_size normalization"
+    )
+
+
 class TestReplaceInParaCrossRun:
     """Tests for _replace_in_para cross-run replacement (Pass 2)."""
 
