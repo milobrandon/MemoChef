@@ -9,6 +9,7 @@ falling back to the SDK for the Files API (which IS supported via beta.files).
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,21 @@ from typing import Any
 import httpx
 
 from managed_agents.config import ANTHROPIC_API_KEY
+
+# Transient network errors during streaming that should trigger a reconnect.
+_TRANSIENT_STREAM_ERRORS: tuple[type[BaseException], ...] = (
+    httpx.RemoteProtocolError,
+    httpx.ReadError,
+    httpx.ConnectError,
+    httpx.TimeoutException,
+)
+
+# Statuses that mean the agent has finished server-side; no need to reconnect.
+_TERMINAL_SESSION_STATUSES = frozenset({"idle", "ended", "terminated", "completed"})
+
+# Bounded retries on stream disconnect. Initial connect counts; max 3 retries.
+_STREAM_MAX_ATTEMPTS = 4
+_STREAM_BACKOFF_BASE_SECONDS = 1.0
 
 BASE_URL = "https://api.anthropic.com"
 BETA_HEADER = "managed-agents-2026-04-01"
@@ -245,8 +261,62 @@ def stream_events(session_id: str) -> Generator[dict, None, None]:
 
     Yields parsed event dicts. Stops on session.status_idle or terminated.
 
+    Transparently retries on transient network errors (incomplete chunked
+    reads, connection resets, read timeouts). On reconnect, sends the
+    SSE Last-Event-ID header so the server can resume from where it left
+    off, and dedupes events by their JSON `id` field when present.
+
     NOTE: The stream endpoint requires a DIFFERENT beta header
     (agent-api-2026-03-01) than the rest of the API (managed-agents-2026-04-01).
+    """
+    last_event_id: str | None = None
+    seen_event_ids: set[str] = set()
+    attempt = 0
+
+    while True:
+        try:
+            for event, sse_id in _connect_and_stream(session_id, last_event_id):
+                if sse_id:
+                    last_event_id = sse_id
+
+                ev_id = event.get("id") if isinstance(event, dict) else None
+                if ev_id is not None:
+                    if ev_id in seen_event_ids:
+                        continue
+                    seen_event_ids.add(ev_id)
+
+                yield event
+
+                if event.get("type") in (
+                    "session.status_idle",
+                    "session.status_terminated",
+                ):
+                    return
+            return  # stream ended without explicit terminal event
+        except _TRANSIENT_STREAM_ERRORS:
+            attempt += 1
+            if attempt >= _STREAM_MAX_ATTEMPTS:
+                raise
+
+            # If the agent already finished server-side, don't reconnect.
+            try:
+                sess = get_session(session_id)
+                status = str(sess.get("status") or "").lower()
+                if status in _TERMINAL_SESSION_STATUSES:
+                    return
+            except Exception:
+                pass  # best-effort; fall through to reconnect
+
+            time.sleep(_STREAM_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)))
+
+
+def _connect_and_stream(
+    session_id: str,
+    last_event_id: str | None,
+) -> Generator[tuple[dict, str | None], None, None]:
+    """Open one SSE connection and yield (event_dict, sse_id) tuples.
+
+    Raises httpx network errors back to the caller for retry handling.
     """
     headers = {
         "x-api-key": ANTHROPIC_API_KEY or "",
@@ -254,6 +324,8 @@ def stream_events(session_id: str) -> Generator[dict, None, None]:
         "anthropic-beta": STREAM_BETA,
         "Accept": "text/event-stream",
     }
+    if last_event_id:
+        headers["Last-Event-ID"] = last_event_id
 
     with httpx.Client(timeout=None) as c:
         with c.stream(
@@ -266,11 +338,21 @@ def stream_events(session_id: str) -> Generator[dict, None, None]:
                 raise RuntimeError(f"Stream error {resp.status_code}: {body}")
 
             buffer = ""
+            current_sse_id: str | None = None
             for chunk in resp.iter_text():
                 buffer += chunk
                 while "\n" in buffer:
                     line, buffer = buffer.split("\n", 1)
                     line = line.rstrip("\r")
+
+                    if not line:
+                        # Blank line = end of an SSE event; reset id state.
+                        current_sse_id = None
+                        continue
+
+                    if line.startswith("id: "):
+                        current_sse_id = line[4:]
+                        continue
 
                     if not line.startswith("data: "):
                         continue
@@ -284,13 +366,7 @@ def stream_events(session_id: str) -> Generator[dict, None, None]:
                     except json.JSONDecodeError:
                         continue
 
-                    yield event
-
-                    if event.get("type") in (
-                        "session.status_idle",
-                        "session.status_terminated",
-                    ):
-                        return
+                    yield event, current_sse_id
 
 
 def get_session(session_id: str) -> dict:
