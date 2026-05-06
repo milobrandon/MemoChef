@@ -24,6 +24,49 @@ Files are mounted at:
 - `/mnt/session/uploads/` — user-uploaded files (proforma, memo template, supplemental)
 - `/mnt/examples/` — example IC memos showing Subtext's house style
 
+## Memory Protocol — Validation Log
+
+You have a persistent memory store across runs (via the memory tools in
+`agent_toolset_20260401`). Use it to remember corrections from past runs
+so the user does not need to give the same feedback twice.
+
+### At session start (REQUIRED)
+Read the file `validation_log.md` from your memory. It is a list of rules
+learned from past corrections, structured as:
+
+- **Rule:** one-sentence rule.
+  **Why:** the past mistake or confirmed preference, in one sentence.
+  **How to apply:** when this rule should fire, in one sentence.
+
+Apply every applicable rule to the current run. If the file does not yet
+exist, treat it as empty and continue.
+
+### At session end (CONDITIONAL — write only if all conditions met)
+Append a new entry to `validation_log.md` if and only if, during this run,
+you:
+- (a) made a mapping or edit that the user explicitly rejected and asked
+  you to do differently, OR
+- (b) received a directive in the run brief that contradicts your default
+  behavior and the user wants enforced going forward, OR
+- (c) discovered a new convention in the source memo / template that the
+  user has confirmed should always be followed (e.g., a fixed-text cell
+  never to be touched, a unit-conversion convention, a tone preference).
+
+Each new entry MUST include all three lines (Rule / Why / How to apply)
+and MUST be one sentence per line.
+
+### Hard rules — do NOT write
+- Property-specific facts. Those belong in a separate property profile
+  store, not the validation log.
+- Raw proforma numbers, transcript snippets, or PII.
+- Anything that contradicts an explicit instruction in the current run.
+- Duplicates of existing entries — read the log first; if a similar rule
+  already exists, refine it in place rather than appending.
+- Rules with no clear "when to apply" — vague rules degrade behavior.
+
+Keep the log under ~50 entries; prune obsolete or superseded rules during
+the read-and-apply step.
+
 ## Overall Workflow
 
 When the user sends you files and instructions, follow this pipeline:
@@ -565,14 +608,57 @@ proforma alone cannot capture.
   transcript mentions contract terms or deposit amounts, ignore that
   information — those sections are governed by the PSA and are updated
   manually by the deal team, not by this pipeline.
-- **Text overflow handling:** If adding narrative content would cause text
-  to overflow a slide's content placeholder (text running off the visible
-  slide area or getting auto-shrunk to unreadable sizes), do NOT truncate
-  or compress the content. Instead, duplicate the slide and create a new
-  slide immediately after it containing ONLY the overflowing section
-  (e.g. a dedicated "Due Diligence (cont.)" slide). Update the new slide's
-  title to indicate continuation. The original slide should keep content
-  that fits cleanly; the continuation slide carries the remainder.
+- **Layout integrity & overflow handling.** Before saving the deck, walk
+  through every slide you modified and fix any of the following. None of
+  these are acceptable in the final output:
+
+  1. **Text overflowing its container.** If narrative additions push text
+     past the bottom or sides of its placeholder, do NOT truncate, do
+     NOT rely on auto-shrink to a sub-10pt size. Either:
+     a. Tighten the text you added (preserve every fact, just remove
+        filler) if the overflow is under ~2 lines, OR
+     b. Split the slide: duplicate it, leave the cleanly-fitting content
+        on the original, and move the overflowing section onto a new
+        slide immediately after, titled `<Section> (cont.)`. Carry the
+        same section banner, footer text, page-number style, and layout
+        master onto the continuation slide.
+
+  2. **Text colliding with images, charts, or other shapes.** If a text
+     shape's bounding box overlaps a Picture or chart shape on the same
+     slide after your edit:
+     a. First try shrinking the image — preserve aspect ratio, reduce
+        until at least a 0.25" clear margin separates text and image.
+     b. If shrinking the image to less than ~60% of its original area
+        would make it illegible, instead split the slide as in (1).
+     c. Never move an image off-slide, behind a text box, or off-canvas
+        as a workaround.
+
+  3. **Text running off the slide canvas.** If any character is
+     positioned outside the slide rectangle (off the left/right edges
+     or below the bottom), the slide fails review. Resize the shape,
+     reflow the text, or split the slide. Off-canvas text must never
+     ship.
+
+  4. **Continuity on split slides.** Continuation slides MUST inherit
+     from the original: section banner / category label, footer text,
+     page-number style, layout master, and brand colors. Update the TOC
+     to include any new continuation slide (see "Table of Contents
+     Slide" below).
+
+  5. **Validation before saving.** For each slide you touched, programmatically
+     iterate every shape on the slide:
+     - Text shape: check whether its rendered text fits its frame given
+       its autofit setting. If python-pptx cannot give exact rendered
+       metrics, be conservative — assume ~14 chars/inch at body size and
+       leave 0.25" margins.
+     - Picture / chart shape: check bounding-box overlap against every
+       text shape on the slide.
+     If unsure, split rather than crowd. Never ship a slide you have
+     not inspected after editing.
+
+  Log every layout fix (slide split, image resize, continuation insert)
+  in the changelog under a dedicated `## Layout fixes` subsection so the
+  reviewer can see what changed structurally, not just textually.
 
 ## Output Quality Standards
 
@@ -640,6 +726,49 @@ Write a detailed changelog to `/mnt/session/uploads/changelog.md` with:
   must be complete text.
 - A reviewer reading only the changelog should be able to reconstruct
   exactly what changed in the deck without having to open the pptx.
+
+## Self-Consistency Audit (REQUIRED before finalizing changelog)
+
+Before producing the final `changelog.md`, audit it. If any check below
+fails, re-do the affected portion of the changelog before finalizing:
+
+1. **Numbered changes consistent.** Every "Change N of M" header must
+   have N ≤ M, and M must equal the actual count of changes in the
+   body. If you added or split a change after the first numbering pass,
+   re-number from 1. There must never be a "Change 7 of 6".
+
+2. **Header tally matches body.** The opening "Total Updates: X text
+   blocks across Y slides" line must equal:
+   - X = the number of "Change N of M" sections in the body, and
+   - Y = the count of distinct slide numbers cited across those sections.
+
+3. **Summary statistics table.** The closing summary's "Slides modified:
+   K (slides A, B, C, ...)" — K must equal the number of distinct slide
+   numbers in the parenthesized list. Recount the list by hand before
+   finalizing.
+
+4. **Source attribution complete.** Every change must cite either
+   (meeting name + date) for transcript-sourced edits or a specific
+   proforma cell / sheet location for proforma-sourced edits. If you
+   cannot cite, do not make the change.
+
+5. **Numeric preservation.** Original financial figures (dollar amounts,
+   percentages, bed counts, IRRs, equity multiples) that you did not
+   explicitly change because of new evidence must appear unchanged in
+   the output deck and unchanged in any "Before" text in the changelog.
+
+6. **Cross-slide consistency.** If two slides reference the same fact
+   (e.g., "stucco premium ~$1M", "Schematic Design starts June 2026"),
+   they must use the same number / date / phrasing and the same hedging
+   language ("approximately", "expected to", "targeting") across slides.
+
+7. **Layout fixes logged.** Any slide split, image resize, or
+   continuation slide created during the layout-integrity check must
+   appear in a `## Layout fixes` subsection of the changelog.
+
+Run the audit explicitly: walk each numbered check above, state PASS or
+FAIL inline in your scratch reasoning, and only emit the final
+changelog.md once all seven are PASS.
 
 ## Working Style
 
