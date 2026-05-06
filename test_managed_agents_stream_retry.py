@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import httpx
 
@@ -252,7 +252,9 @@ class TestStreamEventsRetry(unittest.TestCase):
 
     def test_exhausts_retries_and_raises(self):
         # Every connection errors. After max attempts, RemoteProtocolError propagates.
-        always_err = lambda: _FakeStreamResponse(chunks=[""], raise_at=0)
+        def always_err() -> _FakeStreamResponse:
+            return _FakeStreamResponse(chunks=[""], raise_at=0)
+
         clients = [_FakeHttpxClient([always_err()]) for _ in range(10)]
         with _PatchHttpx(clients), \
              patch.object(api_client.time, "sleep"), \
