@@ -133,7 +133,10 @@ entries clutter the review queue and degrade trust in the workflow.
 ### File format
 
 The file is a markdown document. Each entry is its own `## Entry N`
-section. The `target_skill` value MUST be exactly one of:
+section. Field keys MUST be lowercase with underscores
+(`target_skill`, `how_to_apply`) — not capitalized, not space-separated
+("Target Skill" or "How to apply" will fail to parse). The
+`target_skill` value MUST be exactly one of:
 
 - `memo-table-updates`
 - `image-table-replacement`
@@ -149,13 +152,13 @@ Use this template verbatim for every entry:
 # Pending Skill Updates
 
 ## Entry 1
-**target_skill:** <one of the seven names above>
+**target_skill:** memo-table-updates
 
-**Rule:** <one-sentence rule, same shape as validation_log>
+**rule:** When updating subtotal rows, reapply the body row's font color before writing.
 
-**Why:** <one-sentence motivation; reference a session date or behavior>
+**why:** Subtotal rows are the most common font-color regression because agents rewrite them wholesale.
 
-**How to apply:** <one-sentence trigger condition>
+**how_to_apply:** Run the font-color regression check on subtotal rows specifically, not just body rows.
 ```
 
 ### Hard rules

@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import json
+import re
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -78,19 +79,21 @@ def parse_entries(text: str) -> tuple[list[Entry], list[str]]:
     entries: list[Entry] = []
     warnings: list[str] = []
 
+    # Accept any heading depth (## or ###) — the agent occasionally drops
+    # to h3, and we'd rather rescue the entry than silently lose it.
+    entry_heading = re.compile(r"^#+\s*Entry\s+(\d+)\b", re.IGNORECASE)
+
     blocks: list[tuple[int, list[str]]] = []
     current: list[str] | None = None
     current_idx = 0
     for line in text.splitlines():
         stripped = line.lstrip()
-        if stripped.startswith("## Entry"):
+        match = entry_heading.match(stripped)
+        if match:
             if current is not None:
                 blocks.append((current_idx, current))
             current = []
-            try:
-                current_idx = int(stripped.split()[2].rstrip(":."))
-            except (IndexError, ValueError):
-                current_idx = len(blocks) + 1
+            current_idx = int(match.group(1))
             continue
         if current is not None:
             current.append(line)
@@ -98,7 +101,7 @@ def parse_entries(text: str) -> tuple[list[Entry], list[str]]:
         blocks.append((current_idx, current))
 
     if not blocks:
-        warnings.append("no '## Entry N' headings found")
+        warnings.append("no 'Entry N' headings found")
         return entries, warnings
 
     for idx, body_lines in blocks:
@@ -107,7 +110,7 @@ def parse_entries(text: str) -> tuple[list[Entry], list[str]]:
         target = fields.get("target_skill", "").strip().strip("`").strip()
         rule = fields.get("rule", "").strip()
         why = fields.get("why", "").strip()
-        how = fields.get("how to apply", "").strip()
+        how = fields.get("how_to_apply", "").strip()
 
         missing = [
             label for label, val in (
@@ -134,25 +137,64 @@ def parse_entries(text: str) -> tuple[list[Entry], list[str]]:
     return entries, warnings
 
 
-def _extract_bold_fields(lines: list[str]) -> dict[str, str]:
-    """Parse `**Key:** value` lines into {lower-key: value}.
+def _normalize_field_key(raw: str) -> str:
+    """Canonicalize a field key.
 
-    Tolerates multi-line values (continues until the next bold-key or
-    blank line) and keys with or without a colon inside the bold span.
+    Whitespace collapses to a single underscore so `Target Skill`,
+    `target skill`, and `target_skill` all map to `target_skill`. Case
+    is dropped. Trailing colons stripped.
+    """
+    cleaned = raw.strip().rstrip(":").strip()
+    return re.sub(r"[\s_]+", "_", cleaned).lower()
+
+
+def _is_field_key_line(stripped: str) -> tuple[str, str] | None:
+    """Return (key, value) if `stripped` looks like a `**Key:** value`
+    line, else None.
+
+    Requires an explicit colon either inside the bold span (`**Key:**`)
+    or immediately after the closing `**` (`**Key**:`). Without a colon,
+    a leading `**bold**` token in a continuation line would falsely look
+    like a new key — that's the bug this guards against.
+    """
+    if not stripped.startswith("**"):
+        return None
+    close = stripped.find("**", 2)
+    if close < 0:
+        return None
+    key_block = stripped[2:close]
+    after = stripped[close + 2:]
+
+    if key_block.rstrip().endswith(":"):
+        value_start = after.lstrip()
+    elif after.lstrip().startswith(":"):
+        value_start = after.lstrip().lstrip(":").lstrip()
+    else:
+        # No colon → not a key declaration, just inline bold text.
+        return None
+
+    return _normalize_field_key(key_block), value_start.strip()
+
+
+def _extract_bold_fields(lines: list[str]) -> dict[str, str]:
+    """Parse `**Key:** value` lines into {normalized_key: value}.
+
+    Tolerates multi-line values (continuation lines append to the most
+    recent key until a blank line or the next key line). Key names are
+    normalized so `Target Skill`, `target skill`, and `target_skill`
+    all resolve to the same field.
     """
     out: dict[str, list[str]] = {}
     current_key: str | None = None
     for line in lines:
         stripped = line.strip()
-        if stripped.startswith("**") and "**" in stripped[2:]:
-            close = stripped.index("**", 2)
-            key_block = stripped[2:close]
-            after = stripped[close + 2:].lstrip(": ").strip()
-            key = key_block.rstrip(":").strip().lower()
+        kv = _is_field_key_line(stripped)
+        if kv is not None:
+            key, value = kv
             current_key = key
             out.setdefault(key, [])
-            if after:
-                out[key].append(after)
+            if value:
+                out[key].append(value)
             continue
         if not stripped:
             current_key = None
@@ -175,12 +217,19 @@ def _format_entry_for_skill(entry: Entry) -> str:
 def append_to_skill_md(skill_md: Path, entry: Entry) -> None:
     """Append a learned rule under '## Learned Rules', creating the
     section if absent. Idempotent across re-runs (won't add duplicates).
+
+    Dedupe uses the formatted rule line `- **Rule:** {text}\n`, not free-
+    text containment. That keeps a *superset* rule from being silently
+    skipped because the existing rule is a substring of it, and lets an
+    edited rule land cleanly even when the original is already present.
     """
     text = skill_md.read_text(encoding="utf-8")
     block = _format_entry_for_skill(entry)
 
-    if entry.rule in text:
-        # Skip silent duplicates so re-runs don't bloat the file.
+    rule_line = f"- **Rule:** {entry.rule}\n"
+    if rule_line in text:
+        # Exact same rule line already present — skip silent duplicates
+        # so re-runs don't bloat the file.
         return
 
     if LEARNED_HEADING in text:
@@ -246,7 +295,7 @@ def review_entries(
     """Walk each entry; return a Decision per entry."""
     decisions: list[Decision] = []
     total = len(entries)
-    for entry in entries:
+    for pos, entry in enumerate(entries):
         _print_entry(entry, total)
 
         if entry.target_skill not in VALID_SKILL_NAMES:
@@ -270,15 +319,11 @@ def review_entries(
         choice = _prompt_choice()
         if choice == "q":
             print("  quitting; remaining entries left as 'deferred'")
-            decisions.append(Decision(
-                entry_index=entry.index,
-                decision="deferred",
-                target_skill=entry.target_skill,
-                rule=entry.rule,
-                why=entry.why,
-                how_to_apply=entry.how_to_apply,
-            ))
-            for e in entries[entries.index(entry) + 1:]:
+            # Defer the current entry plus every entry after it. Use the
+            # loop position rather than entries.index(entry) — list.index
+            # finds the first equal entry, and dataclasses use value-based
+            # equality, so two identical proposals would alias.
+            for e in entries[pos:]:
                 decisions.append(Decision(
                     entry_index=e.index,
                     decision="deferred",
@@ -453,15 +498,18 @@ def write_audit_log(
     new_versions: dict[str, str],
     *,
     dry_run: bool,
+    error: BaseException | None = None,
 ) -> Path:
     audit_path = source_file.with_suffix(".promoted.json")
-    payload = {
+    payload: dict = {
         "source_file": str(source_file),
         "processed_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
         "dry_run": dry_run,
         "decisions": [asdict(d) for d in decisions],
         "new_versions": new_versions,
     }
+    if error is not None:
+        payload["error"] = {"type": type(error).__name__, "message": str(error)}
     audit_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return audit_path
 
@@ -524,10 +572,32 @@ def main(argv: list[str] | None = None) -> int:
         if summary.get(k):
             print(f"  {k}: {summary[k]}")
 
-    new_versions = apply_decisions(decisions, dry_run=args.dry_run)
+    # Always write the audit log, even if apply_decisions raises partway
+    # through publishing. Otherwise a network error mid-loop would leave
+    # some skills bumped server-side with no record of which ones.
+    new_versions: dict[str, str] = {}
+    apply_error: BaseException | None = None
+    try:
+        new_versions = apply_decisions(decisions, dry_run=args.dry_run)
+    except BaseException as exc:
+        apply_error = exc
+        # Surface published-version state captured on Decision objects
+        # before the failure, so the audit reflects partial progress.
+        for d in decisions:
+            if d.new_version and d.target_skill not in new_versions:
+                new_versions[d.target_skill] = d.new_version
 
-    audit = write_audit_log(source, decisions, new_versions, dry_run=args.dry_run)
+    audit = write_audit_log(
+        source, decisions, new_versions,
+        dry_run=args.dry_run, error=apply_error,
+    )
     print(f"Audit log: {audit}")
+    if apply_error is not None:
+        print(
+            f"ERROR: apply_decisions failed partway through: {apply_error!r}",
+            file=sys.stderr,
+        )
+        return 3
     return 0
 
 
