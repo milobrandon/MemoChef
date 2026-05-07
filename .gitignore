@@ -11,6 +11,11 @@ test_output_managed_agents/
 test_api_live.py
 test_managed_agents_live.py
 
+# Per-org custom-skill ID cache (populated by sync_skills.py).
+# Each Anthropic org gets different skill_* IDs, so this must not be
+# committed — it would leak IDs and conflict across deployments.
+managed_agents/.skills.json
+
 # Stray Streamlit session logs (from rolled-back runs)
 rollback*.log
 

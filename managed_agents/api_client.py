@@ -37,6 +37,7 @@ BASE_URL = "https://api.anthropic.com"
 BETA_HEADER = "managed-agents-2026-04-01"
 STREAM_BETA = "agent-api-2026-03-01"
 FILES_BETA = "files-api-2025-04-14"
+SKILLS_BETA = "skills-2025-10-02"
 
 _HEADERS = {
     "x-api-key": ANTHROPIC_API_KEY,
@@ -374,3 +375,108 @@ def get_session(session_id: str) -> dict:
     with httpx.Client(timeout=30) as c:
         resp = c.get(f"{BASE_URL}/v1/sessions/{session_id}", headers=_headers())
     return _check(resp)
+
+
+# ── Skills ──────────────────────────────────────────────────────────
+
+def _skills_headers() -> dict[str, str]:
+    """Headers for /v1/skills endpoints — uses skills-2025-10-02 beta only."""
+    return {
+        "x-api-key": ANTHROPIC_API_KEY or "",
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": SKILLS_BETA,
+    }
+
+
+def _skill_files_payload(skill_dir: Path) -> list[tuple[str, tuple[str, bytes]]]:
+    """Build a multipart files[] list from every file under skill_dir.
+
+    The skill_dir's basename is used as the common root path so SKILL.md
+    lives at `<skill_dir.name>/SKILL.md` in the upload, per the API's
+    common-root requirement.
+    """
+    if not skill_dir.is_dir():
+        raise FileNotFoundError(f"Skill directory not found: {skill_dir}")
+    skill_md = skill_dir / "SKILL.md"
+    if not skill_md.is_file():
+        raise FileNotFoundError(f"SKILL.md missing under {skill_dir}")
+
+    root = skill_dir.name
+    files: list[tuple[str, tuple[str, bytes]]] = []
+    for path in sorted(skill_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(skill_dir).as_posix()
+        upload_name = f"{root}/{rel}"
+        files.append(("files[]", (upload_name, path.read_bytes())))
+    return files
+
+
+def create_skill(*, display_title: str, skill_dir: Path) -> dict:
+    """POST /v1/skills — create a new custom skill from a local directory.
+
+    skill_dir must contain a SKILL.md at its root. Returns the API response
+    which includes the generated skill_id and latest_version.
+    """
+    files = _skill_files_payload(skill_dir)
+    with httpx.Client(timeout=120) as c:
+        resp = c.post(
+            f"{BASE_URL}/v1/skills",
+            headers=_skills_headers(),
+            data={"display_title": display_title},
+            files=files,
+        )
+    return _check(resp)
+
+
+def create_skill_version(skill_id: str, *, skill_dir: Path) -> dict:
+    """POST /v1/skills/{id}/versions — publish a new version of an existing skill."""
+    files = _skill_files_payload(skill_dir)
+    with httpx.Client(timeout=120) as c:
+        resp = c.post(
+            f"{BASE_URL}/v1/skills/{skill_id}/versions",
+            headers=_skills_headers(),
+            files=files,
+        )
+    return _check(resp)
+
+
+def list_skills() -> list[dict]:
+    """GET /v1/skills — list all custom skills in the organization."""
+    with httpx.Client(timeout=30) as c:
+        resp = c.get(f"{BASE_URL}/v1/skills", headers=_skills_headers())
+    data = _check(resp)
+    return data.get("data", [])
+
+
+def list_skill_versions(skill_id: str) -> list[dict]:
+    """GET /v1/skills/{id}/versions — list all versions of a skill."""
+    with httpx.Client(timeout=30) as c:
+        resp = c.get(
+            f"{BASE_URL}/v1/skills/{skill_id}/versions",
+            headers=_skills_headers(),
+        )
+    data = _check(resp)
+    return data.get("data", [])
+
+
+def delete_skill_version(skill_id: str, version: str) -> None:
+    """DELETE /v1/skills/{id}/versions/{version}"""
+    with httpx.Client(timeout=30) as c:
+        resp = c.delete(
+            f"{BASE_URL}/v1/skills/{skill_id}/versions/{version}",
+            headers=_skills_headers(),
+        )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"Delete-version error {resp.status_code}: {resp.text}")
+
+
+def delete_skill(skill_id: str) -> None:
+    """DELETE /v1/skills/{id} — fails if any versions remain."""
+    with httpx.Client(timeout=30) as c:
+        resp = c.delete(
+            f"{BASE_URL}/v1/skills/{skill_id}",
+            headers=_skills_headers(),
+        )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"Delete-skill error {resp.status_code}: {resp.text}")

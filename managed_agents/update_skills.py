@@ -16,7 +16,7 @@ import sys
 
 from managed_agents.api_client import update_agent
 from managed_agents.config import AGENT_ID
-from managed_agents.skills import SKILLS
+from managed_agents.skills import build_skills_list
 
 
 def main() -> int:
@@ -28,10 +28,11 @@ def main() -> int:
         )
         return 1
 
+    skills = build_skills_list()
     print(f"Updating agent {AGENT_ID}")
-    print(f"Skills: {[s['skill_id'] for s in SKILLS]}")
+    print(f"Skills: {[s['skill_id'] for s in skills]}")
 
-    result = update_agent(AGENT_ID, skills=SKILLS)
+    result = update_agent(AGENT_ID, skills=skills)
 
     version = result.get("version", "?")
     print(f"Agent updated. version={version}")
