@@ -198,6 +198,28 @@ def list_files(scope_id: str | None = None) -> list[dict]:
     return data.get("data", [])
 
 
+def get_file(file_id: str) -> dict | None:
+    """GET /v1/files/{id} — metadata for a single file.
+
+    Returns None if the file no longer exists (404). Any other error
+    propagates as RuntimeError. Used by the examples cache to cheaply
+    validate that a stored file_id is still live before referencing it
+    in a session's resources list.
+    """
+    headers = {
+        "x-api-key": ANTHROPIC_API_KEY or "",
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": f"{BETA_HEADER},{FILES_BETA}",
+    }
+    with httpx.Client(timeout=30) as c:
+        resp = c.get(f"{BASE_URL}/v1/files/{file_id}", headers=headers)
+    if resp.status_code == 404:
+        return None
+    if resp.status_code >= 400:
+        raise RuntimeError(f"File metadata error {resp.status_code}: {resp.text}")
+    return resp.json()
+
+
 def download_file(file_id: str, dest: Path) -> Path:
     """GET /v1/files/{id}/content — download file bytes."""
     headers = {

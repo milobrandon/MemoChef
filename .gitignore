@@ -16,6 +16,11 @@ test_managed_agents_live.py
 # committed — it would leak IDs and conflict across deployments.
 managed_agents/.skills.json
 
+# Per-org example-memo file_id cache (populated by bootstrap_examples.py).
+# Holds {filename → {file_id, sha256}} so we don't re-upload identical
+# bytes on every session. file_ids are org-scoped, must not be committed.
+managed_agents/.examples.json
+
 # Stray Streamlit session logs (from rolled-back runs)
 rollback*.log
 
