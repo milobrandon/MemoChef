@@ -186,6 +186,24 @@ async function fetchOutputFiles(sessionId) {
   }
 
   resultsSection.hidden = false;
+
+  const hasPending = data.files.some(
+    (f) => f.filename === "pending_skill_updates.md",
+  );
+  if (hasPending) {
+    const banner = document.createElement("div");
+    banner.className = "file-card pending-banner";
+    banner.innerHTML = `
+      <div>
+        <strong>The agent proposed skill updates for this run.</strong>
+        Download <code>pending_skill_updates.md</code> below, then run
+        <code>python -m managed_agents.promote_skills &lt;path&gt;</code>
+        to review and publish them.
+      </div>
+    `;
+    outputFiles.appendChild(banner);
+  }
+
   for (const file of data.files) {
     const card = document.createElement("div");
     card.className = "file-card";

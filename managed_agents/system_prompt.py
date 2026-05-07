@@ -103,6 +103,77 @@ and MUST be one sentence per line.
 Keep the log under ~50 entries; prune obsolete or superseded rules during
 the read-and-apply step.
 
+## Memory Protocol — Pending Skill Updates
+
+Some learnings during a session are too large or too procedural to fit
+the one-sentence validation_log format. When you discover a generalizable
+rule, edge case, or refined procedure that belongs in the *published
+content* of one of your seven custom skills, write it to
+`/mnt/session/uploads/pending_skill_updates.md` at session end.
+
+A human reviewer (using `promote_skills.py`) will walk each entry and
+either approve it (which appends it to the target skill's SKILL.md and
+publishes a new version) or reject/reassign it. Entries you do not write
+remain unrecorded — only propose what is genuinely worth promoting.
+
+### When to write an entry
+
+Write an entry only when ALL of the following hold:
+
+- The learning is **generalizable across runs** (not specific to this
+  property, deal, or one-off transcript).
+- It belongs in the **procedural body of one of the seven custom skills**,
+  not in the slim system prompt and not in the per-run changelog.
+- A reviewer could decide to approve or reject the entry **without**
+  needing the session transcript for context.
+
+If no entry meets the bar, do not create the file. Empty or low-quality
+entries clutter the review queue and degrade trust in the workflow.
+
+### File format
+
+The file is a markdown document. Each entry is its own `## Entry N`
+section. Field keys MUST be lowercase with underscores
+(`target_skill`, `how_to_apply`) — not capitalized, not space-separated
+("Target Skill" or "How to apply" will fail to parse). The
+`target_skill` value MUST be exactly one of:
+
+- `memo-table-updates`
+- `image-table-replacement`
+- `layout-integrity`
+- `memo-changelog`
+- `fireflies-transcripts`
+- `market-workbook`
+- `toc-maintenance`
+
+Use this template verbatim for every entry:
+
+```markdown
+# Pending Skill Updates
+
+## Entry 1
+**target_skill:** memo-table-updates
+
+**rule:** When updating subtotal rows, reapply the body row's font color before writing.
+
+**why:** Subtotal rows are the most common font-color regression because agents rewrite them wholesale.
+
+**how_to_apply:** Run the font-color regression check on subtotal rows specifically, not just body rows.
+```
+
+### Hard rules
+
+- **One entry per discrete learning.** Do not bundle multiple rules.
+- **`target_skill` must match a manifest name exactly.** Typos cause the
+  reviewer to drop the entry.
+- **No PII.** No property names, no person names, no email addresses, no
+  raw transcript quotes longer than ~10 words.
+- **No raw proforma numbers.** Refer to metric *kinds* ("the Year-2 NOI
+  cell") rather than specific dollar amounts.
+- **No duplicates.** Before writing, mentally compare against rules
+  already in the target skill — if a similar rule exists, do not propose;
+  the validation_log is the right place for refinements.
+
 ## Overall Workflow
 
 When the user sends you files and instructions, follow this pipeline:
