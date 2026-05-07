@@ -21,6 +21,7 @@ import pytest
 
 from managed_agents import api_client, skill_manifest, skills as skills_module
 from managed_agents.skill_manifest import SKILL_SPECS, SKILLS_CONTENT_DIR
+from managed_agents.system_prompt import SYSTEM_PROMPT
 
 _NAME_RE = re.compile(r"^[a-z0-9-]+$")
 _RESERVED_WORDS = {"anthropic", "claude"}
@@ -82,6 +83,32 @@ def test_every_content_dir_has_a_spec():
     on_disk = {p.name for p in SKILLS_CONTENT_DIR.iterdir() if p.is_dir()}
     extras = on_disk - manifest_names
     assert not extras, f"skill dirs without manifest entries: {extras}"
+
+
+def test_every_skill_referenced_in_system_prompt_exists():
+    """Names appearing in `backticks` in the system prompt must resolve to
+    a real skill. Catches typos when the prompt or manifest changes.
+
+    Only matches the kebab-case identifiers we use as skill names; ignores
+    other backtick text (file paths, code, etc.).
+    """
+    manifest_names = {s.name for s in SKILL_SPECS}
+    referenced: set[str] = set()
+    for token in re.findall(r"`([a-z][a-z0-9-]+)`", SYSTEM_PROMPT):
+        if token in manifest_names:
+            referenced.add(token)
+        elif "-" in token and not token.endswith(".md") and "/" not in token:
+            # Looks skill-shaped but isn't in the manifest — flag it.
+            # (Allowlist below covers known non-skill kebab-case tokens.)
+            allow = {"openpyxl", "python-pptx", "pdfplumber", "rapidfuzz", "click"}
+            assert token in allow, (
+                f"system prompt references {token!r} which looks like a skill "
+                f"name but is not in SKILL_SPECS"
+            )
+    # Every manifest skill should be mentioned at least once in the prompt
+    # — otherwise the agent has no inline trigger pointing at it.
+    missing = manifest_names - referenced
+    assert not missing, f"skills not referenced anywhere in SYSTEM_PROMPT: {missing}"
 
 
 # ── Cache I/O ──────────────────────────────────────────────────────
@@ -150,6 +177,29 @@ def test_skill_files_payload_uses_dir_basename_as_root(tmp_path):
     files = api_client._skill_files_payload(skill_dir)
     upload_names = sorted(name for _, (name, _bytes) in files)
     assert upload_names == ["test-skill/SKILL.md", "test-skill/extra.md"]
+
+
+def test_skill_files_payload_walks_subdirectories(tmp_path):
+    """Nested files must keep their relative path under the common root."""
+    skill_dir = tmp_path / "nested-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\nname: nested-skill\ndescription: x\n---\n")
+    helpers = skill_dir / "helpers"
+    helpers.mkdir()
+    (helpers / "foo.py").write_text("def bar(): pass\n")
+    (helpers / "data.json").write_text("{}")
+    refs = skill_dir / "references"
+    refs.mkdir()
+    (refs / "GUIDE.md").write_text("# guide\n")
+
+    files = api_client._skill_files_payload(skill_dir)
+    upload_names = sorted(name for _, (name, _bytes) in files)
+    assert upload_names == [
+        "nested-skill/SKILL.md",
+        "nested-skill/helpers/data.json",
+        "nested-skill/helpers/foo.py",
+        "nested-skill/references/GUIDE.md",
+    ]
 
 
 def test_skill_files_payload_requires_skill_md(tmp_path):

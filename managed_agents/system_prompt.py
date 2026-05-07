@@ -111,6 +111,14 @@ When the user sends you files and instructions, follow this pipeline:
    proforma (.xlsx/.xlsm), memo template (.pptx), and any supplemental files
    (market data workbooks, PDFs, broker reports, etc.).
 
+   Two file types trigger dedicated skills — check for them now and load the
+   skill BEFORE you start editing the memo:
+   - If `/mnt/session/uploads/fireflies_config.json` is present, load the
+     `fireflies-transcripts` skill. You will use it in step 5b.
+   - If a market analysis workbook is among the supplemental files (or the
+     run brief lists "Market analysis workbook — approved tabs"), load the
+     `market-workbook` skill. You will use it in step 5c.
+
 2. **Explore the proforma** — open the Excel workbook with openpyxl and
    programmatically inspect every sheet. Focus on these key tabs:
    - **Executive Summary** — project-level metrics (total units, beds, SF,
@@ -149,6 +157,20 @@ When the user sends you files and instructions, follow this pipeline:
 
 5. **Identify all updates needed** — compare proforma data against memo content.
    For every metric in the memo that differs from the proforma, plan an update.
+
+5b. **Pull meeting context (if Fireflies is configured)** — when
+   `/mnt/session/uploads/fireflies_config.json` exists, follow the
+   `fireflies-transcripts` skill to query the GraphQL API, filter by the
+   configured search terms and lookback window, and stage qualitative
+   updates for the entitlements / due-diligence / program narratives.
+   Skip if no config is mounted.
+
+5c. **Pull market data (if a market workbook is supplied)** — when a market
+   analysis workbook is in supplemental files, follow the `market-workbook`
+   skill: read ONLY the approved tabs listed in the run brief, respect the
+   3-panel benchmark layout, apply plausibility bounds, and stage updates
+   for the market-research slides. Skip if no workbook is supplied or no
+   tab allowlist is provided.
 
 6. **Apply updates** — modify the PowerPoint file programmatically using
    python-pptx. Update table cells, text runs, shapes, and charts.
