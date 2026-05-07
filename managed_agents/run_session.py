@@ -19,7 +19,8 @@ from managed_agents.api_client import (
     stream_events as api_stream_events,
     upload_file as api_upload_file,
 )
-from managed_agents.config import AGENT_ID, ENVIRONMENT_ID, EXAMPLES_DIR, FIREFLIES_API_KEY
+from managed_agents.config import AGENT_ID, ENVIRONMENT_ID, FIREFLIES_API_KEY
+from managed_agents.examples_cache import resolve_examples
 
 
 def upload_file(file_path: Path) -> str:
@@ -28,22 +29,18 @@ def upload_file(file_path: Path) -> str:
 
 
 def upload_example_memos() -> list[dict]:
-    """Upload all example IC memos from the examples/ directory.
+    """Return resource dicts for every example IC memo.
 
-    Returns resource dicts suitable for session creation.
+    Examples are uploaded once (via `bootstrap_examples.py` or
+    lazily on first session) and cached in `.examples.json`. This
+    function reuses cached file_ids whenever possible — only files
+    whose on-disk sha256 changed, or whose cached file_id has
+    expired server-side, get re-uploaded.
+
+    Returns the same resource shape the API expects in
+    `create_session(resources=...)`.
     """
-    resources = []
-    if not EXAMPLES_DIR.exists():
-        return resources
-
-    for path in sorted(EXAMPLES_DIR.glob("*.pptx")):
-        file_id = upload_file(path)
-        resources.append({
-            "type": "file",
-            "file_id": file_id,
-            "mount_path": f"/mnt/examples/{path.name}",
-        })
-    return resources
+    return resolve_examples()
 
 
 def upload_fireflies_config(
