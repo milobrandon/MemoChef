@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,6 +38,14 @@ from managed_agents.api_client import get_file, upload_file
 from managed_agents.config import EXAMPLES_DIR
 
 EXAMPLES_CACHE_FILE = Path(__file__).resolve().parent / ".examples.json"
+
+# Serialize cache reads + uploads + writes inside a single process so
+# two concurrent FastAPI sessions can't both upload the same example
+# (orphaning one file_id) or interleave bytes when writing back to
+# `.examples.json`. Cross-process serialization would require a real
+# file lock; the FastAPI server runs single-process under uvicorn so
+# threading.Lock is the right scope for now.
+_CACHE_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -74,11 +84,21 @@ def save_cache(
     cache: dict[str, CachedExample],
     path: Path = EXAMPLES_CACHE_FILE,
 ) -> None:
+    """Atomically persist the cache.
+
+    Writes to a sibling `.tmp` file then `os.replace()`s it onto the
+    target path so a partial write or process kill can't leave the
+    cache file truncated. `os.replace` is atomic on both POSIX and
+    Windows when source and destination live on the same filesystem.
+    """
     serializable = {
         name: {"file_id": c.file_id, "sha256": c.sha256}
         for name, c in sorted(cache.items())
     }
-    path.write_text(json.dumps(serializable, indent=2) + "\n")
+    payload = json.dumps(serializable, indent=2) + "\n"
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(payload)
+    os.replace(tmp, path)
 
 
 def _ensure_cached(
@@ -120,7 +140,7 @@ def _ensure_cached(
 
 def resolve_examples(
     *,
-    validate_remote: bool = True,
+    validate_remote: bool = False,
     examples_dir: Path = EXAMPLES_DIR,
     cache_path: Path = EXAMPLES_CACHE_FILE,
     upload_fn=upload_file,
@@ -131,27 +151,78 @@ def resolve_examples(
 
     Result shape matches the Managed Agents `resources` field:
     `[{"type": "file", "file_id": "...", "mount_path": "/mnt/examples/X.pptx"}, ...]`
+
+    Defaults to `validate_remote=False` because the runtime path runs
+    on every session and a `get_file()` round-trip per cached entry
+    would re-introduce the per-session network cost we're trying to
+    eliminate. The bootstrap CLI flips this flag explicitly when the
+    operator wants a deep-check.
+
+    Concurrency: holds `_CACHE_LOCK` for the duration of the
+    load → upload → save cycle so two sessions can't double-upload
+    the same example or interleave bytes in the cache file.
+
+    Partial-failure: persists the cache after each successful upload,
+    so a network blip on file 5/10 doesn't lose uploads 1–4.
+
+    Orphan-prune: cache entries whose filename is no longer in the
+    examples dir get dropped before saving.
     """
     if not examples_dir.exists():
         return []
 
-    cache = load_cache(cache_path)
-    initial_state = dict(cache)
-    resources: list[dict] = []
+    with _CACHE_LOCK:
+        cache = load_cache(cache_path)
+        seen: set[str] = set()
+        resources: list[dict] = []
 
-    for path in sorted(examples_dir.glob("*.pptx")):
-        cached = _ensure_cached(
-            path, cache,
-            validate_remote=validate_remote,
-            upload_fn=upload_fn, get_fn=get_fn,
-        )
-        resources.append({
-            "type": "file",
-            "file_id": cached.file_id,
-            "mount_path": f"/mnt/examples/{path.name}",
-        })
-
-    if cache != initial_state:
-        save_cache(cache, cache_path)
+        try:
+            for path in sorted(examples_dir.glob("*.pptx")):
+                seen.add(path.name)
+                before = cache.get(path.name)
+                cached = _ensure_cached(
+                    path, cache,
+                    validate_remote=validate_remote,
+                    upload_fn=upload_fn, get_fn=get_fn,
+                )
+                if cache.get(path.name) != before:
+                    # Persist after each successful (re-)upload so a
+                    # later failure can't silently drop earlier work.
+                    save_cache(cache, cache_path)
+                resources.append({
+                    "type": "file",
+                    "file_id": cached.file_id,
+                    "mount_path": f"/mnt/examples/{path.name}",
+                })
+        finally:
+            # Prune entries for files that no longer exist locally
+            # (renamed / deleted), and persist if anything changed.
+            stale = set(cache) - seen
+            if stale:
+                for name in stale:
+                    cache.pop(name, None)
+                save_cache(cache, cache_path)
 
     return resources
+
+
+def invalidate_cache_entries(
+    filenames: list[str],
+    *,
+    cache_path: Path = EXAMPLES_CACHE_FILE,
+) -> int:
+    """Drop the named filenames from the cache. Returns count removed.
+
+    Use after a session creation fails citing dead file_ids — the
+    runtime path trusts the cache by default, so a server-side
+    invalidation needs an explicit recovery hook.
+    """
+    with _CACHE_LOCK:
+        cache = load_cache(cache_path)
+        removed = 0
+        for name in filenames:
+            if cache.pop(name, None) is not None:
+                removed += 1
+        if removed:
+            save_cache(cache, cache_path)
+        return removed

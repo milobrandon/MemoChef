@@ -15,7 +15,10 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 from unittest.mock import patch
+
+import pytest
 
 from managed_agents import api_client
 from managed_agents.examples_cache import (
@@ -119,6 +122,7 @@ def test_cache_hit_with_validate_skips_upload(tmp_path):
     resolve_examples(
         examples_dir=examples, cache_path=cache_path,
         upload_fn=_upload, get_fn=_get,
+        validate_remote=True,
     )
 
     # Second run: cache should hit, no uploads even though we still
@@ -137,6 +141,7 @@ def test_cache_hit_with_validate_skips_upload(tmp_path):
     resources = resolve_examples(
         examples_dir=examples, cache_path=cache_path,
         upload_fn=_upload_strict, get_fn=_get_track,
+        validate_remote=True,
     )
 
     assert upload_calls == []
@@ -209,7 +214,10 @@ def test_sha256_change_triggers_reupload(tmp_path):
 def test_404_triggers_reupload(tmp_path):
     """Cached file_id was deleted server-side. get_file returns None;
     we must re-upload and refresh the cache rather than handing the
-    dead id to the API and tanking the session."""
+    dead id to the API and tanking the session.
+
+    This 404 path requires validate_remote=True — the runtime hot path
+    deliberately trusts the cache (see test_runtime_path_skips_get_file)."""
     examples = tmp_path / "examples"
     examples.mkdir()
     _write_pptx(examples / "alpha.pptx", content=b"stable")
@@ -231,6 +239,7 @@ def test_404_triggers_reupload(tmp_path):
     resources = resolve_examples(
         examples_dir=examples, cache_path=cache_path,
         upload_fn=_upload, get_fn=_get_404,
+        validate_remote=True,
     )
     assert upload_calls == ["alpha.pptx"]
     assert resources[0]["file_id"] == "file_fresh"
@@ -249,6 +258,224 @@ def test_missing_examples_dir_returns_empty(tmp_path):
         get_fn=lambda f: None,
     )
     assert out == []
+
+
+# ── Runtime hot-path skips network ─────────────────────────────────
+
+def test_runtime_path_skips_get_file(tmp_path):
+    """The runtime default (validate_remote=False) must not call
+    get_file even once when the cache is warm. This is the perf
+    contract of the PR: cache hits are free."""
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    _write_pptx(examples / "alpha.pptx", content=b"runtime bytes")
+    cache_path = tmp_path / ".examples.json"
+    save_cache(
+        {"alpha.pptx": CachedExample("file_alpha", _sha("runtime bytes"))},
+        cache_path,
+    )
+
+    def _no_upload(path):
+        raise AssertionError("must not upload on cache hit")
+
+    def _no_get(file_id):
+        raise AssertionError("runtime path must not validate remotely")
+
+    resources = resolve_examples(
+        examples_dir=examples, cache_path=cache_path,
+        upload_fn=_no_upload, get_fn=_no_get,
+        # explicit, but this is also the default
+        validate_remote=False,
+    )
+    assert resources[0]["file_id"] == "file_alpha"
+
+
+def test_run_session_upload_example_memos_uses_no_validate(monkeypatch):
+    """`run_session.upload_example_memos` is the runtime entry point.
+    It must call resolve_examples without forcing validation, otherwise
+    every session pays N get_file round-trips."""
+    from managed_agents import run_session
+
+    captured: dict = {}
+
+    def _spy(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(run_session, "resolve_examples", _spy)
+    run_session.upload_example_memos()
+    # Either the default (False) is used, or the call explicitly passes
+    # validate_remote=False. Both are acceptable; what's NOT acceptable
+    # is the runtime path opting in to validation.
+    if "validate_remote" in captured:
+        assert captured["validate_remote"] is False
+
+
+# ── Partial-failure preservation ───────────────────────────────────
+
+def test_partial_failure_preserves_completed_uploads(tmp_path):
+    """If file 3/5 raises mid-loop, files 1 and 2 must be persisted
+    so the next run doesn't re-upload them."""
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    _write_pptx(examples / "a.pptx", content=b"a")
+    _write_pptx(examples / "b.pptx", content=b"b")
+    _write_pptx(examples / "c.pptx", content=b"c")
+    cache_path = tmp_path / ".examples.json"
+
+    upload_count = {"n": 0}
+
+    def _upload(path):
+        upload_count["n"] += 1
+        if upload_count["n"] == 3:
+            raise RuntimeError("network blew up")
+        return f"file_{path.stem}"
+
+    with pytest.raises(RuntimeError):
+        resolve_examples(
+            examples_dir=examples, cache_path=cache_path,
+            upload_fn=_upload, get_fn=lambda f: None,
+        )
+
+    persisted = load_cache(cache_path)
+    # First two uploads must be on disk despite the third raising.
+    assert persisted.get("a.pptx") and persisted["a.pptx"].file_id == "file_a"
+    assert persisted.get("b.pptx") and persisted["b.pptx"].file_id == "file_b"
+    assert "c.pptx" not in persisted
+
+
+# ── Orphan pruning ─────────────────────────────────────────────────
+
+def test_orphan_entries_pruned(tmp_path):
+    """Cache entries for files no longer in the examples dir must be
+    dropped — otherwise the cache leaks across years of curation."""
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    _write_pptx(examples / "kept.pptx", content=b"k")
+    cache_path = tmp_path / ".examples.json"
+    save_cache({
+        "kept.pptx": CachedExample("file_keep", _sha("k")),
+        "removed.pptx": CachedExample("file_old", _sha("old")),
+        "renamed.pptx": CachedExample("file_orig", _sha("orig")),
+    }, cache_path)
+
+    resources = resolve_examples(
+        examples_dir=examples, cache_path=cache_path,
+        upload_fn=lambda p: "should_not_upload",
+        get_fn=lambda f: None,
+    )
+
+    persisted = load_cache(cache_path)
+    assert set(persisted.keys()) == {"kept.pptx"}
+    assert [r["file_id"] for r in resources] == ["file_keep"]
+
+
+# ── Atomic save ────────────────────────────────────────────────────
+
+def test_save_cache_uses_atomic_replace(tmp_path, monkeypatch):
+    """save_cache must write to a temp path and os.replace, not
+    truncate-write directly. A torn write would erase every cached
+    file_id and force re-uploads on every session until bootstrap.
+    """
+    cache_path = tmp_path / ".examples.json"
+    cache_path.write_text(json.dumps({  # pre-existing valid file
+        "old.pptx": {"file_id": "file_old", "sha256": "h"},
+    }))
+
+    replace_calls: list[tuple] = []
+    real_replace = os.replace
+
+    def _spy_replace(src, dst):
+        replace_calls.append((str(src), str(dst)))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr("managed_agents.examples_cache.os.replace", _spy_replace)
+
+    save_cache(
+        {"new.pptx": CachedExample("file_new", "h2")},
+        cache_path,
+    )
+
+    # Exactly one replace, from a .tmp sibling onto the real path.
+    assert len(replace_calls) == 1
+    src, dst = replace_calls[0]
+    assert dst == str(cache_path)
+    assert src.endswith(".tmp")
+    # Final file is well-formed and contains the new entry.
+    assert json.loads(cache_path.read_text()) == {
+        "new.pptx": {"file_id": "file_new", "sha256": "h2"},
+    }
+
+
+# ── Concurrency: lock prevents double-upload + corrupt JSON ────────
+
+def test_concurrent_resolve_examples_serializes(tmp_path):
+    """Two threads calling resolve_examples on a fresh cache must not
+    both upload the same file. The lock serializes them so the second
+    thread sees the first's cache entry."""
+    import threading
+
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    _write_pptx(examples / "shared.pptx", content=b"x")
+    cache_path = tmp_path / ".examples.json"
+
+    upload_count = {"n": 0}
+    upload_lock = threading.Lock()
+
+    def _slow_upload(path):
+        with upload_lock:
+            upload_count["n"] += 1
+            return f"file_v{upload_count['n']}"
+
+    results: list[list[dict]] = []
+    errors: list[BaseException] = []
+
+    def _worker():
+        try:
+            r = resolve_examples(
+                examples_dir=examples, cache_path=cache_path,
+                upload_fn=_slow_upload, get_fn=lambda f: None,
+            )
+            results.append(r)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_worker) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    # Exactly ONE upload despite 4 concurrent calls.
+    assert upload_count["n"] == 1
+    # All 4 callers got the same file_id back.
+    file_ids = {r[0]["file_id"] for r in results}
+    assert file_ids == {"file_v1"}
+    # Cache file is valid JSON, not interleaved garbage.
+    assert json.loads(cache_path.read_text()) == {
+        "shared.pptx": {"file_id": "file_v1", "sha256": _sha("x")},
+    }
+
+
+# ── invalidate_cache_entries ───────────────────────────────────────
+
+def test_invalidate_cache_entries_drops_named_files(tmp_path):
+    from managed_agents.examples_cache import invalidate_cache_entries
+
+    cache_path = tmp_path / ".examples.json"
+    save_cache({
+        "a.pptx": CachedExample("file_a", "h"),
+        "b.pptx": CachedExample("file_b", "h"),
+        "c.pptx": CachedExample("file_c", "h"),
+    }, cache_path)
+
+    n = invalidate_cache_entries(["a.pptx", "missing.pptx"], cache_path=cache_path)
+    assert n == 1  # 'missing.pptx' wasn't in cache; only 'a.pptx' counted
+
+    persisted = load_cache(cache_path)
+    assert set(persisted.keys()) == {"b.pptx", "c.pptx"}
 
 
 # ── api_client.get_file 404 contract ───────────────────────────────

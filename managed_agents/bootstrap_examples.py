@@ -15,7 +15,7 @@ Run this:
 
 Usage:
     python -m managed_agents.bootstrap_examples
-    python -m managed_agents.bootstrap_examples --no-validate
+    python -m managed_agents.bootstrap_examples --validate
 """
 
 from __future__ import annotations
@@ -30,11 +30,13 @@ from managed_agents.examples_cache import resolve_examples
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--no-validate",
+        "--validate",
         action="store_true",
         help=(
-            "Skip the per-cached-file get_file roundtrip. Use after "
-            "you just uploaded; not for routine maintenance."
+            "After uploading missing files, also call get_file on every "
+            "cached entry to confirm the file_id is still live. Use this "
+            "if you suspect the Files API has expired some uploads. "
+            "Without it, cache hits are trusted on local sha256 alone."
         ),
     )
     args = parser.parse_args(argv)
@@ -49,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     print(f"Resolving {len(found)} example memo(s)...")
-    resources = resolve_examples(validate_remote=not args.no_validate)
+    resources = resolve_examples(validate_remote=args.validate)
 
     for r in resources:
         name = r["mount_path"].rsplit("/", 1)[-1]
