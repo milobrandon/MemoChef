@@ -15,8 +15,6 @@ Covers:
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -273,9 +271,11 @@ def test_apply_decisions_skips_skill_with_no_cached_id(monkeypatch, tmp_path):
     monkeypatch.setattr(promote_skills, "SKILL_SPECS", (spec_patch,))
     monkeypatch.setattr(promote_skills, "load_cache", lambda: {})  # empty cache
 
-    fail = lambda *a, **kw: pytest.fail("create_skill_version called without cached ID")
-    monkeypatch.setattr(promote_skills, "create_skill_version", fail)
-    monkeypatch.setattr(promote_skills, "update_agent", fail)
+    def _fail(*_a, **_kw):
+        pytest.fail("API called for a skill with no cached ID")
+
+    monkeypatch.setattr(promote_skills, "create_skill_version", _fail)
+    monkeypatch.setattr(promote_skills, "update_agent", _fail)
 
     versions = apply_decisions([_decision("approved", rule="orphan")])
     assert versions == {}

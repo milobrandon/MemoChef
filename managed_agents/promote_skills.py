@@ -28,7 +28,7 @@ import argparse
 import datetime as _dt
 import json
 import sys
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from managed_agents.api_client import create_skill_version, update_agent
