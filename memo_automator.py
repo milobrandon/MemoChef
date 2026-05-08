@@ -419,12 +419,36 @@ def create_backup(memo_path: str, output_dir: str) -> str:
 # ============================================================================
 # 4. PROFORMA DATA EXTRACTION  (openpyxl, data_only=True)
 # ============================================================================
+# P3 proformas are a separate workbook variant that mixes internal modeling
+# tabs with a curated set of investor-facing "Presentation*" tabs. We detect
+# the variant by filename prefix and restrict extraction to those tabs.
+P3_FILENAME_PREFIX = "p3 "
+P3_PRESENTATION_TAB_PREFIX = "presentation"
+
+
+def _is_p3_proforma(proforma_path: str) -> bool:
+    """Return True if the filename identifies a P3-variant proforma."""
+    return Path(proforma_path).name.lower().startswith(P3_FILENAME_PREFIX)
+
+
+def _select_p3_presentation_tabs(sheet_names: list[str]) -> list[str]:
+    """Return sheets whose name starts with 'Presentation' (case-insensitive)."""
+    return [
+        name for name in sheet_names
+        if name.strip().lower().startswith(P3_PRESENTATION_TAB_PREFIX)
+    ]
+
+
 def extract_proforma_data(proforma_path: str, cfg: dict) -> str:
     """
     Read the proforma workbook and return a compact text representation
     of every non-empty cell on the specified tabs.
 
     Uses data_only=True so formulas resolve to their cached values.
+
+    For P3-variant proformas (filename starts with "P3 "), the configured
+    ``proforma.tabs`` list is overridden with the workbook's "Presentation*"
+    sheets, which are the only tabs the chef should consume.
     """
     tabs = cfg["proforma"]["tabs"]
     max_rows = cfg["proforma"]["max_rows_per_tab"]
@@ -439,6 +463,20 @@ def extract_proforma_data(proforma_path: str, cfg: dict) -> str:
             f"or is not a valid .xlsx/.xlsm workbook."
         ) from e
     log.info("Available sheets: %s", wb.sheetnames)
+
+    if _is_p3_proforma(proforma_path):
+        p3_tabs = _select_p3_presentation_tabs(wb.sheetnames)
+        if not p3_tabs:
+            wb.close()
+            raise ValueError(
+                f"P3 proforma '{Path(proforma_path).name}' has no 'Presentation*' "
+                f"tabs to extract. Available sheets: {wb.sheetnames}"
+            )
+        log.info(
+            "Detected P3 proforma; overriding configured tabs with Presentation tabs: %s",
+            p3_tabs,
+        )
+        tabs = p3_tabs
 
     lines = []
     found_tabs = 0
