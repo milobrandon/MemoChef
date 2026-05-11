@@ -13,6 +13,13 @@ After applying all standard cell updates per the `memo-table-updates` skill, sca
 
 For each such slide, **replace the image with a freshly-built python-pptx table** populated entirely from the proforma data extracted earlier in the run.
 
+## Data sources by proforma variant
+
+The replacement tables are sourced from the same proforma the rest of the run already extracted. Tab names differ by variant:
+
+- **Vanilla proforma** — Cash Flow, Assumptions (unit mix), Development Summary.
+- **P3 proforma** (filename starts with "P3 ") — `Presentation Cash Flow`, `Presentation Exec Summary` (the unit mix breakdown is a sub-table here), and `Presentation Dev Budget`. These are the only tabs ingested for P3 runs and they carry the line-item detail the replacement tables need. **Do not skip the rebuild on P3 because the Assumptions tab is absent — read the `Presentation*` tabs instead.**
+
 ## Procedure (do this for every match)
 
 1. Identify the Picture shape(s) on the slide. Record their position (left, top) and size (width, height) — the new table should occupy the same bounding box.
@@ -44,7 +51,7 @@ Two columns per year shown in the example; at minimum include Year 1 and Year 2/
 ## Unit Mix table structure
 
 - **Columns**: Unit Type, Avg SF, Beds/Unit, # Units, # Beds, % of Units, % of Beds, Rent/Bed (untrended)
-- One row per unit sub-type from the Assumptions tab (S1, B1, B2, etc.).
+- One row per unit sub-type (S1, B1, B2, etc.) — see Data sources above for the variant-specific tab.
 - A bold **Total** row at the bottom with summed/weighted-average values.
 
 ## Development Budget table structure
