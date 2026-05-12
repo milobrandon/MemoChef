@@ -245,6 +245,40 @@ metric in the memo that should be updated with new values from the proforma.
    - `reorder_rows`: reorders data rows to match a given label sequence
    **Never use table_structure_updates on side-by-side comp tables.**
 
+**SUBJECT PROPERTY TOTAL UNITS & BEDS — NON-SKIPPABLE.** The proforma's
+executive summary (vanilla "Executive Summary" or P3 "Presentation Exec
+Summary") contains the subject property's property-wide totals in short
+label rows. Locate them by these patterns:
+
+- A row whose first non-empty cell is exactly `Units` (or `Total Units`).
+  The next numeric value on that row is the **property-wide total unit
+  count** (e.g. `Units | 391`).
+- A row whose first non-empty cell is exactly `Beds` (or `Total Beds`).
+  The next numeric value on that row is the **property-wide total bed
+  count** (e.g. `Beds | 1104`).
+
+In the P3 "Presentation Exec Summary" layout, the unit-mix table sits on
+the right-hand side of the same sheet, so its header row (`Unit Type | #
+of Units | # of Beds | % of Beds | SF/Unit | Rent/Bed/Month`) appears on
+the SAME extracted line as the `Units`/`Beds` label after blank cells are
+stripped — e.g. `Units | 391 | Unit Type | # of Units | # of Beds | ...`.
+The FIRST number after the `Units` / `Beds` label is the property total;
+everything starting with `Unit Type` belongs to a separate unit-mix block
+and must NOT be confused with the totals.
+
+Update EVERY memo reference to the project's total unit and bed count:
+
+- Cover/executive-summary callouts (e.g. "391 Units | 1,104 Beds")
+- Project Statistics / Project Metrics / Deal Snapshot tables (rows like
+  `Unit Count | 442 Units`, `Bed Count | 1,377 Beds`)
+- Narrative paragraphs ("a 1,104-bed project", "the 391-unit asset")
+- Pipeline / comp tables (subject row's Units and Beds columns)
+
+If the memo currently shows any other unit or bed count for the subject
+property, emit updates for EVERY occurrence — table cells, text shapes,
+and narrative alike. Do not skip these even if you are uncertain which
+shape type holds them.
+
 **UNIT vs BED COUNTS — FINAL CHECK:** Before emitting your JSON, review every
 unit mix update. Parenthetical numbers like "(84)" = total beds for that unit
 type (units × beds_per_unit). The separate "Units" or "# Units" column = raw
