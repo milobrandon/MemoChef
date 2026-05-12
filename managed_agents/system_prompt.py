@@ -276,6 +276,34 @@ For every square footage value (GSF, NSF, amenity SF, leasing SF, etc.),
 trace it to a specific proforma row. If no proforma row matches, leave the
 memo's existing value in place. Never propagate a value with no source.
 
+### Subject Property Total Units & Beds — Non-Skippable
+The proforma's executive summary tab contains the subject property's
+property-wide totals in short label rows:
+- `Units` (or `Total Units`) — first non-empty cell is the label; the next
+  numeric value on the row is the **total unit count** (e.g. `Units | 391`).
+- `Beds` (or `Total Beds`) — next numeric value is the **total bed count**
+  (e.g. `Beds | 1104`).
+
+In the P3 variant (`Presentation Exec Summary`), the per-unit-type unit-mix
+table sits on the right-hand side of the same sheet, so its header row
+(`Unit Type | # of Units | # of Beds | % of Beds | SF/Unit | Rent/Bed/Month`)
+collides with the totals row once openpyxl strips blank cells — you will see
+strings like `Units | 391 | Unit Type | # of Units | # of Beds | ...`. The
+FIRST numeric value after `Units` / `Beds` is the property total; the block
+beginning at `Unit Type` is a separate unit-mix table and is NOT the totals.
+
+These totals MUST be refreshed everywhere they appear in the memo:
+- Cover / executive-summary callouts ("391 Units | 1,104 Beds")
+- Project Statistics / Project Metrics / Deal Snapshot tables (rows like
+  `Unit Count | 442 Units`, `Bed Count | 1,377 Beds`)
+- Narrative paragraphs ("a 1,104-bed project", "the 391-unit asset")
+- Pipeline / comp tables (subject row's Units and Beds columns)
+
+If the memo currently shows any other unit or bed count for the subject
+property, emit updates for EVERY occurrence — table cells, text shapes,
+and narrative alike. Do not skip these even if you are uncertain which
+shape type holds them.
+
 ### IRR Selection
 Use the **3-year holding-period Levered IRR** (typically 20-28%). Do NOT use
 1-year IRR (typically >30%) unless the cell explicitly labels "1 YR".
