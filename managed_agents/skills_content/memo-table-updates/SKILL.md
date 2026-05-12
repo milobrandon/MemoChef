@@ -53,6 +53,12 @@ For each table cell whose value comes from the proforma, replace the old text wi
 
 Tables where each ROW is a property. The **first data row is always the subject property**. Update the subject row to match the proforma. If the subject appears under a prior project name, update that row too.
 
+## Subject property total units & beds — non-skippable
+
+The proforma's executive summary tab carries the subject property's property-wide totals in short label rows: `Units` / `Total Units` (next numeric value = total unit count) and `Beds` / `Total Beds` (next numeric value = total bed count). In the P3 variant (`Presentation Exec Summary`), the per-unit-type unit-mix table sits on the right-hand side of the same sheet — after openpyxl strips blanks, a row collapses to e.g. `Units | 391 | Unit Type | # of Units | # of Beds | ...`. The FIRST numeric value after `Units` / `Beds` is the property total; the block beginning at `Unit Type` is the unit-mix table and is NOT the totals — never conflate them.
+
+Refresh these totals **everywhere** they appear: Project Statistics / Project Metrics / Deal Snapshot tables (rows like `Unit Count | 442 Units`, `Bed Count | 1,377 Beds`), cover / exec-summary callouts ("391 Units | 1,104 Beds"), narrative paragraphs, and pipeline/comp subject rows. If the memo currently shows any other unit or bed count for the subject property, emit updates for EVERY occurrence.
+
 ## Competitive Set Side-by-Side tables (column-oriented)
 
 Tables where each COLUMN is a property. Find the subject property column by matching header text to the property name. Do NOT assume it's the leftmost column.
