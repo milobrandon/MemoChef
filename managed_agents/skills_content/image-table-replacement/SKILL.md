@@ -15,12 +15,28 @@ For each such slide, **replace the image with a freshly-built python-pptx table*
 
 ## Procedure (do this for every match)
 
-1. Identify the Picture shape(s) on the slide. Record their position (left, top) and size (width, height) — the new table should occupy the same bounding box.
-2. Remove the Picture shape from the slide.
-3. Build the table using `slide.shapes.add_table(rows, cols, left, top, width, height)`. Use the row/column structure from the example memo's equivalent table as your structural template (number of rows, column widths, header labels).
-4. Populate every cell with the corresponding proforma value.
-5. Apply formatting to match the example memo exactly (see Formatting rules below).
-6. Log the replacement in the changelog as "Image replaced with editable table — [slide title]".
+The original image is the **structural ground truth** for what rows and columns the rebuilt table must contain. The example memo is now only a *formatting* reference (fonts, colors, alignment, alternating shading) — it is NOT the row/column template. Dropping a line item that appeared in the original image is a regression, not a judgment call.
+
+1. **Identify and inventory the Picture shape.** Record position (`left`, `top`) and size (`width`, `height`) — the new table must occupy the same bounding box. Capture the picture's binary content via python-pptx: `blob = picture.image.blob` and `ext = picture.image.ext`.
+
+2. **Vision-extract the original image BEFORE removing the shape (CRITICAL).** Write the blob to a temp file (e.g. `/tmp/orig_table_slide{N}.{ext}`) and read it with the file tool so its contents become visible to you. From the image, extract and record:
+   - The full ordered list of **row labels** (every line item AND every section header, exactly as they appear).
+   - The full ordered list of **column headers**.
+   - Each visible **cell value** — these are used only as a fallback if the updated proforma has no matching line (see step 5).
+   This inventory is your structural ground truth for steps 4–5.
+
+3. **Remove the Picture shape** from the slide.
+
+4. **Build the table** with `slide.shapes.add_table(rows, cols, left, top, width, height)` using the row count and column count from the step-2 inventory — NOT from the example memo's table.
+
+5. **Populate every cell from the UPDATED proforma.** For each row label captured in step 2, look up the corresponding value in the proforma data already extracted earlier in the run. For each row:
+   - If the proforma has a clean matching line → use the proforma value.
+   - If the proforma has NO matching line → retain the image-OCR'd value from step 2, append a footnote indicator to the cell text (e.g. `¹`), and log a changelog warning of the form `[retained from image — no proforma source: <row label>]`. **Never silently drop an image-only row.**
+   - If the proforma has the line but the value is blank/zero where the image showed a real number → treat as no-match (retain + warn), do not overwrite a real number with a blank.
+
+6. **Apply formatting** per the Formatting rules below (header style, body text color via the explicit-text-color rule, alternating shading, number formats, subtotal styling) — copy these from the example memo's equivalent table.
+
+7. **Log the replacement** in the changelog as `Image replaced with editable table — [slide title]`, and include: (a) total row count, (b) the list of row labels preserved from the image, (c) any rows whose value was retained-from-image rather than proforma-sourced.
 
 ## Formatting rules
 
@@ -30,6 +46,14 @@ For each such slide, **replace the image with a freshly-built python-pptx table*
 - **Font family, size, alignment** per column type (text=left, numbers=right or center, headers=center).
 - **Number formatting**: $ with commas, % with one decimal, SF with commas.
 - **Section subtotal rows**: bold, lightly shaded background, **same text color as body rows** (explicitly set — do not rely on the python-pptx default).
+
+## Per-table minimum coverage (sanity check, not template)
+
+The sections below describe the **minimum** row/column coverage each table type usually contains. Use them as a sanity check against the step-2 image inventory:
+
+- If the image inventory includes additional rows or columns beyond what's listed → include them in the rebuilt table.
+- If the image inventory is missing rows from this canonical list → the source image may be a partial view or cropped. Still rebuild from the image inventory, but log a changelog warning naming the missing rows so the analyst can review.
+- These lists are NOT the structural template — the image is.
 
 ## Cash Flow table structure
 
