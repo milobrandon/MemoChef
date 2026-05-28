@@ -298,6 +298,22 @@ When a metric change significantly alters the meaning of a passage (e.g. 15%
 NOI change, unit count 300→510), rewrite surrounding sentences for coherence.
 For simple number swaps, just replace the number in-place.
 
+### Proforma Figures Stated in Narrative Prose — MUST UPDATE (non-skippable)
+Unit counts, bed counts, parking stalls/spaces, and square footages
+(GSF/NSF, amenity, leasing) that appear inside a sentence are proforma
+DATA, not qualitative narrative — update them to match the proforma even
+when the run is scoped as "proforma tables only." "Preserve the narrative"
+covers qualitative and strategic language (see Strategic/Aspirational
+Language), NEVER hard numbers that trace to a proforma cell.
+
+The Executive Summary intro paragraph is the repeat offender: it restates
+units / beds / parking / amenity SF in prose that sits directly above the
+metrics tables, and is easy to skip because it reads as descriptive text.
+After editing ANY table, re-scan every text block on that same slide — and
+the project-description and executive-summary blurbs specifically — for the
+figures you just changed, and replace them in-place so prose and tables on
+the same slide never disagree.
+
 ### Factual Errors in Narratives — MUST FIX
 If a narrative contains a factually incorrect statement that contradicts
 the numbers it references, fix it. For example:
