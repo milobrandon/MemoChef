@@ -84,6 +84,31 @@ def is_configured() -> bool:
     return True
 
 
+_DRIVER_FALLBACKS = (
+    "ODBC Driver 18 for SQL Server",
+    "ODBC Driver 17 for SQL Server",
+    "SQL Server",
+)
+
+
+def _resolve_driver(preferred: str, pyodbc_module) -> str:
+    """Use the preferred driver if installed, else the best available one."""
+    try:
+        available = set(pyodbc_module.drivers())
+    except Exception:
+        return preferred
+    if preferred in available:
+        return preferred
+    for candidate in _DRIVER_FALLBACKS:
+        if candidate in available:
+            log.info(
+                "College House SQL: driver '%s' not installed; using '%s'",
+                preferred, candidate,
+            )
+            return candidate
+    return preferred
+
+
 def _build_connection_string(settings: dict) -> str:
     return (
         f"DRIVER={{{settings['driver']}}};"
@@ -173,6 +198,7 @@ def fetch_market_performance(
         f"ORDER BY BuildingName, Bedrooms, MonthDate"
     )
 
+    settings["driver"] = _resolve_driver(settings["driver"], pyodbc)
     conn_str = _build_connection_string(settings)
     last_error: Exception | None = None
     for attempt in range(retries + 1):

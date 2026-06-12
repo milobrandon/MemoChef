@@ -175,6 +175,33 @@ class TestFetch:
         assert fetch_market_performance(institution="UCF") == []
 
 
+# ── _resolve_driver ──────────────────────────────────────────────────────────
+
+class TestResolveDriver:
+    def _mod(self, drivers):
+        mod = types.ModuleType("pyodbc")
+        mod.drivers = lambda: drivers
+        return mod
+
+    def test_preferred_installed(self):
+        mod = self._mod(["ODBC Driver 17 for SQL Server"])
+        assert college_house._resolve_driver(
+            "ODBC Driver 17 for SQL Server", mod
+        ) == "ODBC Driver 17 for SQL Server"
+
+    def test_falls_back_to_installed(self):
+        mod = self._mod(["SQL Server", "ODBC Driver 18 for SQL Server"])
+        assert college_house._resolve_driver(
+            "ODBC Driver 17 for SQL Server", mod
+        ) == "ODBC Driver 18 for SQL Server"
+
+    def test_nothing_installed_keeps_preferred(self):
+        mod = self._mod([])
+        assert college_house._resolve_driver(
+            "ODBC Driver 17 for SQL Server", mod
+        ) == "ODBC Driver 17 for SQL Server"
+
+
 # ── is_configured ────────────────────────────────────────────────────────────
 
 class TestIsConfigured:
