@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 
 log = logging.getLogger("memo_automator")
@@ -41,6 +42,15 @@ DEFAULT_TIMEOUT_SECONDS = 30
 DEFAULT_MONTHS_BACK = 24
 
 MONTHLY_TABLE = "[dbo].[MonthlyPropertyDataByBedAndSF_CH]"
+PLANS_TABLE = "[dbo].[Plans]"
+PROPERTIES_TABLE = "[dbo].[Properties]"
+
+# Columns pulled for floor-plan detail (current state per plan), SELECT order.
+PLAN_COLUMNS = [
+    "BuildingName", "PlanName", "Format", "IsStudio",
+    "Bedrooms", "Bathrooms", "AreaSF", "Beds",
+    "Rate", "RatePerSF", "Occupancy",
+]
 
 # Raw columns pulled from the monthly table, in SELECT order.
 MONTHLY_COLUMNS = [
@@ -141,6 +151,61 @@ def _rows_with_derived(cursor_rows, columns: list[str]) -> list[dict]:
     return out
 
 
+def _run_query(
+    query: str,
+    params: list,
+    timeout_seconds: int,
+    retries: int,
+) -> list | None:
+    """Run a query with credential checks, driver resolution, and retries.
+
+    Returns raw cursor rows, or None on any failure (missing config,
+    missing pyodbc, connection/login timeouts).
+    """
+    settings = get_sql_settings()
+    if not (settings["username"] and settings["password"]):
+        log.warning(
+            "College House SQL credentials not configured "
+            "(COLLEGEHOUSE_SQL_USERNAME / COLLEGEHOUSE_SQL_PASSWORD). Skipping."
+        )
+        return None
+
+    try:
+        import pyodbc
+    except ImportError:
+        log.warning("pyodbc not installed; cannot reach College House SQL. Skipping.")
+        return None
+
+    settings["driver"] = _resolve_driver(settings["driver"], pyodbc)
+    conn_str = _build_connection_string(settings)
+    last_error: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            log.info(
+                "College House SQL: connecting (attempt %d/%d, timeout=%ds)",
+                attempt + 1, retries + 1, timeout_seconds,
+            )
+            conn = pyodbc.connect(conn_str, timeout=timeout_seconds)
+            try:
+                cursor = conn.cursor()
+                cursor.execute(query, params)
+                return cursor.fetchall()
+            finally:
+                conn.close()
+        except Exception as e:  # pyodbc errors don't share a clean base class
+            last_error = e
+            log.warning("College House SQL attempt %d failed: %s", attempt + 1, e)
+            if attempt < retries:
+                time.sleep(2)
+
+    log.warning(
+        "College House SQL unavailable after %d attempt(s): %s. "
+        "Continuing without live comp/market data.",
+        retries + 1, last_error,
+    )
+    return None
+
+
 def fetch_market_performance(
     *,
     institution: str | None = None,
@@ -160,20 +225,6 @@ def fetch_market_performance(
     """
     if not (institution or ipeds or property_like):
         log.warning("College House: no institution/IPEDS/property filter given; skipping pull.")
-        return []
-
-    settings = get_sql_settings()
-    if not (settings["username"] and settings["password"]):
-        log.warning(
-            "College House SQL credentials not configured "
-            "(COLLEGEHOUSE_SQL_USERNAME / COLLEGEHOUSE_SQL_PASSWORD). Skipping."
-        )
-        return []
-
-    try:
-        import pyodbc
-    except ImportError:
-        log.warning("pyodbc not installed; cannot reach College House SQL. Skipping.")
         return []
 
     where: list[str] = []
@@ -198,36 +249,115 @@ def fetch_market_performance(
         f"ORDER BY BuildingName, Bedrooms, MonthDate"
     )
 
-    settings["driver"] = _resolve_driver(settings["driver"], pyodbc)
-    conn_str = _build_connection_string(settings)
-    last_error: Exception | None = None
-    for attempt in range(retries + 1):
-        try:
-            log.info(
-                "College House SQL: connecting (attempt %d/%d, timeout=%ds)",
-                attempt + 1, retries + 1, timeout_seconds,
-            )
-            conn = pyodbc.connect(conn_str, timeout=timeout_seconds)
-            try:
-                cursor = conn.cursor()
-                cursor.execute(query, params)
-                rows = _rows_with_derived(cursor.fetchall(), MONTHLY_COLUMNS)
-            finally:
-                conn.close()
-            log.info("College House SQL: pulled %d rows", len(rows))
-            return rows
-        except Exception as e:  # pyodbc errors don't share a clean base class
-            last_error = e
-            log.warning("College House SQL attempt %d failed: %s", attempt + 1, e)
-            if attempt < retries:
-                time.sleep(2)
+    raw = _run_query(query, params, timeout_seconds, retries)
+    if raw is None:
+        return []
+    rows = _rows_with_derived(raw, MONTHLY_COLUMNS)
+    log.info("College House SQL: pulled %d monthly rows", len(rows))
+    return rows
 
-    log.warning(
-        "College House SQL unavailable after %d attempt(s): %s. "
-        "Continuing without live comp/market data.",
-        retries + 1, last_error,
+
+# Variant designation at the end of a plan name: "4BR/4BA - D1" -> ("D", 1),
+# "4X2 Lite B" -> ("B", 0), "Studio - S1" -> ("S", 1).
+_VARIANT_RE = re.compile(r"([A-Za-z]{1,3})\s*[-_ ]?\s*(\d{0,3})\s*$")
+
+
+def _variant_key(plan_name: str) -> tuple[str, int]:
+    """Sort key for variant ordering within a bed/bath block — the
+    first-named variant (A1 < A2 < B1; A < B) is the base variant."""
+    m = _VARIANT_RE.search(str(plan_name or "").strip())
+    if not m:
+        return ("~", 999)  # unparseable names sort last
+    letter = m.group(1).upper()
+    number = int(m.group(2)) if m.group(2) else 0
+    return (letter, number)
+
+
+def mark_base_variants(plans: list[dict]) -> list[dict]:
+    """Flag the base variant within each (property, bedrooms, bathrooms,
+    studio) block: the FIRST-NAMED variant by designation (A1/B1/D1 — letter
+    then number). Adds ``IsBaseVariant`` to every plan dict in place."""
+    blocks: dict[tuple, list[dict]] = {}
+    for plan in plans:
+        key = (
+            str(plan.get("BuildingName") or ""),
+            plan.get("Bedrooms"),
+            plan.get("Bathrooms"),
+            bool(plan.get("IsStudio")),
+        )
+        blocks.setdefault(key, []).append(plan)
+
+    for group in blocks.values():
+        base = min(
+            group,
+            key=lambda p: (_variant_key(p.get("PlanName")), str(p.get("PlanName") or "")),
+        )
+        for plan in group:
+            plan["IsBaseVariant"] = plan is base
+    return plans
+
+
+def fetch_floor_plans(
+    *,
+    institution: str | None = None,
+    ipeds: int | None = None,
+    property_like: list[str] | None = None,
+    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+    retries: int = 1,
+) -> list[dict]:
+    """
+    Pull current floor-plan detail per comp from the ``Plans`` table —
+    the only source granular enough for unit-type side-by-side rent rows
+    (the monthly table blends all variants of a bedroom count together).
+
+    Institution filtering resolves property keys via the monthly table
+    (Plans has no institution column). Returns plan dicts with
+    ``IsBaseVariant`` flagged per (property, bed, bath, studio) block,
+    or [] on any failure.
+    """
+    if not (institution or ipeds or property_like):
+        return []
+
+    where: list[str] = []
+    params: list = []
+    if institution or ipeds:
+        inst_where, inst_params = [], []
+        if institution:
+            inst_where.append("InstitutionName = ?")
+            inst_params.append(institution)
+        if ipeds:
+            inst_where.append("IPEDS = ?")
+            inst_params.append(int(ipeds))
+        where.append(
+            f"Pl.propertyKey IN (SELECT DISTINCT Property_Key FROM {MONTHLY_TABLE} "
+            f"WHERE {' AND '.join(inst_where)})"
+        )
+        params.extend(inst_params)
+    if property_like:
+        likes = " OR ".join("P.[name] LIKE ?" for _ in property_like)
+        where.append(f"({likes})")
+        params.extend(f"%{frag}%" for frag in property_like)
+
+    query = (
+        "SELECT P.[name], Pl.[name], Pl.[format], Pl.[isStudio],\n"
+        "       Pl.[bedrooms], Pl.[bathrooms], Pl.[areaSf], Pl.[bedsPurposeBuilt],\n"
+        "       Pl.[rate], Pl.[ratePerSf], Pl.[occupancy]\n"
+        f"FROM {PLANS_TABLE} Pl\n"
+        f"LEFT JOIN {PROPERTIES_TABLE} P ON Pl.propertyKey = P.[key]\n"
+        f"WHERE {' AND '.join(where)}\n"
+        "ORDER BY P.[name], Pl.[bedrooms], Pl.[bathrooms], Pl.[name]"
     )
-    return []
+
+    raw = _run_query(query, params, timeout_seconds, retries)
+    if raw is None:
+        return []
+    plans = [dict(zip(PLAN_COLUMNS, r)) for r in raw]
+    for plan in plans:
+        for col in ("Rate", "RatePerSF", "Occupancy"):
+            if plan.get(col) is not None:
+                plan[col] = float(plan[col])
+    log.info("College House SQL: pulled %d floor plans", len(plans))
+    return mark_base_variants(plans)
 
 
 def _fmt_pct(value) -> str:
@@ -363,20 +493,22 @@ def summarize_latest_month(rows: list[dict]) -> list[dict]:
     return summary
 
 
-def format_market_performance_text(rows: list[dict]) -> str:
+def format_market_performance_text(rows: list[dict], plans: list[dict] | None = None) -> str:
     """
-    Render pulled rows as compact text in the same tab-delimited shape that
-    ``extract_market_data`` emits, so the result can be appended to (or used
-    instead of) market-workbook text and flow through the existing market
-    mapping prompts unchanged.
+    Render pulled rows (and optional floor-plan detail) as compact text in
+    the same tab-delimited shape that ``extract_market_data`` emits, so the
+    result can be appended to (or used instead of) market-workbook text and
+    flow through the existing market mapping prompts unchanged.
     """
-    if not rows:
+    if not rows and not plans:
         return ""
 
     sections = []
+    rows = rows or []
+    plans = plans or []
 
     # Section 1: latest-month comp summary (the comp-table refresh view).
-    summary = summarize_latest_month(rows)
+    summary = summarize_latest_month(rows) if rows else []
     lines = [
         f"\n{'=' * 70}",
         "TAB: Comp Performance Summary (latest month per property)",
@@ -394,7 +526,8 @@ def format_market_performance_text(rows: list[dict]) -> str:
             f"{_fmt_money(s['RatePerBed'])}\t{_fmt_money2(s['RatePerSF'])}\t"
             f"{_fmt_pct(s['RentGrowthYoY'])}"
         )
-    sections.append("\n".join(lines))
+    if summary:
+        sections.append("\n".join(lines))
 
     # Section 2: monthly time series per property/bedroom (trend view).
     lines = [
@@ -410,7 +543,35 @@ def format_market_performance_text(rows: list[dict]) -> str:
             f"{_fmt_pct(r.get('PreleasePct'))}\t{_fmt_pct(r.get('OccupancyPct'))}\t"
             f"{_fmt_money(r.get('RatePerBed'))}\t{_fmt_money2(r.get('RatePerSF'))}"
         )
-    sections.append("\n".join(lines))
+    if rows:
+        sections.append("\n".join(lines))
+
+    # Section 3: floor-plan detail (the ONLY valid source for unit-type
+    # side-by-side rent rows — monthly data blends variants together).
+    if plans:
+        lines = [
+            f"\n{'=' * 70}",
+            "TAB: Floor Plan Detail (current, per plan)",
+            f"{'=' * 70}",
+            "Note: Use THIS tab for unit-type side-by-side comp rents. "
+            "'Base Variant' = the first-named variant (A1/B1/D1) within the "
+            "property's bed/bath block; when the run brief says base-variant "
+            "rents only, use that row's rent (never a range or average).",
+            "Row 1:\tProperty\tPlan\tStudio\tBed\tBath\tSF\tBeds\tRent/Bed\tRent/SF\tOccupancy\tBase Variant",
+        ]
+        for i, p in enumerate(plans, start=2):
+            lines.append(
+                f"Row {i}:\t{p.get('BuildingName') or ''}\t{p.get('PlanName') or ''}\t"
+                f"{'Yes' if p.get('IsStudio') else 'No'}\t"
+                f"{p.get('Bedrooms') if p.get('Bedrooms') is not None else ''}\t"
+                f"{p.get('Bathrooms') if p.get('Bathrooms') is not None else ''}\t"
+                f"{p.get('AreaSF') if p.get('AreaSF') is not None else ''}\t"
+                f"{p.get('Beds') if p.get('Beds') is not None else ''}\t"
+                f"{_fmt_money(p.get('Rate'))}\t{_fmt_money2(p.get('RatePerSF'))}\t"
+                f"{_fmt_pct(p.get('Occupancy'))}\t"
+                f"{'BASE' if p.get('IsBaseVariant') else ''}"
+            )
+        sections.append("\n".join(lines))
 
     header = [
         f"\n{'=' * 70}",
@@ -420,14 +581,18 @@ def format_market_performance_text(rows: list[dict]) -> str:
     return "\n".join(header) + "\n" + "\n\n".join(sections)
 
 
-def write_extract_workbook(rows: list[dict], path: str) -> str | None:
+def write_extract_workbook(
+    rows: list[dict], path: str, plans: list[dict] | None = None
+) -> str | None:
     """
-    Persist a successful pull to an .xlsx extract (raw rows + latest-month
-    summary) so reruns and the managed agent never depend on the connection.
+    Persist a successful pull to an .xlsx extract (latest-month summary,
+    raw monthly rows, and floor-plan detail when supplied) so reruns and
+    the managed agent never depend on the connection.
     Returns the path written, or None when there is nothing to write.
     """
-    if not rows:
+    if not rows and not plans:
         return None
+    rows = rows or []
 
     import openpyxl
 
@@ -456,6 +621,12 @@ def write_extract_workbook(rows: list[dict], path: str) -> str | None:
             + [r.get(c) for c in MONTHLY_COLUMNS[1:]]
             + [r.get(n) for n in derived_names]
         )
+
+    if plans:
+        fp = wb.create_sheet("Floor Plan Detail")
+        fp.append(PLAN_COLUMNS + ["IsBaseVariant"])
+        for p in plans:
+            fp.append([p.get(c) for c in PLAN_COLUMNS] + [bool(p.get("IsBaseVariant"))])
 
     wb.save(path)
     log.info("College House SQL: extract written to %s", path)
@@ -488,22 +659,31 @@ def extract_college_house_market_data(cfg: dict, output_dir: str | None = None) 
     if not (institution or ipeds or properties):
         return ""
 
+    timeout = ch_cfg.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
     rows = fetch_market_performance(
         institution=institution,
         ipeds=ipeds,
         property_like=properties,
         months_back=ch_cfg.get("months_back", DEFAULT_MONTHS_BACK),
-        timeout_seconds=ch_cfg.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS),
+        timeout_seconds=timeout,
     )
     if not rows:
         return ""
 
+    plans = fetch_floor_plans(
+        institution=institution,
+        ipeds=ipeds,
+        property_like=properties,
+        timeout_seconds=timeout,
+    )
+
     if output_dir:
         try:
             write_extract_workbook(
-                rows, os.path.join(output_dir, "college_house_extract.xlsx")
+                rows, os.path.join(output_dir, "college_house_extract.xlsx"),
+                plans=plans,
             )
         except Exception as e:
             log.warning("College House SQL: failed to write extract workbook: %s", e)
 
-    return format_market_performance_text(rows)
+    return format_market_performance_text(rows, plans=plans)

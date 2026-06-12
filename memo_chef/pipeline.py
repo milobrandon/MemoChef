@@ -694,6 +694,14 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
                 ch_text = extract_college_house_market_data(
                     ch_cfg, output_dir=request.output_dir
                 )
+                if ch_text and request.college_house_base_variant_only:
+                    ch_text += (
+                        "\n\nRUN DIRECTIVE: base-variant rents only — in "
+                        "unit-type side-by-side comp tables, use each comp's "
+                        "BASE floor plan rent (the Floor Plan Detail row "
+                        "marked BASE) for the bed/bath block, not a range or "
+                        "average across variants."
+                    )
                 if ch_text:
                     market_data_text = (
                         market_data_text + "\n\n" + ch_text if market_data_text else ch_text

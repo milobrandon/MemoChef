@@ -248,15 +248,24 @@ When the user sends you files and instructions, follow this pipeline:
    tab allowlist is provided.
 
 5d. **Pull comp & market performance (if a College House extract is mounted)**
-   — when the run brief points at a `college_house_extract.xlsx`, read both
-   sheets: `Comp Performance Summary` (latest month per property, bed-weighted)
-   and `Monthly Raw Data` (monthly series by property and bedroom count).
-   This is live data from Subtext's College House research database
-   (StudentResearch) and is the authoritative CURRENT source for:
-   - **Comp-table performance columns** — prelease %, occupancy %, and market
-     rent (rate per bed / per SF) for any comp property the extract covers.
-     Match extract `BuildingName` values to memo comp rows semantically
-     ("Hub Orlando" ≈ "HUB on Campus Orlando").
+   — when the run brief points at a `college_house_extract.xlsx`, read its
+   sheets: `Comp Performance Summary` (latest month per property,
+   bed-weighted), `Monthly Raw Data` (monthly series by property and bedroom
+   count), and `Floor Plan Detail` (current state per individual floor plan,
+   with the base variant of each bed/bath block flagged). This is live data
+   from Subtext's College House research database (StudentResearch) and is
+   the authoritative CURRENT source for:
+   - **Property-level comp columns** — prelease %, occupancy %, and blended
+     market rent for any comp the extract covers, from `Comp Performance
+     Summary`. Match extract `BuildingName` values to memo comp rows
+     semantically ("Hub Orlando" ≈ "HUB on Campus Orlando").
+   - **Unit-type side-by-side rent rows** — use ONLY `Floor Plan Detail`,
+     matched on bedroom AND bathroom count (and studio flag). The monthly
+     sheets blend all variants of a bedroom count together — NEVER write a
+     bedroom-cohort average into a bed/bath-specific row. When the run brief
+     says base-variant rents only, use the comp's `IsBaseVariant` row for
+     the block; otherwise show a min–max range across the block's variants
+     per the table's existing convention.
    - **Market performance narrative and charts** — preleasing pace, rent
      growth, and occupancy trends computed from the monthly series (e.g.
      year-over-year same-month prelease comparisons).

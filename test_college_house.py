@@ -15,12 +15,16 @@ import pytest
 import college_house
 from college_house import (
     MONTHLY_COLUMNS,
+    PLAN_COLUMNS,
     _safe_ratio,
+    _variant_key,
     compute_leasing_cycle_rent_growth,
     extract_college_house_market_data,
+    fetch_floor_plans,
     fetch_market_performance,
     format_market_performance_text,
     is_configured,
+    mark_base_variants,
     summarize_latest_month,
     write_extract_workbook,
 )
@@ -305,6 +309,127 @@ class TestRentGrowth:
         ws = openpyxl.load_workbook(path)["Comp Performance Summary"]
         assert "YoY Rent Growth" in str(ws.cell(row=1, column=9).value)
         assert ws.cell(row=2, column=9).value == pytest.approx(0.05)
+
+
+# ── floor plans & base variants ──────────────────────────────────────────────
+
+def _plan(name, building="Aperture", studio=False, bed=4, bath=4, sf=1312,
+          beds=220, rate=999.0):
+    return {
+        "BuildingName": building, "PlanName": name, "Format": "apartment",
+        "IsStudio": studio, "Bedrooms": bed, "Bathrooms": bath,
+        "AreaSF": sf, "Beds": beds, "Rate": rate, "RatePerSF": rate / sf,
+        "Occupancy": 0.97,
+    }
+
+
+class TestVariantKey:
+    def test_letter_number(self):
+        assert _variant_key("4BR/4BA - D1") == ("D", 1)
+        assert _variant_key("Studio - S2") == ("S", 2)
+
+    def test_bare_letter(self):
+        assert _variant_key("4X2 Lite B") == ("B", 0)
+
+    def test_ordering(self):
+        assert _variant_key("1BR/1BA - A1") < _variant_key("1BR/1BA - A2")
+        assert _variant_key("2BR/2BA - B1") < _variant_key("2BR/2BA - D1")
+
+    def test_unparseable_sorts_last(self):
+        assert _variant_key("4BR/4BA - D1") < _variant_key("")
+
+
+class TestMarkBaseVariants:
+    def test_first_named_variant_wins(self):
+        plans = [
+            _plan("4BR/4BA - D3", rate=1129.0),
+            _plan("4BR/4BA - D1", rate=999.0),
+            _plan("4BR/4BA - D2", rate=979.0),
+        ]
+        mark_base_variants(plans)
+        base = [p["PlanName"] for p in plans if p["IsBaseVariant"]]
+        assert base == ["4BR/4BA - D1"]
+
+    def test_blocks_are_bed_bath_specific(self):
+        plans = [
+            _plan("4BR/4BA - D1", bath=4),
+            _plan("4BR/2BA - C1", bath=2),
+            _plan("4BR/2BA - C2", bath=2),
+        ]
+        mark_base_variants(plans)
+        assert all(
+            p["IsBaseVariant"] == (p["PlanName"] in ("4BR/4BA - D1", "4BR/2BA - C1"))
+            for p in plans
+        )
+
+    def test_blocks_are_per_property(self):
+        plans = [
+            _plan("4BR/4BA - D1", building="Aperture"),
+            _plan("4BR/4BA - D1", building="Verve Orlando"),
+        ]
+        mark_base_variants(plans)
+        assert all(p["IsBaseVariant"] for p in plans)
+
+
+class TestFetchFloorPlans:
+    def _plan_raw(self, name, bed=4, bath=4):
+        return ("Aperture", name, "apartment", False, bed, bath, 1312, 220,
+                999, 0.76, 0.97)
+
+    def test_no_filters_returns_empty(self, creds, fake_pyodbc):
+        assert fetch_floor_plans() == []
+
+    def test_pull_marks_base(self, creds, fake_pyodbc):
+        fake_pyodbc._rows = [self._plan_raw("4BR/4BA - D2"), self._plan_raw("4BR/4BA - D1")]
+        plans = fetch_floor_plans(property_like=["Aperture"])
+        assert len(plans) == 2
+        by_name = {p["PlanName"]: p for p in plans}
+        assert by_name["4BR/4BA - D1"]["IsBaseVariant"] is True
+        assert by_name["4BR/4BA - D2"]["IsBaseVariant"] is False
+        assert by_name["4BR/4BA - D1"]["Rate"] == pytest.approx(999.0)
+
+    def test_institution_filter_uses_monthly_subquery(self, creds, fake_pyodbc):
+        fake_pyodbc._rows = []
+        fetch_floor_plans(institution="UCF")
+        cursor = fake_pyodbc._connections[-1]._cursor
+        assert "MonthlyPropertyDataByBedAndSF_CH" in cursor.executed
+        assert cursor.params == ["UCF"]
+
+    def test_connection_failure_returns_empty(self, creds, fake_pyodbc, monkeypatch):
+        monkeypatch.setattr(college_house.time, "sleep", lambda s: None)
+        fake_pyodbc._fail_times = 99
+        assert fetch_floor_plans(property_like=["Aperture"]) == []
+
+
+class TestFloorPlanOutputs:
+    def test_text_section_with_base_flag(self):
+        plans = mark_base_variants([
+            _plan("4BR/4BA - D1", rate=999.0),
+            _plan("4BR/4BA - D3", rate=1129.0),
+        ])
+        text = format_market_performance_text([], plans=plans)
+        assert "TAB: Floor Plan Detail" in text
+        assert "base-variant" in text.lower()
+        d1_line = next(ln for ln in text.splitlines() if "4BR/4BA - D1" in ln)
+        d3_line = next(ln for ln in text.splitlines() if "4BR/4BA - D3" in ln)
+        assert d1_line.endswith("BASE")
+        assert not d3_line.endswith("BASE")
+
+    def test_workbook_floor_plan_sheet(self, creds, fake_pyodbc, tmp_path):
+        fake_pyodbc._rows = [_raw_row(FEB)]
+        rows = fetch_market_performance(institution="UCF")
+        plans = mark_base_variants([_plan("4BR/4BA - D1")])
+        path = str(tmp_path / "extract.xlsx")
+        write_extract_workbook(rows, path, plans=plans)
+        wb = openpyxl.load_workbook(path)
+        assert wb.sheetnames == [
+            "Comp Performance Summary", "Monthly Raw Data", "Floor Plan Detail"
+        ]
+        fp = wb["Floor Plan Detail"]
+        header = [c.value for c in fp[1]]
+        assert header == PLAN_COLUMNS + ["IsBaseVariant"]
+        assert fp.cell(row=2, column=2).value == "4BR/4BA - D1"
+        assert fp.cell(row=2, column=len(header)).value is True
 
 
 # ── format_market_performance_text ───────────────────────────────────────────

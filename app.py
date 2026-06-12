@@ -253,6 +253,7 @@ def _queue_item_from_inputs(
     college_house_enabled: bool = False,
     college_house_institution: str = "",
     college_house_properties: list[str] | None = None,
+    college_house_base_variant_only: bool = False,
 ) -> dict:
     job_id = uuid.uuid4().hex
     staging = get_job_staging_dir(job_id)
@@ -292,6 +293,7 @@ def _queue_item_from_inputs(
         "college_house_enabled": bool(college_house_enabled),
         "college_house_institution": college_house_institution or "",
         "college_house_properties": list(college_house_properties) if college_house_properties else [],
+        "college_house_base_variant_only": bool(college_house_base_variant_only),
     }
 
 
@@ -377,8 +379,14 @@ def _execute_job(
                 ch_rows = []
                 st.warning(f"College House SQL pull failed: {ch_err}")
             if ch_rows:
+                ch_plans = college_house.fetch_floor_plans(
+                    institution=job.get("college_house_institution") or None,
+                    property_like=job.get("college_house_properties") or None,
+                )
                 ch_extract_path = run_dir / "college_house_extract.xlsx"
-                college_house.write_extract_workbook(ch_rows, str(ch_extract_path))
+                college_house.write_extract_workbook(
+                    ch_rows, str(ch_extract_path), plans=ch_plans
+                )
                 ch_file_id = ma_upload_file(ch_extract_path)
                 resources.append({
                     "type": "file",
@@ -435,6 +443,7 @@ def _execute_job(
             generate_market_slides=bool(job.get("generate_market_slides")),
             college_house_extract_filename=college_house_extract_name,
             college_house_institution=job.get("college_house_institution") or None,
+            college_house_base_variant_only=bool(job.get("college_house_base_variant_only")),
         )
         ma_send_message(session_id, message)
 
@@ -824,6 +833,17 @@ def render_new_run_tab() -> None:
         college_house_properties = [
             frag.strip() for frag in ch_props_raw.split(",") if frag.strip()
         ]
+        college_house_base_variant_only = st.checkbox(
+            "Base-variant rents only in unit-type comp tables",
+            value=False,
+            disabled=not college_house_enabled,
+            help=(
+                "When ON, unit-type side-by-side rent rows show the base "
+                "(first-named, e.g. A1/B1/D1) floor plan's rent for each "
+                "comp instead of a range across all variants."
+            ),
+            key="college_house_base_variant_input",
+        )
 
     with st.expander("Fireflies API key (optional)"):
         st.caption(
@@ -906,6 +926,7 @@ def render_new_run_tab() -> None:
                 college_house_enabled=college_house_enabled,
                 college_house_institution=college_house_institution,
                 college_house_properties=college_house_properties,
+                college_house_base_variant_only=college_house_base_variant_only,
             )
             _execute_job(job=job, username=username, credits_per_week=credits_per_week)
 
@@ -940,6 +961,7 @@ def render_new_run_tab() -> None:
                 college_house_enabled=college_house_enabled,
                 college_house_institution=college_house_institution,
                 college_house_properties=college_house_properties,
+                college_house_base_variant_only=college_house_base_variant_only,
             )
             enqueue_job(username, job)
             st.success(f"Queued `{job['memo_name']}`.")

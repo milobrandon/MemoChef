@@ -110,15 +110,21 @@ Include low-confidence updates anyway — downstream review catches them — but
 When the run brief mounts a `college_house_extract.xlsx`, treat it as a special
 market data source pulled live from Subtext's College House research database
 (StudentResearch) at run time. It is NOT subject to the tab allowlist (the app
-generated it; both sheets are approved by construction):
+generated it; all its sheets are approved by construction):
 
 - **`Comp Performance Summary`** — latest month per property: Total Beds,
   Prelease %, Occupancy %, Rate Per Bed, Rate Per SF, and YoY Rent Growth
-  (bed-weighted across bedroom types). Use for comp-table performance columns.
+  (bed-weighted across bedroom types). Use for PROPERTY-LEVEL comp-table
+  performance columns (one row/column per comp).
 - **`Monthly Raw Data`** — full monthly series by property and bedroom count,
   including numerator/denominator columns and derived PreleasePct /
   OccupancyPct / RatePerBed / RatePerSF. Use for trend narrative and charts
   (e.g. year-over-year same-month prelease comparisons, rent growth).
+- **`Floor Plan Detail`** — current state per individual floor plan per comp:
+  plan name, studio flag, bed/bath count, SF, beds, rent per bed, rent per SF,
+  occupancy, and an `IsBaseVariant` flag marking the base (first-named, e.g.
+  A1/B1/D1) variant of each bed/bath block. The ONLY valid source for
+  unit-type side-by-side rent rows.
 
 Rules:
 1. Percentages are decimals (0.93 = 93%); rates are monthly dollars per bed.
@@ -136,3 +142,13 @@ Rules:
    through the latest month, vs the same September-to-month window one year
    prior. The extract's `YoY Rent Growth` column is precomputed this way;
    never derive comp rent growth from a single month or a calendar year.
+6. **Unit-type side-by-side rents come from `Floor Plan Detail` ONLY**,
+   matched on bedroom AND bathroom count (and studio flag). The monthly
+   sheets blend every variant of a bedroom count together — never write a
+   bedroom-cohort average into a bed/bath-specific row, and never put a
+   4BR/2BA plan's rent in a 4BR/4BA row.
+7. **Base-variant mode:** when the run brief says base-variant rents only,
+   each comp's unit-type rent is the `IsBaseVariant` row of that bed/bath
+   block — not a range, not an average. When the brief says OFF (or is
+   silent), show a min–max range across the block's variants, single value
+   when only one variant exists, matching the table's existing range style.
