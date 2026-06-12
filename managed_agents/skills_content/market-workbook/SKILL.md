@@ -104,3 +104,35 @@ Include low-confidence updates anyway — downstream review catches them — but
 - NEVER insert rows into side-by-side comp tables. Update existing rows only; add comps by replacing, not appending.
 - Preserve existing series structure on charts unless the workbook clearly has a different shape (then adapt + rewrite narrative).
 - Chart titles, axis labels, and series names on a chart should match what the underlying data actually represents after your update.
+
+## College House SQL extract (live comp & market performance)
+
+When the run brief mounts a `college_house_extract.xlsx`, treat it as a special
+market data source pulled live from Subtext's College House research database
+(StudentResearch) at run time. It is NOT subject to the tab allowlist (the app
+generated it; both sheets are approved by construction):
+
+- **`Comp Performance Summary`** — latest month per property: Total Beds,
+  Prelease %, Occupancy %, Rate Per Bed, Rate Per SF, and YoY Rent Growth
+  (bed-weighted across bedroom types). Use for comp-table performance columns.
+- **`Monthly Raw Data`** — full monthly series by property and bedroom count,
+  including numerator/denominator columns and derived PreleasePct /
+  OccupancyPct / RatePerBed / RatePerSF. Use for trend narrative and charts
+  (e.g. year-over-year same-month prelease comparisons, rent growth).
+
+Rules:
+1. Percentages are decimals (0.93 = 93%); rates are monthly dollars per bed.
+2. Match `BuildingName` to memo comp rows semantically ("Hub Orlando" ≈
+   "HUB on Campus Orlando"). Never overwrite a comp value the extract does
+   not cover.
+3. When the extract and static workbook tabs disagree on the same metric,
+   prefer the extract (it is fresher) and note the discrepancy in the
+   changelog.
+4. All plausibility bounds, cross-slide propagation, full-row consistency,
+   and narrative-coherence rules in this skill apply to extract-sourced
+   values exactly as they do to workbook values.
+5. **Comp rent growth convention:** YoY rent growth uses LEASING-CYCLE
+   AVERAGE rents — the bed-weighted average rate per bed from September
+   through the latest month, vs the same September-to-month window one year
+   prior. The extract's `YoY Rent Growth` column is precomputed this way;
+   never derive comp rent growth from a single month or a calendar year.

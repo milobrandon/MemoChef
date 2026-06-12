@@ -64,6 +64,18 @@ market_data:
   # Use when the workbook has unusual tab names.
   include_all_tabs: false
 
+  # --- College House SQL (live comp & market performance) ---
+  # Credentials come from .env (COLLEGEHOUSE_SQL_USERNAME / _PASSWORD etc.);
+  # this section only controls WHAT to pull. Any of institution / ipeds /
+  # properties enables the pull for the local pipeline. The Streamlit app
+  # passes these per-run from the UI instead.
+  college_house:
+    # institution: "University of Central Florida"
+    # ipeds: 132903
+    # properties: ["Hub Orlando", "Verve Orlando"]
+    months_back: 24          # monthly history window for trend series
+    timeout_seconds: 30      # the server is known to time out; fail soft
+
 # --- Layout normalization ---
 layout:
   margin_left: 0.50       # inches

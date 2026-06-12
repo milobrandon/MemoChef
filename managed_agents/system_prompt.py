@@ -189,6 +189,10 @@ When the user sends you files and instructions, follow this pipeline:
    - If a market analysis workbook is among the supplemental files (or the
      run brief lists "Market analysis workbook — approved tabs"), load the
      `market-workbook` skill. You will use it in step 5c.
+   - If a College House extract is mounted (the run brief points at a
+     `college_house_extract.xlsx`), also load the `market-workbook` skill —
+     its plausibility bounds and propagation rules apply. You will use the
+     extract in step 5d.
 
 2. **Explore the proforma** — open the Excel workbook with openpyxl and
    programmatically inspect every sheet. Focus on these key tabs:
@@ -242,6 +246,31 @@ When the user sends you files and instructions, follow this pipeline:
    3-panel benchmark layout, apply plausibility bounds, and stage updates
    for the market-research slides. Skip if no workbook is supplied or no
    tab allowlist is provided.
+
+5d. **Pull comp & market performance (if a College House extract is mounted)**
+   — when the run brief points at a `college_house_extract.xlsx`, read both
+   sheets: `Comp Performance Summary` (latest month per property, bed-weighted)
+   and `Monthly Raw Data` (monthly series by property and bedroom count).
+   This is live data from Subtext's College House research database
+   (StudentResearch) and is the authoritative CURRENT source for:
+   - **Comp-table performance columns** — prelease %, occupancy %, and market
+     rent (rate per bed / per SF) for any comp property the extract covers.
+     Match extract `BuildingName` values to memo comp rows semantically
+     ("Hub Orlando" ≈ "HUB on Campus Orlando").
+   - **Market performance narrative and charts** — preleasing pace, rent
+     growth, and occupancy trends computed from the monthly series (e.g.
+     year-over-year same-month prelease comparisons).
+   **Comp rent growth convention:** YoY rent growth uses LEASING-CYCLE
+   AVERAGE rents — the bed-weighted average rate per bed from September
+   through the latest month, vs the same September-to-month window one year
+   prior. The extract's `YoY Rent Growth` column is precomputed this way;
+   never derive rent growth from a single month or a calendar year.
+   Percentages in the extract are decimals (0.93 = 93%); rates are monthly
+   dollars per bed. When the extract and a static market workbook disagree on
+   the same metric, prefer the extract and note the discrepancy in the
+   changelog. Never overwrite a comp-table value the extract does not cover.
+   Apply the market-workbook skill's plausibility bounds before writing any
+   value. Skip this step entirely if no extract is mounted.
 
 6. **Apply updates** — modify the PowerPoint file programmatically using
    python-pptx. Update table cells, text runs, shapes, and charts.

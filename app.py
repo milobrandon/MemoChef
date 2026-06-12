@@ -12,6 +12,7 @@ import uuid
 
 import streamlit as st
 
+import college_house
 from app_helpers import (
     count_changes_from_log,
     fire_button_disabled_reason,
@@ -249,6 +250,9 @@ def _queue_item_from_inputs(
     instructions: str = "",
     market_tabs: list[str] | None = None,
     generate_market_slides: bool = False,
+    college_house_enabled: bool = False,
+    college_house_institution: str = "",
+    college_house_properties: list[str] | None = None,
 ) -> dict:
     job_id = uuid.uuid4().hex
     staging = get_job_staging_dir(job_id)
@@ -285,6 +289,9 @@ def _queue_item_from_inputs(
         "instructions": instructions or "",
         "market_tabs": list(market_tabs) if market_tabs else [],
         "generate_market_slides": bool(generate_market_slides),
+        "college_house_enabled": bool(college_house_enabled),
+        "college_house_institution": college_house_institution or "",
+        "college_house_properties": list(college_house_properties) if college_house_properties else [],
     }
 
 
@@ -352,6 +359,40 @@ def _execute_job(
             })
             supplemental_names.append(sup_path.name)
 
+        # ── College House SQL comp & market performance ──────────────────────
+        # Pulled server-side (credentials never leave this machine), persisted
+        # to an extract workbook, and mounted for the agent like any other
+        # supplemental file.
+        college_house_extract_name: str | None = None
+        if job.get("college_house_enabled") and (
+            job.get("college_house_institution") or job.get("college_house_properties")
+        ):
+            progress_bar.progress(14, text=f"{prefix}Pulling College House comp data...")
+            try:
+                ch_rows = college_house.fetch_market_performance(
+                    institution=job.get("college_house_institution") or None,
+                    property_like=job.get("college_house_properties") or None,
+                )
+            except Exception as ch_err:  # belt and suspenders — fetch fails soft already
+                ch_rows = []
+                st.warning(f"College House SQL pull failed: {ch_err}")
+            if ch_rows:
+                ch_extract_path = run_dir / "college_house_extract.xlsx"
+                college_house.write_extract_workbook(ch_rows, str(ch_extract_path))
+                ch_file_id = ma_upload_file(ch_extract_path)
+                resources.append({
+                    "type": "file",
+                    "file_id": ch_file_id,
+                    "mount_path": f"/mnt/session/uploads/{ch_extract_path.name}",
+                })
+                college_house_extract_name = ch_extract_path.name
+            else:
+                st.warning(
+                    "College House SQL returned no data (connection timeout, "
+                    "missing credentials, or no properties matched). The run "
+                    "will continue without live comp/market performance."
+                )
+
         # ── Fireflies config ──────────────────────────────────────────────────
         meeting_lookback_days = job.get("meeting_lookback_days", 0)
         if meeting_lookback_days > 0:
@@ -392,6 +433,8 @@ def _execute_job(
             property_name=job.get("property_name"),
             market_tabs=job.get("market_tabs") or None,
             generate_market_slides=bool(job.get("generate_market_slides")),
+            college_house_extract_filename=college_house_extract_name,
+            college_house_institution=job.get("college_house_institution") or None,
         )
         ma_send_message(session_id, message)
 
@@ -736,6 +779,52 @@ def render_new_run_tab() -> None:
                 key="generate_market_slides_input",
             )
 
+    # ── College House SQL comp & market performance ───────────────────────────
+    # Pulls live prelease / occupancy / rate-per-bed / rate-per-SF for the
+    # subject market's comps from the StudentResearch database, server-side,
+    # and mounts the extract for the agent. Credentials stay in .env.
+    college_house_enabled = False
+    college_house_institution = ""
+    college_house_properties: list[str] = []
+    with st.expander("College House comp & market performance (SQL)"):
+        if not college_house.is_configured():
+            st.caption(
+                "Not configured: set `COLLEGEHOUSE_SQL_USERNAME` / "
+                "`COLLEGEHOUSE_SQL_PASSWORD` in `.env` (and ensure `pyodbc` "
+                "is installed) to enable live comp pulls."
+            )
+        college_house_enabled = st.checkbox(
+            "Pull live comp & market performance from College House",
+            value=False,
+            disabled=not college_house.is_configured(),
+            help=(
+                "Queries the StudentResearch SQL database for monthly "
+                "prelease, occupancy, and rental-rate performance and gives "
+                "the agent an extract workbook for the comp and market "
+                "performance slides."
+            ),
+            key="college_house_enabled_input",
+        )
+        college_house_institution = st.text_input(
+            "Institution name (as it appears in College House)",
+            placeholder="e.g. University of Central Florida",
+            disabled=not college_house_enabled,
+            key="college_house_institution_input",
+        )
+        ch_props_raw = st.text_input(
+            "Comp properties (optional, comma-separated name fragments)",
+            placeholder="e.g. Hub Orlando, Verve, IQ Luxe",
+            disabled=not college_house_enabled,
+            help=(
+                "Limits the pull to matching building names. Leave blank to "
+                "pull every tracked property at the institution."
+            ),
+            key="college_house_properties_input",
+        )
+        college_house_properties = [
+            frag.strip() for frag in ch_props_raw.split(",") if frag.strip()
+        ]
+
     with st.expander("Fireflies API key (optional)"):
         st.caption(
             "Override the platform-level Fireflies key with your own. "
@@ -814,6 +903,9 @@ def render_new_run_tab() -> None:
                 instructions=instructions,
                 market_tabs=market_tabs,
                 generate_market_slides=generate_market_slides,
+                college_house_enabled=college_house_enabled,
+                college_house_institution=college_house_institution,
+                college_house_properties=college_house_properties,
             )
             _execute_job(job=job, username=username, credits_per_week=credits_per_week)
 
@@ -845,6 +937,9 @@ def render_new_run_tab() -> None:
                 instructions=instructions,
                 market_tabs=market_tabs,
                 generate_market_slides=generate_market_slides,
+                college_house_enabled=college_house_enabled,
+                college_house_institution=college_house_institution,
+                college_house_properties=college_house_properties,
             )
             enqueue_job(username, job)
             st.success(f"Queued `{job['memo_name']}`.")
