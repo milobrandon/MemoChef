@@ -670,15 +670,58 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
 
             if request.market_data_path:
                 market_data_text = extract_market_data(request.market_data_path, cfg)
-                if market_data_text:
-                    market_extract_path = os.path.join(request.output_dir, "market_data_extract.txt")
-                    Path(market_extract_path).write_text(market_data_text, encoding="utf-8")
-                    checkpoint.set_output("market_data_extract", market_extract_path)
-                else:
+                if not market_data_text:
                     checkpoint.add_warning(
                         "extract_sources",
                         "Market data file loaded but no relevant tabs were extracted.",
                     )
+
+            if (
+                request.college_house_institution
+                or request.college_house_ipeds
+                or request.college_house_properties
+            ):
+                from college_house import extract_college_house_market_data
+
+                ch_cfg = dict(cfg)
+                ch_cfg["market_data"] = dict(cfg.get("market_data", {}) or {})
+                ch_cfg["market_data"]["college_house"] = {
+                    **(ch_cfg["market_data"].get("college_house", {}) or {}),
+                    "institution": request.college_house_institution,
+                    "ipeds": request.college_house_ipeds,
+                    "properties": request.college_house_properties or None,
+                }
+                ch_text = extract_college_house_market_data(
+                    ch_cfg, output_dir=request.output_dir
+                )
+                if ch_text and request.college_house_base_variant_only:
+                    ch_text += (
+                        "\n\nRUN DIRECTIVE: base-variant rents only — in "
+                        "unit-type side-by-side comp tables, use each comp's "
+                        "BASE floor plan rent (the Floor Plan Detail row "
+                        "marked BASE) for the bed/bath block, not a range or "
+                        "average across variants."
+                    )
+                if ch_text:
+                    market_data_text = (
+                        market_data_text + "\n\n" + ch_text if market_data_text else ch_text
+                    )
+                    ch_extract = os.path.join(request.output_dir, "college_house_extract.xlsx")
+                    if os.path.isfile(ch_extract):
+                        checkpoint.set_output("college_house_extract", ch_extract)
+                else:
+                    checkpoint.add_warning(
+                        "extract_sources",
+                        "College House SQL pull returned no data (connection "
+                        "failure, missing credentials, or no rows matched the "
+                        "institution/property filters). Continuing without live "
+                        "comp/market performance.",
+                    )
+
+            if market_data_text:
+                market_extract_path = os.path.join(request.output_dir, "market_data_extract.txt")
+                Path(market_extract_path).write_text(market_data_text, encoding="utf-8")
+                checkpoint.set_output("market_data_extract", market_extract_path)
 
         if request.comp_urls:
             _emit(callback, "extract_comps", "Scrape comp URLs", 20)
@@ -783,8 +826,9 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
             checkpoint.set_count("changes", len(changes))
 
         # --- Market data pipeline stages (4-6) ---
-        # Skipped automatically when no market_data_path is provided.
-        if request.market_data_path and market_data_text and not request.dry_run:
+        # Runs when any market data text was extracted (workbook and/or
+        # College House SQL); skipped automatically otherwise.
+        if market_data_text and not request.dry_run:
             # Stage 4: Market data mapping
             _emit(callback, "market_data_mapping", "Map market data", 87)
             with checkpoint.stage("market_data_mapping", "Claude mapping market workbook to memo"):
@@ -983,6 +1027,7 @@ def run_memo_pipeline(request: RunRequest, callback: StageCallback = None) -> Ru
         ]
         has_rich_sources = bool(
             request.market_data_path
+            or market_data_text  # includes College House SQL pulls
             or request.supplemental_path
             or request.comp_urls
         )

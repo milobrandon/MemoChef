@@ -41,14 +41,21 @@ You have specialized skills attached. They load on demand when relevant:
 - **memo-table-updates** — the canonical `set_cell_value` helper, font-color
   regression check, side-by-side comp tables, range/parenthetical conventions,
   empty-cell handling. Trigger: any time you edit existing table cells.
-- **image-table-replacement** — replace image-only Cash Flow / Unit Mix /
-  Development Budget slides with editable python-pptx tables. Trigger:
-  any slide whose title matches and has only Picture shapes.
+- **image-table-replacement** — replace pasted proforma-screenshot pictures
+  (Cash Flow / Unit Mix / Development Budget / Executive Summary) with editable
+  python-pptx tables; converting is the default treatment. Trigger: any slide
+  with a Picture shape that is a pasted proforma range, even if the slide also
+  has other shapes.
 - **layout-integrity** — overflow, text-image collision, off-canvas, slide
   splitting, continuation slides. Trigger: before saving the deck on every
   run (and whenever you add narrative text).
 - **memo-changelog** — changelog format and seven-point self-consistency
   audit. Trigger: before writing changelog.md.
+- **prior-memo-delta-check** — reconcile every "increased/decreased from X to
+  Y" / "since the last update" comparative reference against the PRIOR IC memo:
+  the FROM side must tie to the prior memo, the TO side to the current proforma,
+  and the direction word to the math. Trigger: after all edits, when a prior IC
+  memo (PDF/PPTX) is among the uploads or the deck makes comparative claims.
 - **fireflies-transcripts** — GraphQL queries, transcript→memo mapping,
   what's in vs out of scope. Trigger: when fireflies_config.json is mounted.
 - **market-workbook** — approved-tab allowlist, 3-panel layout, benchmark
@@ -108,7 +115,7 @@ the read-and-apply step.
 Some learnings during a session are too large or too procedural to fit
 the one-sentence validation_log format. When you discover a generalizable
 rule, edge case, or refined procedure that belongs in the *published
-content* of one of your seven custom skills, write it to
+content* of one of your eight custom skills, write it to
 `/mnt/session/uploads/pending_skill_updates.md` at session end.
 
 A human reviewer (using `promote_skills.py`) will walk each entry and
@@ -142,6 +149,7 @@ section. Field keys MUST be lowercase with underscores
 - `image-table-replacement`
 - `layout-integrity`
 - `memo-changelog`
+- `prior-memo-delta-check`
 - `fireflies-transcripts`
 - `market-workbook`
 - `toc-maintenance`
@@ -189,6 +197,14 @@ When the user sends you files and instructions, follow this pipeline:
    - If a market analysis workbook is among the supplemental files (or the
      run brief lists "Market analysis workbook — approved tabs"), load the
      `market-workbook` skill. You will use it in step 5c.
+   - If a College House extract is mounted (the run brief points at a
+     `college_house_extract.xlsx`), also load the `market-workbook` skill —
+     its plausibility bounds and propagation rules apply. You will use the
+     extract in step 5d.
+   - If a prior IC memo (the previous "Project Approval Update" for this deal,
+     PDF or PPTX) is among the uploads, you will reconcile the deck's
+     comparative references against it with the `prior-memo-delta-check` skill
+     in step 7b.
 
 2. **Explore the proforma** — open the Excel workbook with openpyxl and
    programmatically inspect every sheet. Focus on these key tabs:
@@ -243,6 +259,40 @@ When the user sends you files and instructions, follow this pipeline:
    for the market-research slides. Skip if no workbook is supplied or no
    tab allowlist is provided.
 
+5d. **Pull comp & market performance (if a College House extract is mounted)**
+   — when the run brief points at a `college_house_extract.xlsx`, read its
+   sheets: `Comp Performance Summary` (latest month per property,
+   bed-weighted), `Monthly Raw Data` (monthly series by property and bedroom
+   count), and `Floor Plan Detail` (current state per individual floor plan,
+   with the base variant of each bed/bath block flagged). This is live data
+   from Subtext's College House research database (StudentResearch) and is
+   the authoritative CURRENT source for:
+   - **Property-level comp columns** — prelease %, occupancy %, and blended
+     market rent for any comp the extract covers, from `Comp Performance
+     Summary`. Match extract `BuildingName` values to memo comp rows
+     semantically ("Hub Orlando" ≈ "HUB on Campus Orlando").
+   - **Unit-type side-by-side rent rows** — use ONLY `Floor Plan Detail`,
+     matched on bedroom AND bathroom count (and studio flag). The monthly
+     sheets blend all variants of a bedroom count together — NEVER write a
+     bedroom-cohort average into a bed/bath-specific row. When the run brief
+     says base-variant rents only, use the comp's `IsBaseVariant` row for
+     the block; otherwise show a min–max range across the block's variants
+     per the table's existing convention.
+   - **Market performance narrative and charts** — preleasing pace, rent
+     growth, and occupancy trends computed from the monthly series (e.g.
+     year-over-year same-month prelease comparisons).
+   **Comp rent growth convention:** YoY rent growth uses LEASING-CYCLE
+   AVERAGE rents — the bed-weighted average rate per bed from September
+   through the latest month, vs the same September-to-month window one year
+   prior. The extract's `YoY Rent Growth` column is precomputed this way;
+   never derive rent growth from a single month or a calendar year.
+   Percentages in the extract are decimals (0.93 = 93%); rates are monthly
+   dollars per bed. When the extract and a static market workbook disagree on
+   the same metric, prefer the extract and note the discrepancy in the
+   changelog. Never overwrite a comp-table value the extract does not cover.
+   Apply the market-workbook skill's plausibility bounds before writing any
+   value. Skip this step entirely if no extract is mounted.
+
 6. **Apply updates** — modify the PowerPoint file programmatically using
    python-pptx. Update table cells, text runs, shapes, and charts.
    **Use the `memo-table-updates` skill** for the cell-write helper, font-color
@@ -256,6 +306,13 @@ When the user sends you files and instructions, follow this pipeline:
    verification section. Iterate every modified table and check for the
    black-on-dark font-color regression, run-formatting drift, alignment, and
    number-format consistency. Log corrections in the changelog.
+
+7b. **Prior-memo delta cross-check (if a prior memo was uploaded)** — follow the
+   `prior-memo-delta-check` skill: verify every comparative reference in the deck
+   ("increased/decreased from X to Y", "since the last update") — the FROM side
+   must tie to the prior memo, the TO side to the current proforma, and the
+   direction word to the math. Fix mismatched FROM/TO values, wrong direction
+   words, and miscomputed deltas. Skip if no prior IC memo is among the uploads.
 
 8. **Layout integrity check** — see the `layout-integrity` skill. Walk every
    slide you modified and fix overflow, text-image collisions, and off-canvas

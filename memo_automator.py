@@ -319,12 +319,29 @@ class ScheduleConfig(BaseModel):
     max_tasks: int = Field(default=500, ge=0)
 
 
+class CollegeHouseConfig(BaseModel):
+    """College House SQL pull (live comp & market performance).
+
+    Credentials come from the environment (COLLEGEHOUSE_SQL_*); this section
+    only controls what to pull. Any of institution/ipeds/properties enables
+    the pull.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    institution: str | None = None
+    ipeds: int | None = None
+    properties: list[str] = Field(default_factory=list)
+    months_back: int = Field(default=24, ge=0)
+    timeout_seconds: int = Field(default=30, ge=1)
+
+
 class MarketDataConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     max_rows_per_tab: int = Field(default=250, ge=0)
     max_cols_per_tab: int = Field(default=20, ge=0)
     keyword_threshold: int = Field(default=2, ge=0)
     include_all_tabs: bool = False
+    college_house: CollegeHouseConfig = Field(default_factory=CollegeHouseConfig)
 
 
 class BrandingConfig(BaseModel):

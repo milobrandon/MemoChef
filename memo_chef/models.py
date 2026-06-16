@@ -73,6 +73,11 @@ class RunRequest(BaseModel):
     property_rename_to: str | None = None
     schedule_path: str | None = None
     market_data_path: str | None = None
+    # College House SQL comp/market performance pull (any filter enables it)
+    college_house_institution: str | None = None
+    college_house_ipeds: int | None = None
+    college_house_properties: list[str] = Field(default_factory=list)
+    college_house_base_variant_only: bool = False
     supplemental_path: str | None = None
     supplemental_type: str | None = None  # "pdf", "url", "excel", "csv"
     supplemental_brief: str | None = None

@@ -138,6 +138,9 @@ def build_user_message(
     property_name: str | None = None,
     market_tabs: list[str] | None = None,
     generate_market_slides: bool = False,
+    college_house_extract_filename: str | None = None,
+    college_house_institution: str | None = None,
+    college_house_base_variant_only: bool = False,
 ) -> str:
     """Build the initial user message that kicks off the agent run.
 
@@ -200,6 +203,60 @@ def build_user_message(
             f"file). If a tab you need isn't in this list, surface it as "
             f"a changelog warning — don't read it anyway.",
         ])
+
+    if college_house_extract_filename:
+        scope = (
+            f"for **{college_house_institution}**" if college_house_institution
+            else "for the subject market"
+        )
+        parts.extend([
+            "",
+            f"**College House comp & market performance**: a live extract "
+            f"from Subtext's College House research database {scope} is "
+            f"mounted at `/mnt/session/uploads/{college_house_extract_filename}`. "
+            f"It has a `Floor Plan Detail` sheet (current rent/SF/beds/"
+            f"occupancy per individual floor plan per comp, with the base "
+            f"variant of each bed/bath block flagged) plus two performance "
+            f"sheets: `Comp Performance Summary` (latest month per "
+            f"property — total beds, prelease %, occupancy %, rate per bed, "
+            f"rate per SF, and YoY rent growth, bed-weighted across bedroom "
+            f"types) and `Monthly Raw Data` (full monthly time series by "
+            f"property and bedroom count, with numerator/denominator columns "
+            f"and derived PreleasePct / OccupancyPct / RatePerBed / "
+            f"RatePerSF). Comp rent growth MUST use the leasing-cycle-average "
+            f"convention: average rents from September through the current "
+            f"month vs the same window one year prior — the summary sheet's "
+            f"YoY Rent Growth column is already computed this way; do not "
+            f"substitute single-month or calendar-year comparisons. Use it "
+            f"as the authoritative CURRENT source for comp-table performance "
+            f"columns (prelease, occupancy, market rents) and for market "
+            f"performance narrative/charts — it is fresher than any static "
+            f"market workbook tabs covering the same metrics. Percentages "
+            f"are decimals (0.93 = 93%). Treat it like market data: apply "
+            f"the market-workbook skill's plausibility bounds and "
+            f"cross-slide propagation rules. For UNIT-TYPE side-by-side "
+            f"rent rows, use ONLY the `Floor Plan Detail` sheet matched on "
+            f"bed/bath count — never write a bedroom-cohort average from "
+            f"the monthly sheets into a bed/bath-specific row.",
+        ])
+        if college_house_base_variant_only:
+            parts.extend([
+                "",
+                "**Base-variant rents only**: ON. In unit-type side-by-side "
+                "comp tables, show each comp's BASE floor plan rent for the "
+                "bed/bath block (the row flagged `IsBaseVariant` in `Floor "
+                "Plan Detail` — the first-named variant, e.g. A1/B1/D1), "
+                "not a range and not an average across variants.",
+            ])
+        else:
+            parts.extend([
+                "",
+                "**Base-variant rents only**: OFF. In unit-type side-by-side "
+                "comp tables, follow the table's existing convention: show "
+                "a min–max range across the comp's floor-plan variants in "
+                "the bed/bath block (single value when there is only one "
+                "variant).",
+            ])
 
     if generate_market_slides:
         parts.extend([

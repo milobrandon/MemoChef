@@ -19,29 +19,28 @@ def set_cell_value(cell, new_value) -> None:
     # color, family, size, and bold/italic attributes (its rPr).
     new_value = str(new_value)
     tf = cell.text_frame
-    target_run = None
-    for para in tf.paragraphs:
-        for run in para.runs:
-            if target_run is None:
-                target_run = run
-            if run.text.strip():
-                target_run = run
-                break
-        if target_run and target_run.text.strip():
-            break
-    if target_run is None:
-        # Truly empty cell — see "Font size when filling empty cells"
-        # below; copy rPr from an adjacent non-empty cell.
+    # Collect runs ONCE. python-pptx hands back a fresh _Run proxy on every
+    # paragraph.runs access, so a second pass that re-iterates tf.paragraphs
+    # and checks `run is not target_run` will blank the target's own run
+    # (it's a different proxy wrapping the same element) — emptying the cell.
+    runs = [run for para in tf.paragraphs for run in para.runs]
+    if not runs:
+        # Truly empty cell — see "Font size when filling empty cells" below;
+        # copy rPr from an adjacent non-empty cell after writing.
         para = tf.paragraphs[0] if tf.paragraphs else tf.add_paragraph()
-        target_run = para.add_run()
+        para.add_run().text = new_value
+        return
+    target_run = next((r for r in runs if r.text.strip()), runs[0])
+    target_el = target_run._r
     target_run.text = new_value
-    # Empty any other runs so stale fragments don't reappear, but keep
-    # the run elements themselves (preserves valid XML).
-    for para in tf.paragraphs:
-        for run in para.runs:
-            if run is not target_run:
-                run.text = ""
+    # Empty any OTHER runs so stale fragments don't reappear, but keep the run
+    # elements themselves. Compare the element (run._r), NOT proxy identity.
+    for run in runs:
+        if run._r is not target_el:
+            run.text = ""
 ```
+
+**Always re-read at least one edited cell** — re-open the saved deck with python-pptx and read `cell.text` to confirm the value is actually present. A silently-emptied `<a:t/>` looks fine in code but renders blank in the deck.
 
 If you build your own helper, spot-check `run.font.color.rgb` on a few updated cells before AND after the write. The values must match. If the color is `None` or `RGBColor(0x00,0x00,0x00)` after but was a light color before, your helper is stripping rPr — go back to `set_cell_value`.
 

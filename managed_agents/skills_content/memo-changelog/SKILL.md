@@ -5,6 +5,8 @@ description: Author the per-run changelog.md and run the seven-point self-consis
 
 # Memo Changelog
 
+**When to use:** at the end of every run, before writing `/mnt/session/uploads/changelog.md`.
+
 Write a detailed changelog to `/mnt/session/uploads/changelog.md` with:
 
 - Total updates applied (by category: table, text, narrative, chart, row insert).
@@ -17,7 +19,7 @@ Write a detailed changelog to `/mnt/session/uploads/changelog.md` with:
 - **Before/after text must be COMPLETE, not truncated.** For every narrative or text change, show the full old text and the full new text. Do NOT cut off mid-sentence. Do NOT end a quoted value with a dangling conjunction ("as", "and", "which", "the", "a"). Do NOT use ellipses ("...") to shorten a before/after diff. If the new value is a 60-word paragraph, all 60 words appear in the changelog.
 - For multi-sentence narrative updates, use a fenced markdown quote block or a multi-line code block so the full text renders cleanly rather than trying to inline it on a single line.
 - The short header describing a change may be brief (e.g. "Entitlements narrative — TRC meeting added"), but the before/after body values must be complete text.
-- A reviewer reading only the changelog should be able to reconstruct exactly what changed in the deck without having to open the pptx.
+- A reviewer reading only the changelog should be able to reconstruct exactly what changed in the deck without opening the pptx.
 
 ## Self-Consistency Audit (REQUIRED before finalizing)
 

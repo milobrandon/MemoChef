@@ -1,80 +1,100 @@
 ---
 name: image-table-replacement
-description: Replace image-only data slides (Cash Flow, Unit Mix, Development Budget) with freshly-built editable python-pptx tables populated from the proforma. Use when a slide whose title contains "Underwriting", "Cash Flow", "Proforma", "Unit Mix", "Development Budget", or "Dev Budget" has only Picture shapes and no editable table. Includes per-table column structures, the explicit-text-color rule for body cells, and the position-preservation procedure.
+description: Replace pasted proforma-screenshot pictures (Executive Summary, Cash Flow / Underwriting Projections, Unit Mix, Development Budget) with freshly-built editable python-pptx tables populated from the proforma. Converting the screenshot to a real table is the DEFAULT treatment for proforma data ranges. Use when a slide has a Picture shape whose content is a grid of proforma rows/columns and the slide title contains "Underwriting", "Cash Flow", "Proforma", "Project Assumptions", "Unit Mix", "Development Budget", "Dev Budget", "Development Cost", or "Executive Summary". Includes detection cues, per-table column structures, the explicit-text-color rule for body cells, the row-tier styling map, and the position-preservation procedure.
 ---
 
-# Image-Table Replacement
+# Image-Table Replacement (DEFAULT for proforma data tables)
 
-After applying all standard cell updates per the `memo-table-updates` skill, scan every slide for the following content types that may be embedded as images (Picture shapes) instead of editable tables:
+After applying all standard cell updates per the `memo-table-updates` skill, scan every slide for proforma data that was pasted as an **image (Picture shape)** instead of an editable table. **The default action is to replace that picture with a freshly-built, editable python-pptx table** populated from the proforma — not to leave it as a picture.
 
-- **Cash Flow / Underwriting Projections** — slide title contains "Underwriting", "Cash Flow", or "Proforma" and the slide has no editable table, only Picture shapes.
-- **Unit Mix** — slide title contains "Unit Mix" with only Picture shapes.
-- **Development Budget** — slide title contains "Development Budget" or "Dev Budget" with only Picture shapes.
+Only leave a range as a picture when it does **not** tabularize cleanly — a merged-cell waterfall **Returns Summary**, a chart, or a range the user explicitly wants kept as a faithful screenshot. When in doubt for a rectangular row/column proforma range, convert it.
 
-For each such slide, **replace the image with a freshly-built python-pptx table** populated entirely from the proforma data extracted earlier in the run.
+## What counts as a "proforma Excel-table picture"
 
-## Procedure (do this for every match)
+Detect by BOTH cues:
 
-The original image is the **structural ground truth** for what rows and columns the rebuilt table must contain. The example memo is now only a *formatting* reference (fonts, colors, alignment, alternating shading) — it is NOT the row/column template. Dropping a line item that appeared in the original image is a regression, not a judgment call.
+- **Title cue** — slide title contains "Underwriting", "Cash Flow", "Proforma", "Project Assumptions", "Unit Mix", "Development Budget", "Dev Budget", "Development Cost", or "Executive Summary".
+- **Shape cue** — a `Picture` shape (`shape.shape_type == 13`) whose content, when viewed, is a grid of proforma rows/columns (numbers in a tabular layout).
+
+A slide may hold a proforma picture **alongside** narrative text or other shapes (e.g. a "Project Assumptions" exec-summary picture next to a "Return Summary" picture). Convert **each** table-like picture independently — do NOT require the slide to be picture-only.
+
+## The original image is the structural ground truth
+
+The pasted screenshot defines which rows and columns the rebuilt table must contain. The example memo is only a *formatting* reference (fonts, colors, alignment, alternating shading, row tiers) — it is NOT the row/column template. Dropping a line item that appeared in the original image is a regression, not a judgment call.
+
+## Procedure (do this for every matching picture)
 
 1. **Identify and inventory the Picture shape.** Record position (`left`, `top`) and size (`width`, `height`) — the new table must occupy the same bounding box. Capture the picture's binary content via python-pptx: `blob = picture.image.blob` and `ext = picture.image.ext`.
 
-2. **Vision-extract the original image BEFORE removing the shape (CRITICAL).** Write the blob to a temp file (e.g. `/tmp/orig_table_slide{N}.{ext}`) and read it with the file tool so its contents become visible to you. From the image, extract and record:
-   - The full ordered list of **row labels** (every line item AND every section header, exactly as they appear).
-   - The full ordered list of **column headers**.
-   - Each visible **cell value** — these are used only as a fallback if the updated proforma has no matching line (see step 5).
-   This inventory is your structural ground truth for steps 4–5.
+2. **Vision-extract the original image BEFORE removing the shape (CRITICAL).** Write the blob to a temp file (e.g. `/tmp/orig_table_slide{N}.{ext}`) and read it with the file tool so its contents become visible to you. From the image, extract and record, in order:
+   - every **row label** (every line item AND every section header / subtotal / total, exactly as written, including indentation),
+   - every **column header**,
+   - each visible **cell value** — used only as a fallback if the updated proforma has no matching line (see step 5),
+   - which rows are **section headers**, **subtotals**, **totals**, and the **grand total** (you map these to row tiers in step 6).
+   This inventory is your structural ground truth for steps 4–6.
 
-3. **Remove the Picture shape** from the slide.
+3. **Remove the Picture shape** from the slide: `picture._element.getparent().remove(picture._element)`.
 
 4. **Build the table** with `slide.shapes.add_table(rows, cols, left, top, width, height)` using the row count and column count from the step-2 inventory — NOT from the example memo's table.
 
 5. **Populate every cell from the UPDATED proforma.** For each row label captured in step 2, look up the corresponding value in the proforma data already extracted earlier in the run. For each row:
    - If the proforma has a clean matching line → use the proforma value.
    - If the proforma has NO matching line → retain the image-OCR'd value from step 2, append a footnote indicator to the cell text (e.g. `¹`), and log a changelog warning of the form `[retained from image — no proforma source: <row label>]`. **Never silently drop an image-only row.**
-   - If the proforma has the line but the value is blank/zero where the image showed a real number → treat as no-match (retain + warn), do not overwrite a real number with a blank.
+   - If the proforma has the line but the value is blank/zero where the image showed a real number → treat as no-match (retain + warn); do not overwrite a real number with a blank.
+   Pre-format every value as its final **display string** (commas, `$`, `%`, parentheses for negatives) before writing it — you are placing text into cells, not formatting numbers in-cell.
 
-6. **Apply formatting** per the Formatting rules below (header style, body text color via the explicit-text-color rule, alternating shading, number formats, subtotal styling) — copy these from the example memo's equivalent table.
+6. **Apply formatting** per the Formatting rules below (header style, body text color via the explicit-text-color rule, row-tier styling, alternating shading, number formats, subtotal/total styling) — copy these from the example memo's equivalent table.
 
-7. **Log the replacement** in the changelog as `Image replaced with editable table — [slide title]`, and include: (a) total row count, (b) the list of row labels preserved from the image, (c) any rows whose value was retained-from-image rather than proforma-sourced.
+7. **Verify with python-pptx (no COM in the sandbox).** Re-open the saved deck and confirm: the table has the expected row/column counts; every cell that should have a value is non-empty; no body/subtotal run has `font.color.rgb` of `None` or black (the invisible-text regression); and the table's bounding box still fits inside the slide and does not collide with the title/footer (compare against `prs.slide_width`/`prs.slide_height` and the original picture box recorded in step 1). Fix any failure before saving.
+
+8. **Log the replacement** in the changelog as `Image replaced with editable table — [slide title]`, and include: (a) total row count, (b) the list of row labels preserved from the image, (c) any rows whose value was retained-from-image rather than proforma-sourced.
 
 ## Formatting rules
 
-- **Header row**: bold, white text, dark background (match RGB from the example memo).
-- **Body + subtotal rows — explicit text color (CRITICAL)**: freshly built tables default to **black text**, which is invisible on Subtext's dark-theme memos. Before populating body cells, read `run.font.color.rgb` from a reference body cell in any existing editable data table on the same memo (scan all slides for a table whose body cells have non-black text and use its color — the Proforma Comparison and end-of-memo Proforma / Underwriting Projections tables are typical sources, but slide numbers vary across templates so locate them by content, not page number). Apply that RGB to EVERY body and subtotal cell you populate. If no reference body table exists on the memo, read the color from the equivalent table in the example memo under `/mnt/examples/`. If neither is available, default to `RGBColor(0xFF, 0xFF, 0xFF)` (white) rather than leaving black.
-- **Alternating row shading** where used in the example.
-- **Font family, size, alignment** per column type (text=left, numbers=right or center, headers=center).
-- **Number formatting**: $ with commas, % with one decimal, SF with commas.
-- **Section subtotal rows**: bold, lightly shaded background, **same text color as body rows** (explicitly set — do not rely on the python-pptx default).
+Build the table with `add_table` and style it explicitly — a freshly built python-pptx table defaults to **black text** and a banded table style that overpaints your fills, which produces invisible text on Subtext's dark-theme memos. Set fills and font colors explicitly on every cell.
 
-## Per-table minimum coverage (sanity check, not template)
+- **Header / column-header row**: bold, white text, dark background (match RGB from the example memo's equivalent table; use the heading font, centered).
+- **Body rows — explicit text color (CRITICAL)**: before populating body cells, read `run.font.color.rgb` from a reference body cell in any existing editable data table on the same memo (scan all slides for a table whose body cells have non-black text and use its color — the Proforma Comparison and end-of-memo Proforma / Underwriting Projections tables are typical sources, but slide numbers vary across templates so locate them by content, not page number). Apply that RGB to EVERY body and subtotal cell you populate. If no reference body table exists on the memo, read the color from the equivalent table in the example memo under `/mnt/examples/`. If neither is available, default to `RGBColor(0xFF, 0xFF, 0xFF)` (white) rather than leaving black.
+- **Row tiers** — map each image row to one tier and style it to match that tier in the example memo (read the tier's fill + font color from the example/reference table; never hardcode brand hex):
+  - `title` — table caption ("Development Budget"): dark band, white, bold.
+  - `subtitle` — the unit/bed-count line under the caption: dark band, white.
+  - `colheader` — the column-header row: dark band, white, bold, heading font, centered.
+  - `section` — section header rows (EFF. GROSS REVENUE, HARD COSTS).
+  - `subtotal` — section subtotals (Eff. Gross Revenue, Total Hard Costs): same text color as body, lightly shaded.
+  - `total` — major totals (TOTAL EFF. GROSS REVENUE, NET OPERATING INCOME): bold band.
+  - `grandtotal` — the single grand total (TOTAL DEV. COSTS): accent band, bold.
+  - `body` — ordinary line items.
+  - `bodybold` — an emphasized line (RETURN ON COST).
+  Cash-flow section/total bands are dark with white text; development-budget section/subtotal bands are light with dark text — read the right pair from the example so the two flavors don't get crossed.
+- **Alternating row shading** where the example uses it.
+- **Font family, size, alignment** per column type (text=left, numbers=right or center, headers=center). Middle vertical anchor, tight cell margins.
+- **Number formatting**: `$` with commas, `%` with one decimal, SF with commas.
 
-The sections below describe the **minimum** row/column coverage each table type usually contains. Use them as a sanity check against the step-2 image inventory:
+## Per-table minimum coverage (sanity check, not a template — the image is the template)
 
-- If the image inventory includes additional rows or columns beyond what's listed → include them in the rebuilt table.
-- If the image inventory is missing rows from this canonical list → the source image may be a partial view or cropped. Still rebuild from the image inventory, but log a changelog warning naming the missing rows so the analyst can review.
-- These lists are NOT the structural template — the image is.
+If the image inventory has rows/columns beyond these lists → INCLUDE them. If the inventory is missing rows from a list → the source image may be cropped; rebuild from the image inventory anyway and log a changelog warning naming the missing rows.
 
-## Cash Flow table structure
+### Cash Flow / Underwriting Projections
+- Columns: a **Per Bed** column, **Year 1 … Year 5** (or as many years as the picture shows), and an **Untrended** column — match the picture.
+- Revenue: Gross Potential Rent, (General Vacancy), (Collection / Bad Debt), Parking Revenue, Other Income, Utility Income, Eff. Gross Residential, any commercial rows present, **TOTAL EFF. GROSS REVENUE**.
+- Controllable expenses: G&A, Payroll, Leasing & Marketing, Maintenance & Repairs, Contract Services, Turnover. Non-controllable: Utilities, Property Taxes, Insurance, Management Fees. **TOTAL OPERATING EXPENSES**.
+- **NET OPERATING INCOME**, capital / replacement-reserve rows, **NOI (LESS RESERVES)**, **RETURN ON COST** row.
 
-Two columns per year shown in the example; at minimum include Year 1 and Year 2/Stabilized.
+### Unit Mix
+- Columns: Unit Type, Avg SF, Bed SF, Beds/Unit, # Units, # Beds, % Units, % Beds, $/Bed (Rent/Bed untrended), Rent/PSF — match the picture.
+- One row per unit sub-type (1BR/1BA, 2BR/2BA, 4BR/4BA, etc.); a bold **TOTAL / AVG** row with summed counts and weighted-average sizes/rents.
 
-- **Revenue section**: Gross Potential Rent, (Vacancy Loss), Parking Revenue, Other Income, Utility Income, Total EGR
-- **Expense section**: Management Fee, Admin, Maintenance, Landscaping, Insurance, Utilities, Total Controllable OpEx, RE Taxes, Total OpEx
-- **NOI section**: NOI (before reserves), (Replacement Reserves), NOI (less reserves)
-- **Returns**: Return on Cost (Yr 2), Untrended Return on Cost
-- Include a `$/Bed` column if present in the example memo.
+### Development Budget
+- A `title` row (caption) and a `subtitle` row (## Units | ## Beds), then a `colheader` row: Line Items, % Total, $ Amount, $/Unit, $/Bed, $/GSF, $/NRSF — match the picture.
+- Sections (`section`): ACQUISITION COSTS, HARD COSTS, SOFT COSTS, CAPITAL STRUCTURE — each followed by its line items and a `subtotal` (Total Acquisition, Total Hard Costs, Total Soft Costs). `grandtotal` row: TOTAL DEV. COSTS.
+- `% Total` = line $ / grand-total $ × 100. `$/Unit`, `$/Bed`, `$/GSF`, `$/NRSF` = line $ / the respective denominator. Recompute all of these from the new figures.
 
-## Unit Mix table structure
+### Executive Summary
+- A compact metrics block (units, beds, GSF/NSF, cost/bed, IRR, equity multiple, yield). Mirror the picture's rows/columns; `colheader` / `body` plus a `total` row if the picture has one.
 
-- **Columns**: Unit Type, Avg SF, Beds/Unit, # Units, # Beds, % of Units, % of Beds, Rent/Bed (untrended)
-- One row per unit sub-type from the Assumptions tab (S1, B1, B2, etc.).
-- A bold **Total** row at the bottom with summed/weighted-average values.
-
-## Development Budget table structure
-
-- **Columns**: Line Item, Total Cost, % of Total, Cost/Bed
-- **Sections**: Acquisition (land, closing costs), Hard Costs (site work, construction, contingency), Soft Costs (line items), Total
-- Section header rows: bold with shaded background.
-- `% of Total` = line total / grand total × 100, formatted as `"XX.X%"`.
-- `Cost/Bed` = line total / total beds.
+## Common mistakes
+- **Leaving it a picture.** Conversion is the default. Only keep a picture for non-tabularizable ranges (a merged-cell waterfall returns summary, a chart) or an explicit user request.
+- **Black-on-dark text.** Never use `cell.text =`, and never set fills without also setting font color. Read every populated run's `font.color.rgb` afterward and re-apply the reference body color to any run that came back `None` or black.
+- **Dropping image rows** not found in the proforma — retain + footnote + warn instead.
+- **Wrong section tier** — cash-flow section/total bands are dark with white text; development-budget section/subtotal bands are light with dark text. Read the correct tier styling from the example memo.
+- **Not verifying** — always re-open the saved deck and check values, colors, and fit before finishing.
