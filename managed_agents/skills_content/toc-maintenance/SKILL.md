@@ -5,6 +5,8 @@ description: Update the Table of Contents slide on a Subtext IC memo so section 
 
 # Table of Contents Maintenance
 
+**When to use:** on every run, after all other slide edits are complete (including any new or continuation slides you inserted).
+
 Most memo templates include a Table of Contents (TOC) slide near the front with section titles and page numbers. On EVERY run, after all other slide edits are complete (including any new or continuation slides you inserted):
 
 1. **Locate the TOC slide** (typically slide 2 or 3; look for a slide whose body contains entries like "Executive Summary ... 3", "Market Overview ... 8", "Financial Projections ... 18", etc.).

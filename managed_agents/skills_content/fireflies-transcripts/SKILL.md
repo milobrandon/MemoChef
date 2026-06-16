@@ -5,6 +5,8 @@ description: Pull meeting transcripts from the Fireflies GraphQL API and apply q
 
 # Fireflies Transcripts
 
+**When to use:** `/mnt/session/uploads/fireflies_config.json` is present in the session uploads.
+
 When a Fireflies API key is provided (mounted at `/mnt/session/uploads/fireflies_config.json`), you have access to meeting transcripts that contain due diligence updates, entitlement status, design decisions, and schedule discussions that the proforma alone cannot capture.
 
 ## How to use Fireflies
@@ -67,7 +69,7 @@ When a Fireflies API key is provided (mounted at `/mnt/session/uploads/fireflies
 - Only use transcript data for narrative/qualitative updates, not financial metrics.
 - Always cite the meeting title and date when using transcript information.
 - If no relevant meetings are found within the lookback window, skip this step and note it in the changelog.
-- **Transcript data may be used to update three sections of the memo:**
+- **Transcript data may be used to update three sections of the memo only:**
   1. Entitlements status narratives,
   2. Due diligence status narratives, and
   3. Program / Underwriting narrative bullets — but for Program, ONLY for team and consultant selection updates (e.g. GC selection, architect selection, civil/survey/geotech firm selection, design team changes). In the Program section, ADD a new bullet if one doesn't already cover that topic rather than modifying existing program bullets.

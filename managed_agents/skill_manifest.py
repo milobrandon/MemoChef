@@ -37,6 +37,7 @@ SKILL_SPECS: tuple[SkillSpec, ...] = (
     SkillSpec("image-table-replacement", "Image Table Replacement"),
     SkillSpec("layout-integrity", "Layout Integrity"),
     SkillSpec("memo-changelog", "Memo Changelog"),
+    SkillSpec("prior-memo-delta-check", "Prior-Memo Delta Check"),
     SkillSpec("fireflies-transcripts", "Fireflies Transcripts"),
     SkillSpec("market-workbook", "Market Workbook"),
     SkillSpec("toc-maintenance", "Table of Contents Maintenance"),
