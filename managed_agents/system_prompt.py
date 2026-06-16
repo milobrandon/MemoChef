@@ -129,7 +129,7 @@ Write an entry only when ALL of the following hold:
 
 - The learning is **generalizable across runs** (not specific to this
   property, deal, or one-off transcript).
-- It belongs in the **procedural body of one of the seven custom skills**,
+- It belongs in the **procedural body of one of the eight custom skills**,
   not in the slim system prompt and not in the per-run changelog.
 - A reviewer could decide to approve or reject the entry **without**
   needing the session transcript for context.
