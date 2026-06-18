@@ -355,6 +355,35 @@ When a metric change significantly alters the meaning of a passage (e.g. 15%
 NOI change, unit count 300→510), rewrite surrounding sentences for coherence.
 For simple number swaps, just replace the number in-place.
 
+### Proforma Figures Stated in Narrative Prose — MUST UPDATE (non-skippable)
+Unit counts, bed counts, the unit-mix configuration, parking stalls/spaces
+and parking ratios, square footages (GSF/NSF, amenity, leasing, retail),
+budget totals, return percentages, and schedule dates that appear inside a
+sentence are proforma DATA, not qualitative narrative — update them to
+match the proforma even when the run is scoped as "proforma tables only."
+"Preserve the narrative" covers qualitative and strategic language (see
+Strategic/Aspirational Language), NEVER hard numbers that trace to a
+proforma cell.
+
+Do NOT gate this on whether you edited a table on that slide. Independently
+read EVERY narrative text block in the deck and update its embedded figures.
+The two repeat offenders are the Executive Summary intro paragraph and the
+**Project Overview / Project Description** section — and the latter has NO
+metrics table beside it, so a "scan the tables, then check adjacent text"
+pass misses it completely. Visit the project-description narrative on its
+own, every run.
+
+Two prose patterns to handle explicitly:
+- **Unit-mix configuration sentences** — e.g. "configured as follows: 10
+  one-bedroom units, 17 two-bedroom units, 71 four-bedroom units, ...".
+  Recompute every count from the proforma unit mix, collapsing bath
+  variants into bedroom-count buckets (e.g. 4BR/2BA + 4BR/4BA → "four-
+  bedroom units"), and confirm the buckets sum to the updated unit and bed
+  totals before writing.
+- **Derived ratios stated in prose** — e.g. "parked at 63% by the bed",
+  "335 stalls (58% of beds)". Recompute from the updated spaces and beds;
+  never carry the old percentage forward.
+
 ### Factual Errors in Narratives — MUST FIX
 If a narrative contains a factually incorrect statement that contradicts
 the numbers it references, fix it. For example:
