@@ -152,3 +152,7 @@ Rules:
    block — not a range, not an average. When the brief says OFF (or is
    silent), show a min–max range across the block's variants, single value
    when only one variant exists, matching the table's existing range style.
+8. **Uncovered comps get a changelog note.** Any memo comp row the extract
+   does not cover keeps its existing value and gets a one-line changelog note
+   ("not refreshed — not in College House") so the deal team knows which comps
+   still show prior-source values.
