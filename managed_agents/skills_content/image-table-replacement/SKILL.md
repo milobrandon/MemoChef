@@ -9,6 +9,13 @@ After applying all standard cell updates per the `memo-table-updates` skill, sca
 
 Only leave a range as a picture when it does **not** tabularize cleanly — a merged-cell waterfall **Returns Summary**, a chart, or a range the user explicitly wants kept as a faithful screenshot. When in doubt for a rectangular row/column proforma range, convert it.
 
+## Non-tabularizable ranges — you cannot refresh a picture in this environment
+
+This sandbox has **no Excel or PowerPoint COM**, so a pasted proforma-range screenshot cannot be re-rendered from the updated model and swapped in place. That changes how you handle a range that does **not** tabularize cleanly (a merged-cell waterfall **Returns Summary**, an embedded **chart**, or a stylized block):
+
+1. **Prefer a best-effort native table.** If the range is even loosely row/column shaped, rebuild it as a native table (procedure below) rather than leaving a stale screenshot — a readable editable table beats out-of-date numbers.
+2. **Otherwise leave the picture and WARN — never silently.** If it genuinely cannot be tabularized, leave the Picture untouched and emit a prominent changelog warning, e.g. `[stale picture — could not refresh: <slide title> — no Excel render in this environment; refresh this screenshot manually before distribution]`. List every such picture so the deal team knows which exhibits still show old numbers. Never ship a proforma screenshot as if it were current when its underlying numbers changed this run.
+
 ## What counts as a "proforma Excel-table picture"
 
 Detect by BOTH cues:

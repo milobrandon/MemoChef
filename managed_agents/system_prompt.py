@@ -302,6 +302,14 @@ When the user sends you files and instructions, follow this pipeline:
    `image-table-replacement` skill for column structures and the explicit
    text-color rule for body cells on dark-theme memos.
 
+6c. **Non-tabularizable proforma pictures** — this environment cannot re-render
+   Excel/PowerPoint, so a pasted screenshot that does not tabularize cleanly (a
+   merged-cell waterfall Returns Summary, a chart) cannot be refreshed in place.
+   Per the `image-table-replacement` skill, rebuild it as a best-effort native
+   table where feasible; otherwise leave the picture and emit a prominent
+   changelog warning that it is stale and must be refreshed manually. Never let a
+   stale proforma screenshot ship silently.
+
 7. **Formatting verification pass** — see the `memo-table-updates` skill's
    verification section. Iterate every modified table and check for the
    black-on-dark font-color regression, run-formatting drift, alignment, and
